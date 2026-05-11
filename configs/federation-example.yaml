@@ -1,0 +1,128 @@
+# stac-proxy federation example configuration
+# Multi-origin mode - aggregates multiple upstream STAC servers
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  tls:
+    enabled: false
+    # cert_file: "/etc/ssl/certs/proxy.crt"
+    # key_file: "/etc/ssl/private/proxy.key"
+  timeouts:
+    read: 30s
+    write: 60s
+    idle: 120s
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+
+metrics:
+  enabled: true
+  path: "/metrics"
+  port: 9090
+
+health:
+  path: "/health"
+  check_upstreams: true
+  check_interval: 30s
+
+# Operating mode
+mode: federation
+
+# Federation configuration
+federation:
+  search_strategy: parallel
+  max_concurrent: 10
+  aggregate_timeout: 60s
+  conflict_strategy: priority  # first_wins, priority, merge, namespace
+  default_page_size: 100
+  max_page_size: 1000
+
+  origins:
+    # Public STAC server - no auth required
+    - id: aws-earth-search
+      name: "AWS Earth Search"
+      base_url: "https://earth-search.aws.element84.com/v1"
+      enabled: true
+      priority: 1
+      searchable: true
+      auto_discover: true
+      discovery_interval: 1h
+      timeout: 30s
+
+    # Another public STAC server
+    - id: planetary-computer
+      name: "Microsoft Planetary Computer"
+      base_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
+      enabled: true
+      priority: 2
+      searchable: true
+      auto_discover: true
+      timeout: 45s
+
+    # Example with API key authentication
+    # - id: planet-basemaps
+    #   name: "Planet Basemaps"
+    #   base_url: "https://api.planet.com/basemaps/v1/mosaics"
+    #   enabled: false
+    #   priority: 3
+    #   auth:
+    #     type: api_key
+    #     api_key_header: "Authorization"
+    #     api_key_value: "api-key ${PLANET_API_KEY}"
+    #   timeout: 45s
+    #   collections:
+    #     - "planet-nicfi"
+
+    # Example with OAuth2 authentication
+    # - id: copernicus
+    #   name: "Copernicus Data Space"
+    #   base_url: "https://catalogue.dataspace.copernicus.eu/stac"
+    #   enabled: false
+    #   priority: 4
+    #   auth:
+    #     type: oauth2
+    #     oauth2:
+    #       token_url: "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+    #       client_id: "${COPERNICUS_CLIENT_ID}"
+    #       client_secret: "${COPERNICUS_CLIENT_SECRET}"
+    #       scopes: ["openid"]
+    #   timeout: 60s
+
+# Middleware configuration
+middleware:
+  - name: logging
+    config:
+      include_body: false
+
+  # - name: auth
+  #   config:
+  #     allow_anonymous: true
+  #     providers:
+  #       - type: bearer
+  #         jwks_url: "https://auth.example.com/.well-known/jwks.json"
+  #         issuer: "https://auth.example.com"
+  #         audience: "stac-proxy"
+
+  # - name: rate_limit
+  #   config:
+  #     default_quota:
+  #       requests: 1000
+  #       window: 1h
+  #     burst: 50
+
+  - name: cache
+    config:
+      store: memory
+      max_size: 10000
+      collection_ttl: 5m
+      item_ttl: 1m
+      search_ttl: 30s
+
+  # - name: url_remap
+  #   config:
+  #     rules:
+  #       - match: "^https://internal-storage.example.com/(.*)$"
+  #         replace: "https://cdn.example.com/$1"

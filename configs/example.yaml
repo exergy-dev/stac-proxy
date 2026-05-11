@@ -1,0 +1,47 @@
+# stac-proxy example configuration
+# Single-origin mode - proxies to a single upstream STAC server
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  timeouts:
+    read: 30s
+    write: 60s
+    idle: 120s
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+
+metrics:
+  enabled: true
+  path: "/metrics"
+  port: 9090
+
+health:
+  path: "/health"
+  check_upstreams: true
+  check_interval: 30s
+
+# Operating mode: "single" or "federation"
+mode: single
+
+# Single origin configuration
+upstream:
+  url: "https://earth-search.aws.element84.com/v1"
+  timeout: 30s
+
+# Middleware configuration (order matters for priority)
+middleware:
+  - name: logging
+    config:
+      include_body: false
+
+  - name: cache
+    config:
+      store: memory
+      max_size: 10000
+      collection_ttl: 5m
+      item_ttl: 1m
+      search_ttl: 30s

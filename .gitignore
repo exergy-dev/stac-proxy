@@ -1,0 +1,11 @@
+# Binaries
+stac-proxy
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+
+# Worktrees created by parallel agents
+.worktrees/
