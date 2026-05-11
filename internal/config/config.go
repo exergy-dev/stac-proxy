@@ -74,6 +74,12 @@ type MiddlewareConfig struct {
 type UpstreamConfig struct {
 	URL     string        `yaml:"url"`
 	Timeout time.Duration `yaml:"timeout"`
+
+	// SupportsFilterExtension indicates whether the upstream STAC API
+	// supports the Filter Extension (cql2-text / cql2-json). When true,
+	// authz CQL2 filters and geofence S_INTERSECTS predicates are pushed
+	// down to the upstream rather than enforced via response post-filter.
+	SupportsFilterExtension bool `yaml:"supports_filter_extension"`
 }
 
 // FederationConfig contains multi-origin federation settings.
@@ -120,6 +126,13 @@ type OriginConfig struct {
 	CollectionPrefix  string            `yaml:"collection_prefix"`
 	CollectionMapping map[string]string `yaml:"collection_mapping"`
 	StripPathPrefix   string            `yaml:"strip_path_prefix"`
+
+	// SupportsFilterExtension indicates whether this origin's STAC API
+	// supports the Filter Extension. When true, the authz middleware
+	// pushes CQL2 predicates (including geofence S_INTERSECTS) into the
+	// search request; when false, the post-filter path stays responsible
+	// for enforcement.
+	SupportsFilterExtension bool `yaml:"supports_filter_extension"`
 }
 
 // RetryConfig contains retry policy settings.
@@ -209,11 +222,26 @@ type AuthProviderConfig struct {
 
 // AuthzConfig contains authorization settings.
 type AuthzConfig struct {
-	PolicySource  string          `yaml:"policy_source"` // file, opa, both
-	PolicyFile    string          `yaml:"policy_file"`
-	DefaultEffect string          `yaml:"default_effect"` // allow, deny
-	OPA           *OPAConfig      `yaml:"opa"`
-	Geofencing    *GeofenceConfig `yaml:"geofencing"`
+	PolicySource  string               `yaml:"policy_source"` // file, opa, both
+	PolicyFile    string               `yaml:"policy_file"`
+	DefaultEffect string               `yaml:"default_effect"` // allow, deny
+	OPA           *OPAConfig           `yaml:"opa"`
+	Geofencing    *GeofenceConfig      `yaml:"geofencing"`
+	CQL2Injection *CQL2InjectionConfig `yaml:"cql2_injection"`
+}
+
+// CQL2InjectionConfig controls the CQL2 filter-injection middleware
+// behaviour. When enabled, CQL2 expressions emitted by the policy
+// engine (and geofence push-down predicates) are AND-combined with any
+// client-supplied filter and forwarded to the upstream STAC API.
+type CQL2InjectionConfig struct {
+	// Enabled gates the whole feature; default false.
+	Enabled bool `yaml:"enabled"`
+
+	// Combine controls how policy and client filters are combined.
+	// Only "and" is supported today; the field is reserved for future
+	// strategies (e.g. "or", "replace").
+	Combine string `yaml:"combine"`
 }
 
 // OPAConfig contains Open Policy Agent settings.

@@ -1,9 +1,8 @@
 module github.com/yourorg/stac-proxy
 
-go 1.22
+go 1.23
 
 require (
-
 	// Configuration
 	github.com/fsnotify/fsnotify v1.8.0
 	// Web framework
@@ -26,6 +25,8 @@ require (
 	golang.org/x/crypto v0.25.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require github.com/exergy-dev/go-cql2 v0.0.0-20260504204024-796456d5f243
 
 require (
 	github.com/OneOfOne/xxhash v1.2.8 // indirect

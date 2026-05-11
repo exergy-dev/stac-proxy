@@ -75,6 +75,20 @@ type AuthzConstraints struct {
 
 	// Required filters to apply
 	RequiredFilters map[string]interface{} `json:"required_filters,omitempty"`
+
+	// CQL2Filter is a cql2-text expression the policy wants AND-combined
+	// with any client-supplied filter and pushed to the upstream STAC API.
+	CQL2Filter string `json:"cql2_filter,omitempty"`
+
+	// CQL2FilterJSON is the cql2-json equivalent; if both are set, the
+	// JSON form wins. Stored as an interface{} since it may be any JSON
+	// object shape.
+	CQL2FilterJSON interface{} `json:"cql2_filter_json,omitempty"`
+
+	// GeofencePushedDown is set by the authz middleware when the geofence
+	// has been pushed down as a CQL2 S_INTERSECTS predicate. When true,
+	// the response-time post-filter is skipped.
+	GeofencePushedDown bool `json:"-"`
 }
 
 // GeofenceConstraint specifies spatial access restrictions.
