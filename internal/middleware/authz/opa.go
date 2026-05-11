@@ -165,6 +165,14 @@ func parseOPAConstraints(raw map[string]interface{}) *AuthzConstraints {
 		}
 	}
 
+	if s, ok := raw["cql2_filter"].(string); ok {
+		constraints.CQL2Filter = s
+	}
+
+	if v, ok := raw["cql2_filter_json"]; ok {
+		constraints.CQL2FilterJSON = v
+	}
+
 	return constraints
 }
 

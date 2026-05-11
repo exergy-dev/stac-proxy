@@ -10,9 +10,10 @@ import (
 
 // AuthzMiddleware enforces authorization policies.
 type AuthzMiddleware struct {
-	enforcer       Enforcer
-	allowAnonymous bool
-	priority       int
+	enforcer        Enforcer
+	allowAnonymous  bool
+	priority        int
+	cql2InjectionOn bool
 }
 
 // AuthzMiddlewareConfig configures the authorization middleware.
@@ -20,14 +21,20 @@ type AuthzMiddlewareConfig struct {
 	Enforcer       Enforcer
 	AllowAnonymous bool
 	Priority       int
+	// CQL2InjectionEnabled gates CQL2 filter injection and geofence
+	// push-down. When false (the default), policy CQL2 fields and
+	// GeofencePushedDown are ignored; the response-side post-filter
+	// remains responsible for enforcement.
+	CQL2InjectionEnabled bool
 }
 
 // NewAuthzMiddleware creates a new authorization middleware.
 func NewAuthzMiddleware(cfg AuthzMiddlewareConfig) *AuthzMiddleware {
 	return &AuthzMiddleware{
-		enforcer:       cfg.Enforcer,
-		allowAnonymous: cfg.AllowAnonymous,
-		priority:       cfg.Priority,
+		enforcer:        cfg.Enforcer,
+		allowAnonymous:  cfg.AllowAnonymous,
+		priority:        cfg.Priority,
+		cql2InjectionOn: cfg.CQL2InjectionEnabled,
 	}
 }
 
@@ -83,6 +90,19 @@ func (m *AuthzMiddleware) ProcessRequest(ctx context.Context, req *middleware.ST
 		applyConstraints(req, decision.Constraints)
 	}
 
+	// CQL2 filter injection. Only runs when explicitly enabled and the
+	// request carries a parsed search body that can receive a filter.
+	if m.cql2InjectionOn && req.SearchReq != nil && decision.Constraints != nil {
+		if err := injectCQL2Filter(req, decision.Constraints); err != nil {
+			// Surface as an internal error rather than silently dropping
+			// authz intent.
+			return nil, &middleware.InternalError{
+				Message: "cql2 injection failed",
+				Cause:   err,
+			}
+		}
+	}
+
 	return nil, nil
 }
 
@@ -94,8 +114,12 @@ func (m *AuthzMiddleware) ProcessResponse(ctx context.Context, req *middleware.S
 		return resp, nil
 	}
 
-	// If geofence filtering is enabled, filter results
-	if decision.Constraints.Geofence != nil && decision.Constraints.Geofence.FilterMode {
+	// If geofence filtering is enabled, filter results — unless the
+	// geofence was already pushed down as a CQL2 predicate, in which
+	// case the upstream has already filtered for us.
+	if decision.Constraints.Geofence != nil &&
+		decision.Constraints.Geofence.FilterMode &&
+		!decision.Constraints.GeofencePushedDown {
 		return filterResponseByGeofence(resp, decision.Constraints.Geofence)
 	}
 
@@ -122,6 +146,42 @@ func applyConstraints(req *middleware.STACRequest, constraints *AuthzConstraints
 	if len(constraints.DeniedCollections) > 0 {
 		req.Params["_denied_collections"] = constraints.DeniedCollections
 	}
+}
+
+// injectCQL2Filter merges policy CQL2 (including any geofence
+// push-down) with the client's filter and writes the combined
+// expression back into req.SearchReq.Filter in the original lang.
+//
+// Errors from push-down conversion or encoding are returned; parsing
+// the user's filter is best-effort — if it fails (e.g. the client
+// sent something unparseable) we still inject the policy filter
+// alone, since the upstream would have rejected the original anyway.
+func injectCQL2Filter(req *middleware.STACRequest, constraints *AuthzConstraints) error {
+	if _, err := maybePushDownGeofence(constraints); err != nil {
+		return err
+	}
+	policyExpr, err := parsePolicyCQL2(constraints)
+	if err != nil {
+		return err
+	}
+	userExpr, _ := parseUserCQL2(req.SearchReq.Filter)
+	merged := andNonNil(userExpr, policyExpr)
+	if merged == nil {
+		return nil
+	}
+	lang := req.SearchReq.FilterLang
+	if lang == "" {
+		lang = "cql2-text"
+	}
+	encoded, err := encodeForLang(merged, lang)
+	if err != nil {
+		return err
+	}
+	req.SearchReq.Filter = encoded
+	if req.SearchReq.FilterLang == "" {
+		req.SearchReq.FilterLang = "cql2-text"
+	}
+	return nil
 }
 
 // filterResponseByGeofence filters response items by geofence.
