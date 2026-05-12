@@ -1,0 +1,226 @@
+// Package integration contains end-to-end tests that exercise the
+// proxy middleware chain against an httptest upstream. These are not
+// included in the default `go test ./internal/...` run; invoke them
+// via `go test ./tests/integration/...`.
+package integration
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/middleware/authz"
+	"github.com/yourorg/stac-proxy/internal/proxy"
+	"github.com/yourorg/stac-proxy/internal/stac"
+)
+
+type capturedUpstream struct {
+	method string
+	path   string
+	body   []byte
+}
+
+func newUpstream(t *testing.T) (*httptest.Server, *capturedUpstream) {
+	t.Helper()
+	c := &capturedUpstream{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.method = r.Method
+		c.path = r.URL.Path
+		c.body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(`{"type":"FeatureCollection","features":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, c
+}
+
+// fixedEnforcer always returns the same decision; used to simulate an
+// OPA policy that emits a CQL2 filter constraint.
+type fixedEnforcer struct{ d *authz.AuthzDecision }
+
+func (e *fixedEnforcer) Name() string                                            { return "fixed" }
+func (e *fixedEnforcer) Authorize(_ context.Context, _ *authz.AuthzInput) (*authz.AuthzDecision, error) {
+	return e.d, nil
+}
+
+func TestIntegration_PolicyCQL2FlowsToUpstreamSingleOrigin(t *testing.T) {
+	srv, cap := newUpstream(t)
+
+	// Build the authz middleware with CQL2 injection enabled and a
+	// stubbed enforcer that emits a policy CQL2 filter.
+	mw := authz.NewAuthzMiddleware(authz.AuthzMiddlewareConfig{
+		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
+			Allowed: true,
+			Constraints: &authz.AuthzConstraints{
+				CQL2Filter: "eo:cloud_cover < 20",
+			},
+		}},
+		AllowAnonymous:       true,
+		CQL2InjectionEnabled: true,
+	})
+
+	// Build the single-origin proxy handler.
+	handler, err := proxy.NewHandler(proxy.Config{
+		UpstreamURL: srv.URL,
+		Timeout:     5,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	// Simulate an incoming GET /search with a client-supplied filter,
+	// after the server router has parsed it into SearchReq.
+	httpReq := httptest.NewRequest("GET", "/search?limit=10", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		RequestType: middleware.RequestTypeSearch,
+		SearchReq: &stac.SearchRequest{
+			Filter:     "datetime > '2025-01-01'",
+			FilterLang: "cql2-text",
+			Limit:      10,
+		},
+	}
+
+	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
+		t.Fatalf("authz ProcessRequest: %v", err)
+	}
+	if _, err := handler.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if cap.method != http.MethodPost {
+		t.Fatalf("upstream method = %q, want POST", cap.method)
+	}
+	if cap.path != "/search" {
+		t.Fatalf("upstream path = %q, want /search", cap.path)
+	}
+
+	// The upstream body should contain BOTH predicates AND-combined.
+	var body map[string]interface{}
+	if err := json.Unmarshal(cap.body, &body); err != nil {
+		t.Fatalf("upstream body not JSON: %v\n%s", err, cap.body)
+	}
+	filter, ok := body["filter"].(string)
+	if !ok {
+		t.Fatalf("upstream filter not a string: %T %v", body["filter"], body["filter"])
+	}
+	if !strings.Contains(filter, "eo:cloud_cover") {
+		t.Errorf("upstream missing policy predicate, got %q", filter)
+	}
+	if !strings.Contains(filter, "datetime") {
+		t.Errorf("upstream missing client predicate, got %q", filter)
+	}
+	if !strings.Contains(filter, "AND") {
+		t.Errorf("upstream filter not AND-combined: %q", filter)
+	}
+	if lang, _ := body["filter-lang"].(string); lang != "cql2-text" {
+		t.Errorf("upstream filter-lang = %q, want cql2-text", lang)
+	}
+}
+
+func TestIntegration_GeofencePushdownThroughProxy(t *testing.T) {
+	srv, cap := newUpstream(t)
+
+	polygon := map[string]interface{}{
+		"type": "Polygon",
+		"coordinates": []interface{}{
+			[]interface{}{
+				[]interface{}{-10.0, -10.0},
+				[]interface{}{10.0, -10.0},
+				[]interface{}{10.0, 10.0},
+				[]interface{}{-10.0, 10.0},
+				[]interface{}{-10.0, -10.0},
+			},
+		},
+	}
+
+	mw := authz.NewAuthzMiddleware(authz.AuthzMiddlewareConfig{
+		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
+			Allowed: true,
+			Constraints: &authz.AuthzConstraints{
+				Geofence: &authz.GeofenceConstraint{
+					AllowedArea: polygon,
+					FilterMode:  true,
+				},
+			},
+		}},
+		AllowAnonymous:       true,
+		CQL2InjectionEnabled: true,
+	})
+
+	handler, err := proxy.NewHandler(proxy.Config{UpstreamURL: srv.URL, Timeout: 5})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	httpReq := httptest.NewRequest("GET", "/search", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		RequestType: middleware.RequestTypeSearch,
+		SearchReq:   &stac.SearchRequest{Limit: 5},
+	}
+
+	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
+		t.Fatalf("authz ProcessRequest: %v", err)
+	}
+	if _, err := handler.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(cap.body, &body); err != nil {
+		t.Fatalf("upstream body not JSON: %v\n%s", err, cap.body)
+	}
+	filter, _ := body["filter"].(string)
+	if !strings.Contains(strings.ToUpper(filter), "S_INTERSECTS") {
+		t.Errorf("upstream filter missing S_INTERSECTS, got %q", filter)
+	}
+}
+
+func TestIntegration_DisabledByDefault(t *testing.T) {
+	srv, cap := newUpstream(t)
+
+	// CQL2InjectionEnabled NOT set => default off, no injection.
+	mw := authz.NewAuthzMiddleware(authz.AuthzMiddlewareConfig{
+		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
+			Allowed: true,
+			Constraints: &authz.AuthzConstraints{
+				CQL2Filter: "eo:cloud_cover < 20",
+			},
+		}},
+		AllowAnonymous: true,
+	})
+
+	handler, err := proxy.NewHandler(proxy.Config{UpstreamURL: srv.URL, Timeout: 5})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	httpReq := httptest.NewRequest("GET", "/search", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		RequestType: middleware.RequestTypeSearch,
+		SearchReq:   &stac.SearchRequest{},
+	}
+
+	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
+		t.Fatalf("authz ProcessRequest: %v", err)
+	}
+	if _, err := handler.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	// Body should not contain the policy filter — injection was off.
+	if strings.Contains(string(cap.body), "eo:cloud_cover") {
+		t.Errorf("policy filter leaked despite injection disabled: %s", cap.body)
+	}
+}
