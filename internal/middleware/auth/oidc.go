@@ -3,9 +3,14 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"strings"
 	"sync"
@@ -278,17 +283,62 @@ func parseJWK(jwk JWK) (interface{}, error) {
 	}
 }
 
-// parseRSAKey parses an RSA public key from JWK.
+// parseRSAKey reconstructs an *rsa.PublicKey from the n/e fields of
+// a JWK (RFC 7518 §6.3.1). Both are base64url-encoded big-endian
+// integers; we decode them with no padding and build the key.
 func parseRSAKey(jwk JWK) (interface{}, error) {
-	// Implementation would decode n and e from base64url and construct rsa.PublicKey
-	// For brevity, returning a placeholder error
-	return nil, errors.New("RSA key parsing not fully implemented")
+	if jwk.N == "" || jwk.E == "" {
+		return nil, errors.New("RSA JWK missing n or e")
+	}
+	nBytes, err := base64.RawURLEncoding.DecodeString(jwk.N)
+	if err != nil {
+		return nil, fmt.Errorf("RSA n decode: %w", err)
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(jwk.E)
+	if err != nil {
+		return nil, fmt.Errorf("RSA e decode: %w", err)
+	}
+	// Right-pad e to int. Common values are 65537 (3 bytes) or 3.
+	e := 0
+	for _, b := range eBytes {
+		e = e<<8 | int(b)
+	}
+	return &rsa.PublicKey{
+		N: new(big.Int).SetBytes(nBytes),
+		E: e,
+	}, nil
 }
 
-// parseECKey parses an EC public key from JWK.
+// parseECKey reconstructs an *ecdsa.PublicKey from the x/y/crv fields
+// of a JWK (RFC 7518 §6.2.1). Supported curves: P-256, P-384, P-521.
 func parseECKey(jwk JWK) (interface{}, error) {
-	// Implementation would decode x, y, crv and construct ecdsa.PublicKey
-	return nil, errors.New("EC key parsing not fully implemented")
+	if jwk.X == "" || jwk.Y == "" || jwk.Crv == "" {
+		return nil, errors.New("EC JWK missing x, y, or crv")
+	}
+	var curve elliptic.Curve
+	switch jwk.Crv {
+	case "P-256":
+		curve = elliptic.P256()
+	case "P-384":
+		curve = elliptic.P384()
+	case "P-521":
+		curve = elliptic.P521()
+	default:
+		return nil, fmt.Errorf("unsupported EC curve: %s", jwk.Crv)
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	if err != nil {
+		return nil, fmt.Errorf("EC x decode: %w", err)
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(jwk.Y)
+	if err != nil {
+		return nil, fmt.Errorf("EC y decode: %w", err)
+	}
+	return &ecdsa.PublicKey{
+		Curve: curve,
+		X:     new(big.Int).SetBytes(xBytes),
+		Y:     new(big.Int).SetBytes(yBytes),
+	}, nil
 }
 
 // extractRoles extracts roles from common JWT claim locations.

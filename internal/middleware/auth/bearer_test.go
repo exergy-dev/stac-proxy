@@ -816,7 +816,7 @@ func TestBearerProvider_KeyFunc_HMAC(t *testing.T) {
 	}
 }
 
-func TestBearerProvider_JWKSKeyFunc(t *testing.T) {
+func TestBearerProvider_JWKSKeyFunc_RejectsMissingKid(t *testing.T) {
 	t.Parallel()
 
 	provider, err := NewBearerProvider(BearerConfig{
@@ -826,17 +826,19 @@ func TestBearerProvider_JWKSKeyFunc(t *testing.T) {
 		t.Fatalf("failed to create provider: %v", err)
 	}
 
+	// Token has no kid header; JWKS lookup requires one to pick the
+	// right key, so we expect a friendly error rather than a network
+	// call.
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
 		"sub": "test",
 	})
 
-	// JWKS is not yet implemented, should return error
 	_, err = provider.jwksKeyFunc(token)
 	if err == nil {
-		t.Error("expected error for unimplemented JWKS, got nil")
+		t.Error("expected error for missing kid, got nil")
 	}
-	if !containsString(err.Error(), "not yet implemented") {
-		t.Errorf("expected 'not yet implemented' error, got %v", err)
+	if !containsString(err.Error(), "kid") {
+		t.Errorf("expected 'kid' in error, got %v", err)
 	}
 }
 

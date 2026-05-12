@@ -18,6 +18,7 @@ type BearerProvider struct {
 	issuer     string
 	audience   string
 	jwksURL    string
+	jwks       *JWKSClient // nil when using static Secret
 	keyFunc    jwt.Keyfunc
 	keyCache   sync.Map
 	claimsFunc func(claims jwt.MapClaims) (*Principal, error)
@@ -58,7 +59,9 @@ func NewBearerProvider(cfg BearerConfig) (*BearerProvider, error) {
 			return cfg.Secret, nil
 		}
 	} else if cfg.JWKSURL != "" {
-		// Use JWKS for key lookup
+		// Use JWKS for key lookup. The JWKSClient caches keys and
+		// refreshes on cache miss (covers the key-rotation case).
+		p.jwks = NewJWKSClient(cfg.JWKSURL, nil, time.Hour)
 		p.keyFunc = p.jwksKeyFunc
 	} else {
 		return nil, fmt.Errorf("either Secret or JWKSURL must be provided")
@@ -162,11 +165,25 @@ func (p *BearerProvider) Authenticate(ctx context.Context, req *http.Request) (*
 	return principal, nil
 }
 
-// jwksKeyFunc fetches keys from JWKS endpoint.
+// jwksKeyFunc resolves a token's signing key against the JWKS
+// endpoint. Returns the matching public key (RSA or EC) for the
+// token's `kid` header. A cache miss triggers a single coalesced
+// refresh of the JWKS document so key rotation works transparently.
 func (p *BearerProvider) jwksKeyFunc(token *jwt.Token) (interface{}, error) {
-	// TODO: Implement JWKS key fetching with caching
-	// For now, return an error indicating JWKS is not yet implemented
-	return nil, fmt.Errorf("JWKS key fetching not yet implemented")
+	if p.jwks == nil {
+		return nil, fmt.Errorf("jwks client not initialised")
+	}
+	kid, _ := token.Header["kid"].(string)
+	if kid == "" {
+		return nil, fmt.Errorf("token missing kid header")
+	}
+	switch token.Method.(type) {
+	case *jwt.SigningMethodRSA, *jwt.SigningMethodRSAPSS, *jwt.SigningMethodECDSA:
+		// ok — JWKS keys are RSA or EC.
+	default:
+		return nil, fmt.Errorf("unexpected signing method for JWKS: %v", token.Header["alg"])
+	}
+	return p.jwks.Key(context.Background(), kid)
 }
 
 // defaultClaimsFunc extracts a Principal from standard JWT claims.
