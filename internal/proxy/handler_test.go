@@ -1520,3 +1520,161 @@ func copySlice(s []interface{}) []interface{} {
 	}
 	return result
 }
+
+// captureUpstream stands up an httptest server that records the
+// inbound request method, path, raw query, and body so tests can
+// assert on what the proxy actually forwarded.
+type captured struct {
+	method string
+	path   string
+	query  string
+	body   []byte
+}
+
+func captureUpstream(t *testing.T) (*httptest.Server, *captured) {
+	t.Helper()
+	c := &captured{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.method = r.Method
+		c.path = r.URL.Path
+		c.query = r.URL.RawQuery
+		b, _ := io.ReadAll(r.Body)
+		c.body = b
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(`{"type":"FeatureCollection","features":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, c
+}
+
+func TestHandle_SearchReqReserialized(t *testing.T) {
+	srv, cap := captureUpstream(t)
+
+	handler, err := NewHandler(Config{UpstreamURL: srv.URL, Timeout: 5})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	httpReq := httptest.NewRequest("GET", "/search?limit=10", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		RequestType: middleware.RequestTypeSearch,
+		SearchReq: &stac.SearchRequest{
+			Filter:     "eo:cloud_cover < 20 AND datetime > '2025-01-01'",
+			FilterLang: "cql2-text",
+			Limit:      10,
+		},
+	}
+
+	if _, err := handler.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if cap.method != http.MethodPost {
+		t.Errorf("method = %q, want POST", cap.method)
+	}
+	if cap.path != "/search" {
+		t.Errorf("path = %q, want /search", cap.path)
+	}
+	if !strings.Contains(string(cap.body), "eo:cloud_cover") {
+		t.Errorf("body missing injected filter: %s", cap.body)
+	}
+	if !strings.Contains(string(cap.body), "filter-lang") {
+		t.Errorf("body missing filter-lang: %s", cap.body)
+	}
+}
+
+func TestHandle_SearchReqReserialized_ItemsPath(t *testing.T) {
+	srv, cap := captureUpstream(t)
+
+	handler, err := NewHandler(Config{UpstreamURL: srv.URL, Timeout: 5})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	httpReq := httptest.NewRequest("GET", "/collections/sentinel-2/items?limit=5", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		Collection:  "sentinel-2",
+		RequestType: middleware.RequestTypeItems,
+		SearchReq: &stac.SearchRequest{
+			Filter:     "a = 1",
+			FilterLang: "cql2-text",
+			Limit:      5,
+		},
+	}
+
+	if _, err := handler.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if cap.method != http.MethodPost {
+		t.Errorf("method = %q, want POST", cap.method)
+	}
+	if cap.path != "/collections/sentinel-2/items" {
+		t.Errorf("path = %q, want /collections/sentinel-2/items", cap.path)
+	}
+	if !strings.Contains(string(cap.body), `"filter":"a = 1"`) {
+		t.Errorf("body missing filter literal: %s", cap.body)
+	}
+}
+
+func TestHandle_NonSearchPassThrough(t *testing.T) {
+	srv, cap := captureUpstream(t)
+
+	handler, err := NewHandler(Config{UpstreamURL: srv.URL, Timeout: 5})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	httpReq := httptest.NewRequest("GET", "/collections/foo", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		Collection:  "foo",
+		RequestType: middleware.RequestTypeCollection,
+		// SearchReq nil
+	}
+
+	if _, err := handler.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if cap.method != http.MethodGet {
+		t.Errorf("method = %q, want GET (pass-through)", cap.method)
+	}
+	if cap.path != "/collections/foo" {
+		t.Errorf("path = %q, want /collections/foo", cap.path)
+	}
+	if len(cap.body) != 0 {
+		t.Errorf("body should be empty, got %q", cap.body)
+	}
+}
+
+func TestHandle_SearchReqNil_PassThrough(t *testing.T) {
+	srv, cap := captureUpstream(t)
+
+	handler, err := NewHandler(Config{UpstreamURL: srv.URL, Timeout: 5})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	// RequestTypeSearch but SearchReq nil should NOT re-serialize.
+	httpReq := httptest.NewRequest("GET", "/search", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		RequestType: middleware.RequestTypeSearch,
+		SearchReq:   nil,
+	}
+
+	if _, err := handler.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if cap.method != http.MethodGet {
+		t.Errorf("method = %q, want GET", cap.method)
+	}
+}

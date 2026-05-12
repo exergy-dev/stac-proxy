@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -56,13 +57,28 @@ func (h *Handler) Handle(ctx context.Context, req *middleware.STACRequest) (*mid
 	// Determine the path to forward
 	path := req.URL.Path
 
-	// Forward the request
+	// Default forwarding: pass body and method through unchanged.
+	method := req.Method
 	var body io.Reader
 	if req.Body != nil {
 		body = req.Body
 	}
 
-	resp, err := h.client.Do(ctx, req.Method, path, body)
+	// When middleware has produced a parsed SearchReq (search and item-search
+	// requests), re-serialize it as a POST body so upstream sees any
+	// mutations such as CQL2 filter injection. Without this step the raw
+	// GET query string would be forwarded and any middleware-applied
+	// changes to SearchReq.Filter would be silently dropped.
+	if req.SearchReq != nil && isSearchLike(req.RequestType) {
+		marshaled, err := json.Marshal(req.SearchReq)
+		if err != nil {
+			return nil, fmt.Errorf("re-serialize SearchReq: %w", err)
+		}
+		body = bytes.NewReader(marshaled)
+		method = http.MethodPost
+	}
+
+	resp, err := h.client.Do(ctx, method, path, body)
 	if err != nil {
 		return nil, fmt.Errorf("upstream request failed: %w", err)
 	}
@@ -87,6 +103,16 @@ func (h *Handler) Handle(ctx context.Context, req *middleware.STACRequest) (*mid
 	}
 
 	return stacResp, nil
+}
+
+// isSearchLike reports whether the request type is one that uses a
+// SearchRequest body shape (i.e. /search or /collections/{id}/items).
+func isSearchLike(rt middleware.RequestType) bool {
+	switch rt {
+	case middleware.RequestTypeSearch, middleware.RequestTypeItems:
+		return true
+	}
+	return false
 }
 
 // transformResponse rewrites links in the response to point to the proxy.
