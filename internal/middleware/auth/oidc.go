@@ -22,10 +22,8 @@ type OIDCProvider struct {
 	name       string
 	issuer     string
 	audience   string
-	jwksURL    string
-	httpClient *http.Client
 	jwks       *JWKSClient
-	claimsFunc func(claims map[string]interface{}) (*Principal, error)
+	claimsFunc func(claims jwt.MapClaims) (*Principal, error)
 }
 
 // OIDCConfig configures the OIDC provider.
@@ -35,7 +33,7 @@ type OIDCConfig struct {
 	Audience   string
 	JWKSURL    string
 	HTTPClient *http.Client
-	ClaimsFunc func(claims map[string]interface{}) (*Principal, error)
+	ClaimsFunc func(claims jwt.MapClaims) (*Principal, error)
 	CacheTTL   time.Duration
 }
 
@@ -62,23 +60,11 @@ func NewOIDCProvider(cfg OIDCConfig) (*OIDCProvider, error) {
 		return nil, errors.New("JWKS URL is required")
 	}
 
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
-
-	ttl := cfg.CacheTTL
-	if ttl == 0 {
-		ttl = 1 * time.Hour
-	}
-
 	return &OIDCProvider{
 		name:       cfg.Name,
 		issuer:     cfg.Issuer,
 		audience:   cfg.Audience,
-		jwksURL:    cfg.JWKSURL,
-		jwks:       NewJWKSClient(cfg.JWKSURL, client, ttl),
-		httpClient: client,
+		jwks:       NewJWKSClient(cfg.JWKSURL, cfg.HTTPClient, cfg.CacheTTL),
 		claimsFunc: cfg.ClaimsFunc,
 	}, nil
 }

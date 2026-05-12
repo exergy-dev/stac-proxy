@@ -6,6 +6,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- `auth.OIDCConfig.ClaimsFunc` signature aligned with
+  `auth.BearerConfig.ClaimsFunc` — accepts `jwt.MapClaims` instead
+  of `map[string]interface{}`. Source-only change: `jwt.MapClaims`
+  is a type alias for the same map shape, so existing callers
+  compile after a single type-name swap.
+
+### Removed
+
+- Dead fields on `OIDCProvider` (`jwksURL`, `httpClient`) and the
+  redundant `CacheTTL` zero-default in `NewOIDCProvider` —
+  `JWKSClient` owns both the URL and the TTL fallback after the
+  v0.1 merge.
+
 ## [0.1.0] — 2026-05-11
 
 First production-ready release. Single binary, opt-in CQL2 filter
