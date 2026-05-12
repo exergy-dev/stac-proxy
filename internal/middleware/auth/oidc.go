@@ -7,13 +7,11 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -21,12 +19,12 @@ import (
 
 // OIDCProvider validates tokens using OIDC/JWKS.
 type OIDCProvider struct {
-	name         string
+	name       string
 	issuer     string
 	audience   string
 	jwksURL    string
 	httpClient *http.Client
-	keyCache   *jwksCache
+	jwks       *JWKSClient
 	claimsFunc func(claims map[string]interface{}) (*Principal, error)
 }
 
@@ -39,17 +37,6 @@ type OIDCConfig struct {
 	HTTPClient *http.Client
 	ClaimsFunc func(claims map[string]interface{}) (*Principal, error)
 	CacheTTL   time.Duration
-}
-
-// jwksCache caches JWKS keys.
-type jwksCache struct {
-	mu       sync.RWMutex
-	keys     map[string]interface{}
-	expiry   time.Time
-	ttl      time.Duration
-	jwksURL  string
-	client   *http.Client
-	fetching sync.Mutex
 }
 
 // JWKSResponse represents the JWKS response.
@@ -86,16 +73,11 @@ func NewOIDCProvider(cfg OIDCConfig) (*OIDCProvider, error) {
 	}
 
 	return &OIDCProvider{
-		name:     cfg.Name,
-		issuer:   cfg.Issuer,
-		audience: cfg.Audience,
-		jwksURL:  cfg.JWKSURL,
-		keyCache: &jwksCache{
-			keys:    make(map[string]interface{}),
-			ttl:     ttl,
-			jwksURL: cfg.JWKSURL,
-			client:  client,
-		},
+		name:       cfg.Name,
+		issuer:     cfg.Issuer,
+		audience:   cfg.Audience,
+		jwksURL:    cfg.JWKSURL,
+		jwks:       NewJWKSClient(cfg.JWKSURL, client, ttl),
 		httpClient: client,
 		claimsFunc: cfg.ClaimsFunc,
 	}, nil
@@ -134,8 +116,7 @@ func (p *OIDCProvider) Authenticate(ctx context.Context, req *http.Request) (*Pr
 		return nil, errors.New("token missing kid header")
 	}
 
-	// Get the key from cache
-	key, err := p.keyCache.getKey(ctx, kid)
+	key, err := p.jwks.Key(ctx, kid)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get signing key: %w", err)
 	}
@@ -193,82 +174,6 @@ func (p *OIDCProvider) Authenticate(ctx context.Context, req *http.Request) (*Pr
 	}
 
 	return principal, nil
-}
-
-// getKey retrieves a signing key from the cache or fetches from JWKS endpoint.
-func (c *jwksCache) getKey(ctx context.Context, kid string) (interface{}, error) {
-	c.mu.RLock()
-	if time.Now().Before(c.expiry) {
-		if key, ok := c.keys[kid]; ok {
-			c.mu.RUnlock()
-			return key, nil
-		}
-	}
-	c.mu.RUnlock()
-
-	// Need to refresh
-	if err := c.refresh(ctx); err != nil {
-		return nil, err
-	}
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	key, ok := c.keys[kid]
-	if !ok {
-		return nil, fmt.Errorf("key %s not found in JWKS", kid)
-	}
-	return key, nil
-}
-
-// refresh fetches keys from the JWKS endpoint.
-func (c *jwksCache) refresh(ctx context.Context) error {
-	c.fetching.Lock()
-	defer c.fetching.Unlock()
-
-	// Double-check after acquiring lock
-	c.mu.RLock()
-	if time.Now().Before(c.expiry) {
-		c.mu.RUnlock()
-		return nil
-	}
-	c.mu.RUnlock()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.jwksURL, nil)
-	if err != nil {
-		return err
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("JWKS request failed with status %d", resp.StatusCode)
-	}
-
-	var jwks JWKSResponse
-	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
-		return err
-	}
-
-	keys := make(map[string]interface{})
-	for _, jwk := range jwks.Keys {
-		key, err := parseJWK(jwk)
-		if err != nil {
-			continue // Skip invalid keys
-		}
-		keys[jwk.Kid] = key
-	}
-
-	c.mu.Lock()
-	c.keys = keys
-	c.expiry = time.Now().Add(c.ttl)
-	c.mu.Unlock()
-
-	return nil
 }
 
 // parseJWK parses a JWK into a crypto key.
