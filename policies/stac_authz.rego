@@ -122,9 +122,25 @@ constraints := c if {
 
 # Example: clamp cloud cover for non-premium users so the upstream
 # returns clearer scenes only. Premium users get an empty filter.
+#
+# Per-collection / per-method gating: the AuthzInput exposes
+# `input.request.method`, `input.request.request_type`, and
+# `input.resource.collection`. Branch on them here when different
+# collections need different filters or when GET vs POST should
+# diverge. Example below clamps cloud cover only for read operations
+# on the sentinel-2-l2a collection.
 cql2_filter := "eo:cloud_cover < 20" if {
     input.principal
     not "premium" in input.principal.roles
+    input.request.method == "GET"
+    input.resource.collection == "sentinel-2-l2a"
+}
+
+cql2_filter := "eo:cloud_cover < 20" if {
+    input.principal
+    not "premium" in input.principal.roles
+    input.request.method == "POST"
+    input.request.request_type == "search"
 }
 
 cql2_filter := "" if {
