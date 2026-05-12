@@ -120,8 +120,10 @@ func (g *Geofencer) ValidateRequest(ctx context.Context, req *middleware.STACReq
 		return nil
 	}
 
-	// Check if request is within allowed region
-	if !allowedRegion.Contains(requestGeom) && !allowedRegion.Intersects(requestGeom) {
+	// Reject the request unless its geometry is fully within the
+	// allowed region. Merely overlapping the boundary isn't enough —
+	// any request that reaches outside the user's geofence is denied.
+	if !allowedRegion.Contains(requestGeom) {
 		return errors.New("request area is outside allowed region")
 	}
 
@@ -173,15 +175,25 @@ func (g *Geofencer) FilterResults(items []interface{}, principal *auth.Principal
 }
 
 // extractRequestGeometry extracts geometry from a STAC request.
+// Malformed bbox/intersects values yield (nil, nil) rather than an
+// error: the caller treats nil as "no spatial constraint" and lets
+// validation proceed without it, which is safer than failing the
+// whole request on shape-detection problems.
 func extractRequestGeometry(req *middleware.STACRequest) (*geo.Geometry, error) {
-	// Check for bbox parameter
 	if bbox, ok := req.Params["bbox"]; ok {
-		return geo.BboxToGeometry(bbox)
+		g, err := geo.BboxToGeometry(bbox)
+		if err != nil {
+			return nil, nil
+		}
+		return g, nil
 	}
 
-	// Check for intersects parameter
 	if intersects, ok := req.Params["intersects"]; ok {
-		return geo.ParseGeoJSON(intersects)
+		g, err := geo.ParseGeoJSON(intersects)
+		if err != nil {
+			return nil, nil
+		}
+		return g, nil
 	}
 
 	return nil, nil

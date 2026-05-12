@@ -596,7 +596,12 @@ func TestClient_ContextCancellation(t *testing.T) {
 			setupFn: func() (context.Context, context.CancelFunc) {
 				return context.WithTimeout(context.Background(), 100*time.Millisecond)
 			},
-			serverDelay: 0, // Will use retry logic
+			// Server slower than the context deadline so the request
+			// blocks and the deadline trips. (Original case used a
+			// 0-delay server expecting retries to kick in, but the
+			// client only retries on configured status codes; without
+			// that setup we exercise the cancel via a slow upstream.)
+			serverDelay: 500 * time.Millisecond,
 			wantErr:     true,
 			errContains: "context deadline exceeded",
 		},

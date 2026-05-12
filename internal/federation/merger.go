@@ -32,12 +32,13 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 		return results[i].Priority < results[j].Priority
 	})
 
-	// Track items by ID for conflict resolution
+	// Track items by ID for conflict resolution. itemsByID gives us
+	// O(1) duplicate detection within a merge call — we don't need the
+	// bloom-based deduplicator here, which is reserved for cross-page
+	// dedup in paginated search.
 	itemsByID := make(map[string]*itemWithOrigin)
-	var orderedItems []stac.Item
+	var keyOrder []string // insertion order so results are deterministic
 	var totalMatched int
-
-	m.deduplicator.Reset()
 
 	for _, result := range results {
 		if result.Error != nil {
@@ -51,18 +52,13 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 		for _, item := range result.Items {
 			key := m.itemKey(result.OriginID, item)
 
-			// Check for duplicate
-			if m.deduplicator.IsDuplicate(key) {
-				continue
-			}
-
 			if existing, exists := itemsByID[key]; exists {
-				// Handle conflict
+				// Handle conflict and persist the merged result.
 				merged, err := m.resolveConflict(existing, &item, result.OriginID)
 				if err != nil {
 					return nil, err
 				}
-				itemsByID[key].item = merged
+				existing.item = merged
 			} else {
 				// New item
 				transformed := m.transformItem(item, result.OriginID)
@@ -71,13 +67,16 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 					originID: result.OriginID,
 					priority: result.Priority,
 				}
-				orderedItems = append(orderedItems, transformed)
+				keyOrder = append(keyOrder, key)
 			}
 		}
 	}
 
-	// Apply limit from request
-	items := orderedItems
+	// Materialise items from the canonical map so merges are observed.
+	items := make([]stac.Item, 0, len(keyOrder))
+	for _, k := range keyOrder {
+		items = append(items, itemsByID[k].item)
+	}
 	if req.Limit > 0 && len(items) > req.Limit {
 		items = items[:req.Limit]
 	}

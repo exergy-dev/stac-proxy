@@ -101,7 +101,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -128,7 +128,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins:         make(map[string]*OriginClient),
+			Origins:         make(map[string]Searcher),
 			Merger:          NewResultMerger(ConflictPriorityWins),
 			DefaultPageSize: 50,
 			MaxPageSize:     500,
@@ -149,7 +149,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins:         make(map[string]*OriginClient),
+			Origins:         make(map[string]Searcher),
 			Merger:          NewResultMerger(ConflictFirstWins),
 			DefaultPageSize: 0,
 			MaxPageSize:     0,
@@ -170,7 +170,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins:         make(map[string]*OriginClient),
+			Origins:         make(map[string]Searcher),
 			Merger:          NewResultMerger(ConflictFirstWins),
 			DefaultPageSize: -10,
 			MaxPageSize:     -100,
@@ -190,7 +190,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 	t.Run("with origins", func(t *testing.T) {
 		t.Parallel()
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": newMockSearchable("origin1", 1, nil),
 			"origin2": newMockSearchable("origin2", 2, nil),
 		}
@@ -211,7 +211,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  nil,
 		}
 
@@ -236,7 +236,7 @@ func TestSearch_NoCursor(t *testing.T) {
 			return items, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -286,7 +286,7 @@ func TestSearch_NoCursor(t *testing.T) {
 			}, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 			"origin2": origin2,
 		}
@@ -318,7 +318,7 @@ func TestSearch_NoCursor(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -350,7 +350,7 @@ func TestSearch_NoCursor(t *testing.T) {
 			return items, "next-token", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -402,7 +402,7 @@ func TestSearch_WithCursor(t *testing.T) {
 			}, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -448,7 +448,7 @@ func TestSearch_WithCursor(t *testing.T) {
 			}, "token", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -486,7 +486,7 @@ func TestSearch_InvalidCursor(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -504,7 +504,7 @@ func TestSearch_InvalidCursor(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -552,7 +552,7 @@ func TestFetchFromOrigins(t *testing.T) {
 			return []*stac.Item{paginationTestItem("item2", time.Now())}, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 			"origin2": origin2,
 		}
@@ -594,7 +594,7 @@ func TestFetchFromOrigins(t *testing.T) {
 			return []*stac.Item{paginationTestItem("item2", time.Now())}, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 			"origin2": origin2,
 		}
@@ -641,7 +641,7 @@ func TestFetchFromOrigins(t *testing.T) {
 			return []*stac.Item{paginationTestItem("item1", time.Now())}, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -668,7 +668,7 @@ func TestFetchFromOrigins(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -704,7 +704,7 @@ func TestFetchFromOrigins(t *testing.T) {
 			return []*stac.Item{paginationTestItem("item1", time.Now())}, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -733,7 +733,7 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -766,7 +766,7 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -799,7 +799,7 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -839,7 +839,7 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -868,7 +868,7 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -899,7 +899,7 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -925,7 +925,7 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 
 		cfg := PaginatedSearchConfig{
-			Origins: make(map[string]*OriginClient),
+			Origins: make(map[string]Searcher),
 			Merger:  NewResultMerger(ConflictFirstWins),
 		}
 
@@ -957,13 +957,13 @@ func TestHashSearchRequest(t *testing.T) {
 
 		req1 := &stac.SearchRequest{
 			Collections: []string{"col1", "col2"},
-			Bbox:        []float64{-10, -10, 10, 10},
+			BBox:        []float64{-10, -10, 10, 10},
 			Datetime:    "2024-01-01T00:00:00Z/2024-12-31T23:59:59Z",
 		}
 
 		req2 := &stac.SearchRequest{
 			Collections: []string{"col1", "col2"},
-			Bbox:        []float64{-10, -10, 10, 10},
+			BBox:        []float64{-10, -10, 10, 10},
 			Datetime:    "2024-01-01T00:00:00Z/2024-12-31T23:59:59Z",
 		}
 
@@ -1020,8 +1020,8 @@ func TestHashSearchRequest(t *testing.T) {
 	t.Run("bbox affects hash", func(t *testing.T) {
 		t.Parallel()
 
-		req1 := &stac.SearchRequest{Bbox: []float64{-10, -10, 10, 10}}
-		req2 := &stac.SearchRequest{Bbox: []float64{-20, -20, 20, 20}}
+		req1 := &stac.SearchRequest{BBox: []float64{-10, -10, 10, 10}}
+		req2 := &stac.SearchRequest{BBox: []float64{-20, -20, 20, 20}}
 
 		hash1 := hashSearchRequest(req1)
 		hash2 := hashSearchRequest(req2)
@@ -1072,7 +1072,7 @@ func TestCloneSearchRequest(t *testing.T) {
 
 		original := &stac.SearchRequest{
 			Collections: []string{"col1", "col2"},
-			Bbox:        []float64{-10, -10, 10, 10},
+			BBox:        []float64{-10, -10, 10, 10},
 			Limit:       10,
 		}
 
@@ -1090,7 +1090,7 @@ func TestCloneSearchRequest(t *testing.T) {
 			t.Error("collections should be copied")
 		}
 
-		if len(cloned.Bbox) != len(original.Bbox) {
+		if len(cloned.BBox) != len(original.BBox) {
 			t.Error("bbox should be copied")
 		}
 	})
@@ -1112,13 +1112,13 @@ func TestCloneSearchRequest(t *testing.T) {
 	t.Run("no shared bbox slice", func(t *testing.T) {
 		t.Parallel()
 
-		original := &stac.SearchRequest{Bbox: []float64{-10, -10, 10, 10}}
+		original := &stac.SearchRequest{BBox: []float64{-10, -10, 10, 10}}
 		cloned := cloneSearchRequest(original)
 
 		// Modify original
-		original.Bbox[0] = -999
+		original.BBox[0] = -999
 
-		if cloned.Bbox[0] == -999 {
+		if cloned.BBox[0] == -999 {
 			t.Error("clone should not share bbox slice")
 		}
 	})
@@ -1142,7 +1142,7 @@ func TestCloneSearchRequest(t *testing.T) {
 
 		original := &stac.SearchRequest{
 			Collections: nil,
-			Bbox:        nil,
+			BBox:        nil,
 			IDs:         nil,
 		}
 
@@ -1152,7 +1152,7 @@ func TestCloneSearchRequest(t *testing.T) {
 			t.Error("nil collections should remain nil")
 		}
 
-		if cloned.Bbox != nil {
+		if cloned.BBox != nil {
 			t.Error("nil bbox should remain nil")
 		}
 
@@ -1199,7 +1199,7 @@ func TestLimitEnforcement(t *testing.T) {
 			return items, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -1234,7 +1234,7 @@ func TestLimitEnforcement(t *testing.T) {
 			return []*stac.Item{paginationTestItem("item1", time.Now())}, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -1265,7 +1265,7 @@ func TestLimitEnforcement(t *testing.T) {
 			return []*stac.Item{paginationTestItem("item1", time.Now())}, "", "", nil
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -1306,7 +1306,7 @@ func TestContextCancellation(t *testing.T) {
 			}
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -1349,7 +1349,7 @@ func TestContextCancellation(t *testing.T) {
 			}
 		})
 
-		origins := map[string]*OriginClient{
+		origins := map[string]Searcher{
 			"origin1": origin1,
 		}
 
@@ -1386,17 +1386,16 @@ func TestGetDatetime(t *testing.T) {
 	t.Run("extracts valid datetime", func(t *testing.T) {
 		t.Parallel()
 
+		dt := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 		item := &stac.Item{
-			ID: "item1",
-			Properties: map[string]interface{}{
-				"datetime": "2024-01-01T00:00:00Z",
-			},
+			ID:         "item1",
+			Properties: stac.Properties{DateTime: &dt},
 		}
 
-		dt := getDatetime(item)
+		got := getDatetime(item)
 
-		if dt != "2024-01-01T00:00:00Z" {
-			t.Errorf("expected datetime '2024-01-01T00:00:00Z', got %q", dt)
+		if got != "2024-01-01T00:00:00Z" {
+			t.Errorf("expected datetime '2024-01-01T00:00:00Z', got %q", got)
 		}
 	})
 
@@ -1405,45 +1404,43 @@ func TestGetDatetime(t *testing.T) {
 
 		item := &stac.Item{
 			ID:         "item1",
-			Properties: map[string]interface{}{},
+			Properties: stac.Properties{},
 		}
 
-		dt := getDatetime(item)
-
-		if dt != "" {
-			t.Errorf("expected empty datetime, got %q", dt)
+		if got := getDatetime(item); got != "" {
+			t.Errorf("expected empty datetime, got %q", got)
 		}
 	})
 
-	t.Run("returns empty for non-string datetime", func(t *testing.T) {
+	t.Run("extracts datetime from Extra", func(t *testing.T) {
 		t.Parallel()
 
 		item := &stac.Item{
 			ID: "item1",
-			Properties: map[string]interface{}{
-				"datetime": 12345,
+			Properties: stac.Properties{
+				Extra: map[string]interface{}{
+					"datetime": "2024-02-02T00:00:00Z",
+				},
 			},
 		}
 
-		dt := getDatetime(item)
-
-		if dt != "" {
-			t.Errorf("expected empty datetime for non-string, got %q", dt)
+		if got := getDatetime(item); got != "2024-02-02T00:00:00Z" {
+			t.Errorf("expected datetime from Extra, got %q", got)
 		}
 	})
 
-	t.Run("returns empty for nil properties", func(t *testing.T) {
+	t.Run("returns empty for non-string Extra datetime", func(t *testing.T) {
 		t.Parallel()
 
 		item := &stac.Item{
-			ID:         "item1",
-			Properties: nil,
+			ID: "item1",
+			Properties: stac.Properties{
+				Extra: map[string]interface{}{"datetime": 12345},
+			},
 		}
 
-		dt := getDatetime(item)
-
-		if dt != "" {
-			t.Errorf("expected empty datetime for nil properties, got %q", dt)
+		if got := getDatetime(item); got != "" {
+			t.Errorf("expected empty datetime for non-string, got %q", got)
 		}
 	})
 }

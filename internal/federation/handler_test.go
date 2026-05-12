@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -988,7 +989,7 @@ func TestParseSearchRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			var bodyReader *bytes.Reader
+			var bodyReader io.Reader
 			if tt.body != nil {
 				if str, ok := tt.body.(string); ok {
 					bodyReader = bytes.NewReader([]byte(str))

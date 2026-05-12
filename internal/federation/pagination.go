@@ -13,9 +13,45 @@ import (
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
+// Searcher is the minimal interface PaginatedSearcher needs from each
+// origin: execute a search request and return items plus pagination
+// tokens. *OriginClient is adapted to this interface via
+// OriginClientSearcher; tests provide their own implementations.
+type Searcher interface {
+	Search(ctx context.Context, req *stac.SearchRequest) (items []*stac.Item, nextToken string, nextURL string, err error)
+}
+
+// OriginClientSearcher wraps a *OriginClient so it satisfies Searcher
+// by translating the FeatureCollection return into the (items,
+// nextToken, nextURL, err) shape that the paginator works in.
+type OriginClientSearcher struct{ Client *OriginClient }
+
+// Search executes the underlying client's search and extracts items
+// plus the "next" link, if any. nextToken is currently always empty
+// since OriginClient.Search doesn't surface upstream tokens; the
+// next-page URL is the source of truth for follow-up requests.
+func (o OriginClientSearcher) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
+	fc, err := o.Client.Search(ctx, req)
+	if err != nil || fc == nil {
+		return nil, "", "", err
+	}
+	items := make([]*stac.Item, 0, len(fc.Features))
+	for i := range fc.Features {
+		items = append(items, &fc.Features[i])
+	}
+	var nextURL string
+	for _, link := range fc.Links {
+		if link.Rel == "next" {
+			nextURL = link.Href
+			break
+		}
+	}
+	return items, "", nextURL, nil
+}
+
 // PaginatedSearcher handles paginated search across multiple origins.
 type PaginatedSearcher struct {
-	origins      map[string]*OriginClient
+	origins      map[string]Searcher
 	merger       *ResultMerger
 	deduplicator *ItemDeduplicator
 	pageSize     int
@@ -24,7 +60,7 @@ type PaginatedSearcher struct {
 
 // PaginatedSearchConfig configures paginated search.
 type PaginatedSearchConfig struct {
-	Origins         map[string]*OriginClient
+	Origins         map[string]Searcher
 	Merger          *ResultMerger
 	DefaultPageSize int
 	MaxPageSize     int
@@ -199,24 +235,8 @@ func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.Sear
 				}
 			}
 
-			// Execute search
-			fc, err := origin.Search(ctx, originReq)
-
-			var items []*stac.Item
-			var nextToken, nextURL string
-			if err == nil && fc != nil {
-				// Convert Features to []*stac.Item
-				for i := range fc.Features {
-					items = append(items, &fc.Features[i])
-				}
-				// Extract pagination links if present
-				for _, link := range fc.Links {
-					if link.Rel == "next" {
-						nextURL = link.Href
-						break
-					}
-				}
-			}
+			// Execute search via the Searcher interface
+			items, nextToken, nextURL, err := origin.Search(ctx, originReq)
 
 			results[idx] = originFetchResult{
 				OriginID:  id,

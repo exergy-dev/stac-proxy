@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"sort"
 	"sync"
 
 	"github.com/open-policy-agent/opa/rego"
@@ -105,6 +107,10 @@ constraints = {}
 `
 
 // prepareQuery compiles the Rego modules and prepares the query.
+// When multiple modules declare the same `default <rule>` in the same
+// package, OPA rejects the bundle. Loading multiple .rego files into
+// a single package is a common operator pattern, so we dedupe such
+// declarations textually: the first occurrence wins.
 func (e *EmbeddedOPAEnforcer) prepareQuery(modules map[string]string) error {
 	ctx := context.Background()
 
@@ -113,7 +119,8 @@ func (e *EmbeddedOPAEnforcer) prepareQuery(modules map[string]string) error {
 		rego.Query(e.queryString),
 	}
 
-	for name, content := range modules {
+	cleaned := dedupeDefaultRules(modules)
+	for name, content := range cleaned {
 		options = append(options, rego.Module(name, content))
 	}
 
@@ -129,6 +136,52 @@ func (e *EmbeddedOPAEnforcer) prepareQuery(modules map[string]string) error {
 	e.mu.Unlock()
 
 	return nil
+}
+
+// defaultRulePattern matches an entire Rego `default <name> [:=|=] <expr>`
+// line, capturing the rule name. Trailing newline is consumed so
+// removing the line doesn't leave a blank that re-parses oddly.
+var defaultRulePattern = regexp.MustCompile(`(?m)^[ \t]*default[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?::=|=)[^\n]*\n?`)
+
+// dedupeDefaultRules scans every module for `default <rule>`
+// declarations and strips later occurrences so OPA's "multiple
+// default rules" error doesn't fire when operators legitimately split
+// policies across files. Modules are processed in a deterministic
+// (lexicographic by name) order so the outcome is reproducible.
+func dedupeDefaultRules(modules map[string]string) map[string]string {
+	names := make([]string, 0, len(modules))
+	for n := range modules {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	seen := make(map[string]bool)
+	out := make(map[string]string, len(modules))
+	for _, name := range names {
+		content := modules[name]
+		// Replace each matched `default <x>` line either by keeping it
+		// (first time we've seen <x>) or by removing it.
+		content = defaultRulePattern.ReplaceAllStringFunc(content, func(line string) string {
+			m := defaultRulePattern.FindStringSubmatch(line)
+			if len(m) < 2 {
+				return line
+			}
+			rule := m[1]
+			if seen[rule] {
+				return "" // drop subsequent default for the same rule
+			}
+			seen[rule] = true
+			return line
+		})
+		// A wholly-stripped line leaves an orphan tail (the RHS).
+		// Strip those lines too: any line that starts with whitespace
+		// and an assignment/operand we can't easily classify is left
+		// alone — but bare `default` removal is captured by the regex.
+		// In practice the trailing `= true` is on the same line, so
+		// ReplaceAllStringFunc removes the entire `default x = y` line.
+		out[name] = content
+	}
+	return out
 }
 
 // Name returns the enforcer name.

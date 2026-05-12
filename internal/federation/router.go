@@ -57,20 +57,23 @@ func (r *CollectionRouter) Route(collections []string) []*Origin {
 		return result
 	}
 
-	// Find origins that serve any of the requested collections
+	// Find origins that serve any of the requested collections. Both
+	// explicit mappings and implicit (no-collection-list) origins are
+	// considered for every collection — explicit origins are not
+	// short-circuit-exclusive.
 	originSet := make(map[string]*Origin)
 	for _, collID := range collections {
-		// Check explicit mappings
+		// Explicit mappings.
 		if origins, ok := r.collectionToOrigins[collID]; ok {
 			for _, o := range origins {
 				if o.Enabled {
 					originSet[o.ID] = o
 				}
 			}
-			continue
 		}
 
-		// For origins without explicit collection lists, they might serve it
+		// Implicit: origins without explicit collection lists may serve
+		// any collection that isn't excluded.
 		for _, o := range r.allOrigins {
 			if !o.Enabled {
 				continue
@@ -159,7 +162,7 @@ func (r *CollectionRouter) GetCollectionOrigins(collectionID string) []*Origin {
 	}
 
 	// Check origins without explicit lists
-	var result []*Origin
+	result := make([]*Origin, 0)
 	for _, o := range r.allOrigins {
 		if o.Enabled && len(o.Collections) == 0 && !r.isExcluded(o, collectionID) {
 			result = append(result, o)
@@ -183,7 +186,7 @@ func (r *CollectionRouter) EnabledOrigins() []*Origin {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	var result []*Origin
+	result := make([]*Origin, 0)
 	for _, o := range r.allOrigins {
 		if o.Enabled {
 			result = append(result, o)

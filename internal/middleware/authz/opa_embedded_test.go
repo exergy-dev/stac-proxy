@@ -223,6 +223,8 @@ max_results = 100 {
 	input.principal.groups[_] == "premium-users"
 }
 
+default geofence := null
+
 geofence = {
 	"allowed_area": {
 		"type": "Polygon",

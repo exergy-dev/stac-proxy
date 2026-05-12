@@ -53,6 +53,9 @@ func WithTransport(transport http.RoundTripper) ClientOption {
 
 // NewClient creates a new proxy client.
 func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
+	if baseURL == "" {
+		return nil, fmt.Errorf("invalid base URL: must not be empty")
+	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base URL: %w", err)
@@ -78,9 +81,16 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	return c, nil
 }
 
-// Do executes an HTTP request to the upstream server.
+// Do executes an HTTP request to the upstream server. `path` may
+// include a query string (e.g. "/items?limit=10"); it's parsed so the
+// query is preserved when resolving against the base URL rather than
+// being escaped into the path component.
 func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	reqURL := c.baseURL.ResolveReference(&url.URL{Path: path})
+	ref, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path %q: %w", path, err)
+	}
+	reqURL := c.baseURL.ResolveReference(ref)
 
 	req, err := http.NewRequestWithContext(ctx, method, reqURL.String(), body)
 	if err != nil {

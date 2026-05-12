@@ -478,7 +478,7 @@ func TestValidateRequest(t *testing.T) {
 				ID:    "user1",
 				Roles: []string{},
 			},
-			wantErr: false, // Intersects is allowed
+			wantErr: true, // request escapes the allowed region → rejected
 		},
 		{
 			name: "bbox completely outside allowed region",
@@ -623,21 +623,21 @@ func TestFilterResults(t *testing.T) {
 					"id": "item1",
 					"geometry": map[string]interface{}{
 						"type":        "Point",
-						"coordinates": []float64{0, 0},
+						"coordinates": []float64{-3, -3}, // inside allowed, outside denied
 					},
 				},
 				map[string]interface{}{
 					"id": "item2",
 					"geometry": map[string]interface{}{
 						"type":        "Point",
-						"coordinates": []float64{50, 50}, // Outside region
+						"coordinates": []float64{50, 50}, // outside allowed
 					},
 				},
 				map[string]interface{}{
 					"id": "item3",
 					"geometry": map[string]interface{}{
 						"type":        "Point",
-						"coordinates": []float64{5, 5},
+						"coordinates": []float64{7, 7}, // inside allowed, outside denied
 					},
 				},
 			},
@@ -675,7 +675,7 @@ func TestFilterResults(t *testing.T) {
 					"id": "item2",
 					"geometry": map[string]interface{}{
 						"type":        "Point",
-						"coordinates": []float64{0, 0},
+						"coordinates": []float64{-3, -3},
 					},
 				},
 			},
@@ -718,7 +718,7 @@ func TestFilterResults(t *testing.T) {
 					"id": "valid",
 					"geometry": map[string]interface{}{
 						"type":        "Point",
-						"coordinates": []float64{0, 0},
+						"coordinates": []float64{-3, -3},
 					},
 				},
 			},

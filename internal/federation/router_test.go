@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -1139,7 +1140,6 @@ func TestRouterConcurrency(t *testing.T) {
 
 		// Concurrent writers
 		for i := 0; i < 5; i++ {
-			id := i
 			go func() {
 				for j := 0; j < 100; j++ {
 					router.UpdateFromDiscovery("origin-1", []string{"coll-a", "coll-b"})
@@ -1248,10 +1248,10 @@ func TestRouterComplexScenarios(t *testing.T) {
 		t.Parallel()
 		router := NewCollectionRouter()
 
-		// Create origin with 1000 collections
+		// Create origin with 1000 unique collections.
 		collections := make([]string, 1000)
 		for i := 0; i < 1000; i++ {
-			collections[i] = "coll-" + string(rune('0'+i%10)) + string(rune('0'+(i/10)%10))
+			collections[i] = fmt.Sprintf("coll-%03d", i)
 		}
 
 		origin1 := testOrigin("origin-1", routerWithCollections(collections...))
@@ -1262,7 +1262,7 @@ func TestRouterComplexScenarios(t *testing.T) {
 		}
 
 		// Route to one of them
-		results := router.Route([]string{"coll-00"})
+		results := router.Route([]string{"coll-000"})
 		if len(results) != 1 {
 			t.Errorf("results length = %d, want 1", len(results))
 		}

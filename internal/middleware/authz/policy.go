@@ -160,8 +160,10 @@ func (e *PolicyEnforcer) matches(policy *Policy, input *AuthzInput) bool {
 		return false
 	}
 
-	// Check action matcher
-	if len(policy.Actions) > 0 && !e.matchesAction(policy.Actions, input.Request) {
+	// Check action matcher. An empty Actions slice is interpreted as
+	// "no actions allowed" (fail-closed) rather than "no constraint";
+	// callers wanting to match all actions should use ["*"].
+	if policy.Actions != nil && !e.matchesAction(policy.Actions, input.Request) {
 		return false
 	}
 

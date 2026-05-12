@@ -127,9 +127,11 @@ func DecodeCursor(encoded string) (*FederatedCursor, error) {
 	return &cursor, nil
 }
 
-// IsExpired checks if the cursor has expired.
+// IsExpired checks if the cursor has expired. A cursor is considered
+// expired at the boundary (now >= ExpiresAt) so callers don't need
+// sub-second precision to detect the transition.
 func (c *FederatedCursor) IsExpired() bool {
-	return time.Now().Unix() > c.ExpiresAt
+	return time.Now().Unix() >= c.ExpiresAt
 }
 
 // HasMore returns true if any origin has more results.

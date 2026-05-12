@@ -281,7 +281,10 @@ func TestHandle(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create test server
+			// Create test server. The handler also rewrites any
+			// hardcoded "https://upstream.example.com" placeholder in
+			// JSON response bodies so the link rewriter can recognise
+			// the real upstream URL (httptest assigns it dynamically).
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Verify request method and path
 				if r.Method != tt.method {
@@ -300,12 +303,21 @@ func TestHandle(t *testing.T) {
 
 				w.WriteHeader(tt.upstreamStatus)
 
-				// Write response body
 				if tt.upstreamBody != nil {
 					if bodyBytes, ok := tt.upstreamBody.([]byte); ok {
 						w.Write(bodyBytes)
 					} else {
-						json.NewEncoder(w).Encode(tt.upstreamBody)
+						raw, _ := json.Marshal(tt.upstreamBody)
+						// When the test expects the link rewriter to
+						// fire, substitute the placeholder URL with the
+						// real upstream URL so the rewriter recognises
+						// it. Otherwise leave the body verbatim.
+						if tt.proxyBaseURL != "" {
+							raw = bytes.ReplaceAll(raw,
+								[]byte("https://upstream.example.com"),
+								[]byte("http://"+r.Host))
+						}
+						w.Write(raw)
 					}
 				}
 			}))
@@ -562,14 +574,11 @@ func TestTransformResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create test server
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}))
-			defer server.Close()
-
+			// We don't dial the upstream in this test — only the URL
+			// is used by the link rewriter — so a fixed upstream URL
+			// that matches the test bodies is what we want.
 			handler, err := NewHandler(Config{
-				UpstreamURL:  server.URL,
+				UpstreamURL:  "https://upstream.example.com",
 				ProxyBaseURL: tt.proxyBaseURL,
 			})
 			if err != nil {
