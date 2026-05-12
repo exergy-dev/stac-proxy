@@ -62,6 +62,34 @@ func (h *HealthChecker) AddCheck(check Check) {
 	h.checks[check.Name()] = check
 }
 
+// AddCheckFunc is a convenience wrapper that registers a check from a
+// function. Useful for ad-hoc origin/upstream probes that don't need
+// a dedicated Check type.
+func (h *HealthChecker) AddCheckFunc(name string, fn func(ctx context.Context) error) {
+	h.AddCheck(funcCheck{name: name, fn: fn})
+}
+
+// Start is a no-op today; reserved for a future background-poll mode
+// that pre-warms results so /health responses don't block on the
+// first request. Callers may invoke it for forward-compatibility.
+func (h *HealthChecker) Start() {}
+
+// Stop is the symmetric no-op for Start.
+func (h *HealthChecker) Stop() {}
+
+type funcCheck struct {
+	name string
+	fn   func(ctx context.Context) error
+}
+
+func (c funcCheck) Name() string { return c.name }
+func (c funcCheck) Check(ctx context.Context) CheckResult {
+	if err := c.fn(ctx); err != nil {
+		return CheckResult{Status: StatusUnhealthy, Message: err.Error()}
+	}
+	return CheckResult{Status: StatusHealthy}
+}
+
 // RemoveCheck removes a health check.
 func (h *HealthChecker) RemoveCheck(name string) {
 	h.mu.Lock()

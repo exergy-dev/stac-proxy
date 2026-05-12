@@ -3,9 +3,12 @@ package authz
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
+	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // AuthzMiddleware enforces authorization policies.
@@ -59,7 +62,7 @@ func (m *AuthzMiddleware) Priority() int {
 }
 
 // ProcessRequest checks authorization before passing to upstream.
-func (m *AuthzMiddleware) ProcessRequest(ctx context.Context, req *middleware.STACRequest) (*middleware.STACResponse, error) {
+func (m *AuthzMiddleware) ProcessRequest(ctx context.Context, req *middleware.STACRequest) (*middleware.STACRequest, error) {
 	// Get principal from context
 	principal := auth.PrincipalFromContext(ctx)
 
@@ -115,7 +118,7 @@ func (m *AuthzMiddleware) ProcessRequest(ctx context.Context, req *middleware.ST
 		}
 	}
 
-	return nil, nil
+	return req, nil
 }
 
 // ProcessResponse optionally filters response based on authorization constraints.
@@ -132,7 +135,20 @@ func (m *AuthzMiddleware) ProcessResponse(ctx context.Context, req *middleware.S
 	if decision.Constraints.Geofence != nil &&
 		decision.Constraints.Geofence.FilterMode &&
 		!decision.Constraints.GeofencePushedDown {
-		return filterResponseByGeofence(resp, decision.Constraints.Geofence)
+		var err error
+		resp, err = filterResponseByGeofence(resp, decision.Constraints.Geofence)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Single-record GET validation: when the policy emits a CQL2
+	// filter (or geofence push-down isn't possible), evaluate the
+	// combined predicate locally against the response body and
+	// convert a non-match into a 404. CQL2InjectionEnabled gates the
+	// whole feature.
+	if m.cql2InjectionOn && req != nil && req.RequestType == middleware.RequestTypeItem {
+		return validateSingleRecord(req, resp, decision.Constraints)
 	}
 
 	return resp, nil
@@ -194,6 +210,55 @@ func injectCQL2Filter(req *middleware.STACRequest, constraints *AuthzConstraints
 		req.SearchReq.FilterLang = "cql2-text"
 	}
 	return nil
+}
+
+// validateSingleRecord parses the response body as a STAC item and
+// evaluates the combined policy + geofence CQL2 predicate against
+// it. A non-match (or any evaluator error) is converted into a 404,
+// hiding the existence of the record from the caller. The original
+// response is returned unchanged if there's no predicate to apply,
+// the response isn't a 2xx, or the body isn't valid JSON.
+func validateSingleRecord(req *middleware.STACRequest, resp *middleware.STACResponse, c *AuthzConstraints) (*middleware.STACResponse, error) {
+	if resp == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp, nil
+	}
+	if c == nil {
+		return resp, nil
+	}
+	// Build a combined predicate covering both the policy filter and
+	// the geofence (if any). maybePushDownGeofence mutates c, but
+	// since we're in ProcessResponse the request has already been
+	// dispatched — the side-effect is harmless.
+	if _, err := maybePushDownGeofence(c); err != nil {
+		return resp, err
+	}
+	expr, err := parsePolicyCQL2(c)
+	if err != nil {
+		return resp, err
+	}
+	if expr == nil {
+		return resp, nil
+	}
+	var item map[string]interface{}
+	if err := json.Unmarshal(resp.Body, &item); err != nil {
+		return resp, nil // not JSON; pass through
+	}
+	ok, err := stac.EvalCQL2(expr.N, item)
+	if err != nil || !ok {
+		return notFound(req), nil
+	}
+	return resp, nil
+}
+
+func notFound(req *middleware.STACRequest) *middleware.STACResponse {
+	body := `{"code":"NotFound","description":"item not found"}`
+	h := http.Header{}
+	h.Set("Content-Type", "application/json")
+	return &middleware.STACResponse{
+		StatusCode: http.StatusNotFound,
+		Headers:    h,
+		Body:       []byte(body),
+	}
 }
 
 // filterResponseByGeofence filters response items by geofence.

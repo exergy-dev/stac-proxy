@@ -2,8 +2,11 @@
 package observability
 
 import (
+	"net/http"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Metrics contains all Prometheus metrics for the proxy.
@@ -180,3 +183,9 @@ func NewMetrics(namespace string) *Metrics {
 
 // DefaultMetrics is the global metrics instance.
 var DefaultMetrics = NewMetrics("")
+
+// Handler returns the Prometheus exposition HTTP handler for these
+// metrics. Mount on /metrics from the metrics server.
+func (m *Metrics) Handler() http.Handler {
+	return promhttp.Handler()
+}

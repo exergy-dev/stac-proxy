@@ -19,14 +19,16 @@ type Config struct {
 	Upstream   *UpstreamConfig    `yaml:"upstream"`
 	Federation *FederationConfig  `yaml:"federation"`
 	Health     HealthConfig       `yaml:"health"`
+	Authz      *AuthzConfig       `yaml:"authz"`
 }
 
 // ServerConfig contains HTTP server settings.
 type ServerConfig struct {
-	Host     string        `yaml:"host"`
-	Port     int           `yaml:"port"`
-	TLS      TLSConfig     `yaml:"tls"`
-	Timeouts TimeoutConfig `yaml:"timeouts"`
+	Host      string        `yaml:"host"`
+	Port      int           `yaml:"port"`
+	TLS       TLSConfig     `yaml:"tls"`
+	Timeouts  TimeoutConfig `yaml:"timeouts"`
+	HotReload bool          `yaml:"hot_reload"`
 }
 
 // TLSConfig contains TLS settings.

@@ -272,6 +272,93 @@ func TestProcessRequest_FilterExtensionCheck_AllowsWhenSupported(t *testing.T) {
 	}
 }
 
+func TestProcessResponse_SingleRecord_AllowMatching(t *testing.T) {
+	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+		Enforcer:             &stubEnforcer{},
+		AllowAnonymous:       true,
+		CQL2InjectionEnabled: true,
+	})
+	decision := &AuthzDecision{
+		Allowed: true,
+		Constraints: &AuthzConstraints{
+			CQL2Filter: "eo:cloud_cover < 20",
+		},
+	}
+	ctx := context.WithValue(context.Background(), middleware.AuthzDecisionKey, decision)
+	httpReq := httptest.NewRequest("GET", "/collections/x/items/abc", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		RequestType: middleware.RequestTypeItem,
+	}
+	body := []byte(`{"id":"abc","collection":"x","properties":{"eo:cloud_cover":12.5}}`)
+	resp := &middleware.STACResponse{StatusCode: 200, Body: body}
+	got, err := mw.ProcessResponse(ctx, req, resp)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if got.StatusCode != 200 {
+		t.Fatalf("want 200 for matching item, got %d", got.StatusCode)
+	}
+}
+
+func TestProcessResponse_SingleRecord_404OnMismatch(t *testing.T) {
+	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+		Enforcer:             &stubEnforcer{},
+		AllowAnonymous:       true,
+		CQL2InjectionEnabled: true,
+	})
+	decision := &AuthzDecision{
+		Allowed: true,
+		Constraints: &AuthzConstraints{
+			CQL2Filter: "eo:cloud_cover < 5",
+		},
+	}
+	ctx := context.WithValue(context.Background(), middleware.AuthzDecisionKey, decision)
+	httpReq := httptest.NewRequest("GET", "/collections/x/items/abc", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		RequestType: middleware.RequestTypeItem,
+	}
+	body := []byte(`{"id":"abc","collection":"x","properties":{"eo:cloud_cover":12.5}}`)
+	resp := &middleware.STACResponse{StatusCode: 200, Body: body}
+	got, err := mw.ProcessResponse(ctx, req, resp)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if got.StatusCode != 404 {
+		t.Fatalf("want 404 for non-matching item, got %d", got.StatusCode)
+	}
+}
+
+func TestProcessResponse_SingleRecord_DisabledIsPassthrough(t *testing.T) {
+	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+		Enforcer:       &stubEnforcer{},
+		AllowAnonymous: true,
+		// CQL2InjectionEnabled: false (default)
+	})
+	decision := &AuthzDecision{
+		Allowed: true,
+		Constraints: &AuthzConstraints{
+			CQL2Filter: "eo:cloud_cover < 5",
+		},
+	}
+	ctx := context.WithValue(context.Background(), middleware.AuthzDecisionKey, decision)
+	httpReq := httptest.NewRequest("GET", "/collections/x/items/abc", nil)
+	req := &middleware.STACRequest{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		RequestType: middleware.RequestTypeItem,
+	}
+	body := []byte(`{"id":"abc","properties":{"eo:cloud_cover":12.5}}`)
+	resp := &middleware.STACResponse{StatusCode: 200, Body: body}
+	got, _ := mw.ProcessResponse(ctx, req, resp)
+	if got.StatusCode != 200 {
+		t.Fatalf("disabled injection should not gate single-record GETs; got %d", got.StatusCode)
+	}
+}
+
 func TestEmbeddedOPA_EmitsCQL2Filter(t *testing.T) {
 	policy := `package stac.authz
 
