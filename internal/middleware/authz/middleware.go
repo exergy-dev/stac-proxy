@@ -10,10 +10,11 @@ import (
 
 // AuthzMiddleware enforces authorization policies.
 type AuthzMiddleware struct {
-	enforcer        Enforcer
-	allowAnonymous  bool
-	priority        int
-	cql2InjectionOn bool
+	enforcer             Enforcer
+	allowAnonymous       bool
+	priority             int
+	cql2InjectionOn      bool
+	filterExtensionCheck func(req *middleware.STACRequest) bool
 }
 
 // AuthzMiddlewareConfig configures the authorization middleware.
@@ -26,15 +27,24 @@ type AuthzMiddlewareConfig struct {
 	// GeofencePushedDown are ignored; the response-side post-filter
 	// remains responsible for enforcement.
 	CQL2InjectionEnabled bool
+	// FilterExtensionCheck is consulted per request to decide whether
+	// CQL2 push-down is safe (i.e. whether the target upstream
+	// advertises STAC Filter Extension support). When nil, push-down
+	// runs whenever CQL2InjectionEnabled is true — appropriate for
+	// tests and simple deployments. In single-origin mode wire this
+	// to a constant returning the upstream's flag; in federation,
+	// AND across the candidate origins for this request.
+	FilterExtensionCheck func(req *middleware.STACRequest) bool
 }
 
 // NewAuthzMiddleware creates a new authorization middleware.
 func NewAuthzMiddleware(cfg AuthzMiddlewareConfig) *AuthzMiddleware {
 	return &AuthzMiddleware{
-		enforcer:        cfg.Enforcer,
-		allowAnonymous:  cfg.AllowAnonymous,
-		priority:        cfg.Priority,
-		cql2InjectionOn: cfg.CQL2InjectionEnabled,
+		enforcer:             cfg.Enforcer,
+		allowAnonymous:       cfg.AllowAnonymous,
+		priority:             cfg.Priority,
+		cql2InjectionOn:      cfg.CQL2InjectionEnabled,
+		filterExtensionCheck: cfg.FilterExtensionCheck,
 	}
 }
 
@@ -90,9 +100,11 @@ func (m *AuthzMiddleware) ProcessRequest(ctx context.Context, req *middleware.ST
 		applyConstraints(req, decision.Constraints)
 	}
 
-	// CQL2 filter injection. Only runs when explicitly enabled and the
-	// request carries a parsed search body that can receive a filter.
-	if m.cql2InjectionOn && req.SearchReq != nil && decision.Constraints != nil {
+	// CQL2 filter injection. Only runs when explicitly enabled, the
+	// request carries a parsed search body, and (if configured) the
+	// target upstream supports the Filter Extension.
+	if m.cql2InjectionOn && req.SearchReq != nil && decision.Constraints != nil &&
+		(m.filterExtensionCheck == nil || m.filterExtensionCheck(req)) {
 		if err := injectCQL2Filter(req, decision.Constraints); err != nil {
 			// Surface as an internal error rather than silently dropping
 			// authz intent.

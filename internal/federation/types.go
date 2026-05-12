@@ -40,6 +40,13 @@ type Origin struct {
 	CollectionPrefix  string
 	CollectionMapping map[string]string
 	StripPathPrefix   string
+
+	// SupportsFilterExtension indicates this origin's STAC API supports
+	// the Filter Extension (cql2-text / cql2-json). When true, the
+	// authz middleware may push down CQL2 predicates to this origin
+	// instead of post-filtering. When false (default), the post-filter
+	// remains responsible.
+	SupportsFilterExtension bool
 }
 
 // RetryPolicy defines retry behavior for an origin.

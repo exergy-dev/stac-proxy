@@ -17,8 +17,9 @@ import (
 
 // Handler handles proxying requests to a single upstream STAC server.
 type Handler struct {
-	client       *Client
-	proxyBaseURL string
+	client                  *Client
+	proxyBaseURL            string
+	supportsFilterExtension bool
 }
 
 // Config contains configuration for the proxy handler.
@@ -27,6 +28,9 @@ type Config struct {
 	ProxyBaseURL string
 	Timeout      int // seconds
 	Retry        *RetryConfig
+	// SupportsFilterExtension reflects whether the upstream STAC API
+	// supports the Filter Extension. Consumed by SupportsFilterExtension().
+	SupportsFilterExtension bool
 }
 
 // NewHandler creates a new proxy handler.
@@ -47,9 +51,18 @@ func NewHandler(cfg Config) (*Handler, error) {
 	}
 
 	return &Handler{
-		client:       client,
-		proxyBaseURL: cfg.ProxyBaseURL,
+		client:                  client,
+		proxyBaseURL:            cfg.ProxyBaseURL,
+		supportsFilterExtension: cfg.SupportsFilterExtension,
 	}, nil
+}
+
+// SupportsFilterExtension reports whether the upstream advertises
+// (per config) STAC Filter Extension support. The authz middleware
+// uses this to decide whether to push CQL2 predicates down or fall
+// back to response post-filtering.
+func (h *Handler) SupportsFilterExtension() bool {
+	return h.supportsFilterExtension
 }
 
 // Handle processes a STAC request by forwarding to the upstream server.

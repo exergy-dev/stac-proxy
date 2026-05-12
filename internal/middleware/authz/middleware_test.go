@@ -228,6 +228,50 @@ func TestParseOPAConstraints_CQL2Fields(t *testing.T) {
 	}
 }
 
+func TestProcessRequest_FilterExtensionCheck_SkipsWhenUnsupported(t *testing.T) {
+	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				CQL2Filter: "eo:cloud_cover < 20",
+			},
+		}},
+		AllowAnonymous:       true,
+		CQL2InjectionEnabled: true,
+		FilterExtensionCheck: func(_ *middleware.STACRequest) bool { return false },
+	})
+	sr := &stac.SearchRequest{}
+	req := newReq("GET", "/search", sr)
+	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if sr.Filter != nil {
+		t.Fatalf("want no injection when upstream lacks Filter Extension, got %v", sr.Filter)
+	}
+}
+
+func TestProcessRequest_FilterExtensionCheck_AllowsWhenSupported(t *testing.T) {
+	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				CQL2Filter: "eo:cloud_cover < 20",
+			},
+		}},
+		AllowAnonymous:       true,
+		CQL2InjectionEnabled: true,
+		FilterExtensionCheck: func(_ *middleware.STACRequest) bool { return true },
+	})
+	sr := &stac.SearchRequest{}
+	req := newReq("GET", "/search", sr)
+	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if sr.Filter == nil {
+		t.Fatal("want injection to happen when target supports Filter Extension")
+	}
+}
+
 func TestEmbeddedOPA_EmitsCQL2Filter(t *testing.T) {
 	policy := `package stac.authz
 
