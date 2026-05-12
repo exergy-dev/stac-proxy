@@ -200,6 +200,22 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.Handler()
 }
 
+// Label values used across metric emissions. Defined as constants so
+// PromQL queries can be grepped to a single declaration and label
+// cardinality stays under control.
+const (
+	UpstreamStatusOK    = "ok"
+	UpstreamStatusError = "error"
+
+	ErrClassNetwork  = "network"
+	ErrClassCanceled = "canceled"
+	ErrClassTimeout  = "timeout"
+
+	CQL2ReasonPolicy   = "policy"
+	CQL2ReasonGeofence = "geofence"
+	CQL2ReasonMerged   = "merged"
+)
+
 // Process-wide instance, set once from main. Handlers and middleware
 // call Default() to emit metrics without having to thread *Metrics
 // through every constructor; Default() returns nil before SetDefault

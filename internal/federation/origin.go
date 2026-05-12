@@ -94,11 +94,7 @@ func (c *OriginClient) DoRequest(ctx context.Context, method, path string,
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// Forward the inbound request ID so per-origin logs correlate
-	// with the proxy's request log.
-	if rid, ok := ctx.Value(middleware.RequestIDKey).(string); ok && rid != "" {
-		req.Header.Set("X-Request-ID", rid)
-	}
+	middleware.ForwardRequestID(ctx, req)
 
 	// Apply origin-specific authentication
 	if c.authProvider != nil {

@@ -103,12 +103,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// Forward the inbound request ID so logs across the proxy and
-	// upstream can be correlated. Falls through silently if no
-	// request ID is in context.
-	if rid, ok := ctx.Value(middleware.RequestIDKey).(string); ok && rid != "" {
-		req.Header.Set("X-Request-ID", rid)
-	}
+	middleware.ForwardRequestID(ctx, req)
 
 	if c.retry != nil && c.retry.MaxRetries > 0 {
 		return c.doWithRetry(ctx, req)

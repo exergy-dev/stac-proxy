@@ -194,6 +194,15 @@ const (
 	OriginIDKey contextKey = "origin_id"
 )
 
+// ForwardRequestID copies the inbound request ID (if any) from ctx
+// onto an outbound HTTP request as the standard X-Request-ID header.
+// No-op when ctx carries no request ID.
+func ForwardRequestID(ctx context.Context, req *http.Request) {
+	if rid, ok := ctx.Value(RequestIDKey).(string); ok && rid != "" {
+		req.Header.Set("X-Request-ID", rid)
+	}
+}
+
 // Error types for middleware.
 
 // AuthError represents an authentication error.

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -20,7 +19,6 @@ type BearerProvider struct {
 	jwksURL    string
 	jwks       *JWKSClient // nil when using static Secret
 	keyFunc    jwt.Keyfunc
-	keyCache   sync.Map
 	claimsFunc func(claims jwt.MapClaims) (*Principal, error)
 }
 

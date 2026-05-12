@@ -212,12 +212,12 @@ func injectCQL2Filter(req *middleware.STACRequest, constraints *AuthzConstraints
 		req.SearchReq.FilterLang = "cql2-text"
 	}
 	if mt := observability.Default(); mt != nil {
-		reason := "policy"
+		reason := observability.CQL2ReasonPolicy
 		switch {
 		case constraints.GeofencePushedDown && userExpr != nil:
-			reason = "merged"
+			reason = observability.CQL2ReasonMerged
 		case constraints.GeofencePushedDown:
-			reason = "geofence"
+			reason = observability.CQL2ReasonGeofence
 		}
 		mt.CQL2Injected.WithLabelValues(req.SearchReq.FilterLang, reason).Inc()
 	}
@@ -293,11 +293,10 @@ func filterResponseByGeofence(resp *middleware.STACResponse, geofence *GeofenceC
 	if len(resp.Body) == 0 || geofence == nil {
 		return resp, nil
 	}
-	allowed, err := parseGeoJSONInterface(geofence.AllowedArea)
+	allowed, denied, err := parseGeofenceAreas(geofence)
 	if err != nil {
 		return resp, nil // unparseable geofence — fail open at this layer
 	}
-	denied, _ := parseGeoJSONInterface(geofence.DeniedArea)
 	if allowed == nil && denied == nil {
 		return resp, nil
 	}
@@ -317,7 +316,11 @@ func filterResponseByGeofence(resp *middleware.STACResponse, geofence *GeofenceC
 		if !ok {
 			continue
 		}
-		itemGeom, err := parseGeoJSONInterface(item["geometry"])
+		geomVal := item["geometry"]
+		if geomVal == nil {
+			continue
+		}
+		itemGeom, err := geo.ParseGeoJSON(geomVal)
 		if err != nil || itemGeom == nil {
 			continue
 		}
@@ -349,15 +352,21 @@ func filterResponseByGeofence(resp *middleware.STACResponse, geofence *GeofenceC
 	return &out, nil
 }
 
-// parseGeoJSONInterface converts an opaque GeoJSON value (typically
-// a map[string]interface{} from JSON decoding) into a *geo.Geometry.
-// Nil input returns nil with no error so callers can treat absence
-// uniformly.
-func parseGeoJSONInterface(v interface{}) (*geo.Geometry, error) {
-	if v == nil {
-		return nil, nil
+// parseGeofenceAreas parses the geofence's optional allowed and
+// denied GeoJSON into *geo.Geometry pairs. Either side may be nil
+// (absent from the constraint); only a parse error on the allowed
+// side is propagated since the allowed area gates filtering.
+func parseGeofenceAreas(g *GeofenceConstraint) (allowed, denied *geo.Geometry, err error) {
+	if g.AllowedArea != nil {
+		allowed, err = geo.ParseGeoJSON(g.AllowedArea)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	return geo.ParseGeoJSON(v)
+	if g.DeniedArea != nil {
+		denied, _ = geo.ParseGeoJSON(g.DeniedArea)
+	}
+	return allowed, denied, nil
 }
 
 // DecisionFromContext retrieves the authorization decision from context.

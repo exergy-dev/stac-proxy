@@ -197,10 +197,17 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 	fc, err := client.Search(ctx, adaptedReq)
 	if m := observability.Default(); m != nil {
 		m.UpstreamRequestDuration.WithLabelValues(origin.ID).Observe(time.Since(start).Seconds())
-		status := "ok"
+		status := observability.UpstreamStatusOK
 		if err != nil {
-			status = "error"
-			m.UpstreamErrors.WithLabelValues(origin.ID, classifyError(err)).Inc()
+			status = observability.UpstreamStatusError
+			class := observability.ErrClassNetwork
+			switch {
+			case errors.Is(err, context.Canceled):
+				class = observability.ErrClassCanceled
+			case errors.Is(err, context.DeadlineExceeded):
+				class = observability.ErrClassTimeout
+			}
+			m.UpstreamErrors.WithLabelValues(origin.ID, class).Inc()
 		}
 		m.UpstreamRequestsTotal.WithLabelValues(origin.ID, status).Inc()
 		m.FederationOriginsQueried.WithLabelValues(origin.ID, status).Inc()
@@ -221,20 +228,6 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 	return result
 }
 
-// classifyError buckets an upstream error into a short tag suitable
-// for use as a Prometheus label cardinality-friendly value.
-func classifyError(err error) string {
-	if err == nil {
-		return "none"
-	}
-	if errors.Is(err, context.Canceled) {
-		return "canceled"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "timeout"
-	}
-	return "network"
-}
 
 // adaptRequestForOrigin modifies the search request for a specific origin.
 func (h *Handler) adaptRequestForOrigin(req *stac.SearchRequest, origin *Origin) *stac.SearchRequest {
