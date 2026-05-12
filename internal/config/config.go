@@ -29,6 +29,10 @@ type ServerConfig struct {
 	TLS       TLSConfig     `yaml:"tls"`
 	Timeouts  TimeoutConfig `yaml:"timeouts"`
 	HotReload bool          `yaml:"hot_reload"`
+	// MaxBodyBytes caps inbound request body size. 0 → default
+	// (1 MiB); negative disables the cap. Set higher when expecting
+	// large GeoJSON intersects polygons on /search.
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
 }
 
 // TLSConfig contains TLS settings.

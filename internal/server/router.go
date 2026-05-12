@@ -11,6 +11,11 @@ import (
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
+// DefaultMaxBodyBytes is the body-size limit used when RouterConfig
+// leaves MaxBodyBytes at zero. Sized for a generous STAC search body
+// (large GeoJSON intersects polygons are the worst case).
+const DefaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
+
 // Router wraps chi router with STAC-specific functionality.
 type Router struct {
 	*chi.Mux
@@ -27,6 +32,9 @@ type RouterConfig struct {
 	HealthChecker *observability.HealthChecker
 	Metrics       *observability.Metrics
 	ProxyBaseURL  string
+	// MaxBodyBytes caps the size of any inbound request body. 0 uses
+	// DefaultMaxBodyBytes; negative disables the cap.
+	MaxBodyBytes int64
 }
 
 // NewRouter creates a new router with STAC API endpoints.
@@ -43,6 +51,15 @@ func NewRouter(cfg RouterConfig) *Router {
 	r.Use(chimiddleware.RequestID)
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.Recoverer)
+
+	// Cap inbound bodies before any handler reads them.
+	limit := cfg.MaxBodyBytes
+	if limit == 0 {
+		limit = DefaultMaxBodyBytes
+	}
+	if limit > 0 {
+		r.Use(bodyLimitMiddleware(limit))
+	}
 
 	// Mount health endpoints
 	if cfg.HealthChecker != nil {
@@ -219,4 +236,20 @@ func (r *Router) writeResponse(w http.ResponseWriter, resp *middleware.STACRespo
 
 	w.WriteHeader(resp.StatusCode)
 	w.Write(resp.Body)
+}
+
+// bodyLimitMiddleware wraps every request body in http.MaxBytesReader
+// so reads beyond the configured cap return an error rather than
+// allowing arbitrarily large payloads to be buffered into memory.
+// The cap is enforced lazily — handlers that don't read the body pay
+// nothing, handlers that do see an io.EOF-like error past the limit.
+func bodyLimitMiddleware(limit int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, limit)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

@@ -3,6 +3,7 @@ package observability
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -37,6 +38,9 @@ type Metrics struct {
 	FederationOriginsQueried *prometheus.CounterVec
 	FederationItemsMerged    prometheus.Counter
 	FederationDuplicates     prometheus.Counter
+
+	// CQL2 injection metrics
+	CQL2Injected *prometheus.CounterVec // labels: lang, reason ("policy"|"geofence"|"merged")
 }
 
 // NewMetrics creates and registers all metrics.
@@ -178,14 +182,47 @@ func NewMetrics(namespace string) *Metrics {
 				Help:      "Total number of duplicate items detected in federation",
 			},
 		),
+
+		CQL2Injected: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "cql2_injected_total",
+				Help:      "Total number of requests where an authz-derived CQL2 filter was injected",
+			},
+			[]string{"lang", "reason"},
+		),
 	}
 }
-
-// DefaultMetrics is the global metrics instance.
-var DefaultMetrics = NewMetrics("")
 
 // Handler returns the Prometheus exposition HTTP handler for these
 // metrics. Mount on /metrics from the metrics server.
 func (m *Metrics) Handler() http.Handler {
 	return promhttp.Handler()
+}
+
+// Process-wide instance, set once from main. Handlers and middleware
+// call Default() to emit metrics without having to thread *Metrics
+// through every constructor; Default() returns nil before SetDefault
+// fires (so tests that don't initialise it stay silent).
+var (
+	defaultMu sync.RWMutex
+	def       *Metrics
+)
+
+// SetDefault registers the process-wide *Metrics instance. Called
+// once from main after NewMetrics succeeds. Subsequent calls
+// overwrite (useful for tests that swap in a fresh registry).
+func SetDefault(m *Metrics) {
+	defaultMu.Lock()
+	def = m
+	defaultMu.Unlock()
+}
+
+// Default returns the process-wide *Metrics, or nil if SetDefault
+// hasn't been called. Callers should guard with `if m := Default();
+// m != nil { ... }` to no-op cleanly in tests.
+func Default() *Metrics {
+	defaultMu.RLock()
+	defer defaultMu.RUnlock()
+	return def
 }

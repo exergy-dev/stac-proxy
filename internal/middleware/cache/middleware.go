@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 // Middleware implements response caching.
@@ -66,11 +67,17 @@ func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACReq
 		ctx = context.WithValue(ctx, cacheHitKey, data)
 		ctx = context.WithValue(ctx, cacheKeyKey, key)
 		req.Context = ctx
+		if mt := observability.Default(); mt != nil {
+			mt.CacheHits.WithLabelValues(cacheReq.RequestType).Inc()
+		}
 	} else {
 		// Cache miss - store key for later caching
 		ctx = context.WithValue(ctx, cacheKeyKey, key)
 		ctx = context.WithValue(ctx, cacheRequestKey, cacheReq)
 		req.Context = ctx
+		if mt := observability.Default(); mt != nil {
+			mt.CacheMisses.WithLabelValues(cacheReq.RequestType).Inc()
+		}
 	}
 
 	return req, nil

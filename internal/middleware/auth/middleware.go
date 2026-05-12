@@ -5,6 +5,7 @@ import (
 	"context"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 // Middleware handles authentication for incoming requests.
@@ -37,10 +38,16 @@ func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACReq
 	for _, provider := range m.providers {
 		principal, err := provider.Authenticate(ctx, req.Request)
 		if err != nil {
+			if mt := observability.Default(); mt != nil {
+				mt.AuthFailures.WithLabelValues(provider.Name(), "error").Inc()
+			}
 			// Authentication failed with this provider
 			continue
 		}
 		if principal != nil {
+			if mt := observability.Default(); mt != nil {
+				mt.AuthSuccesses.WithLabelValues(provider.Name(), principal.Type).Inc()
+			}
 			// Successfully authenticated
 			ctx = context.WithValue(ctx, middleware.PrincipalKey, principal)
 			req.Context = ctx
@@ -51,11 +58,17 @@ func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACReq
 
 	// No provider authenticated the request
 	if m.allowAnonymous {
+		if mt := observability.Default(); mt != nil {
+			mt.AuthSuccesses.WithLabelValues("anonymous", "anonymous").Inc()
+		}
 		ctx = context.WithValue(ctx, middleware.PrincipalKey, m.anonPrincipal)
 		req.Context = ctx
 		return req, nil
 	}
 
+	if mt := observability.Default(); mt != nil {
+		mt.AuthFailures.WithLabelValues("none", "missing_credentials").Inc()
+	}
 	return nil, &middleware.AuthError{
 		Message: "authentication required",
 		Code:    "missing_credentials",

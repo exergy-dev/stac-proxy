@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/yourorg/stac-proxy/internal/middleware"
 )
 
 // Client is an HTTP client for communicating with an upstream STAC server.
@@ -100,6 +102,12 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*
 	req.Header.Set("Accept", "application/geo+json, application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	// Forward the inbound request ID so logs across the proxy and
+	// upstream can be correlated. Falls through silently if no
+	// request ID is in context.
+	if rid, ok := ctx.Value(middleware.RequestIDKey).(string); ok && rid != "" {
+		req.Header.Set("X-Request-ID", rid)
 	}
 
 	if c.retry != nil && c.retry.MaxRetries > 0 {

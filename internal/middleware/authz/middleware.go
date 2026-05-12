@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/yourorg/stac-proxy/internal/geo"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
+	"github.com/yourorg/stac-proxy/internal/observability"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -209,6 +211,16 @@ func injectCQL2Filter(req *middleware.STACRequest, constraints *AuthzConstraints
 	if req.SearchReq.FilterLang == "" {
 		req.SearchReq.FilterLang = "cql2-text"
 	}
+	if mt := observability.Default(); mt != nil {
+		reason := "policy"
+		switch {
+		case constraints.GeofencePushedDown && userExpr != nil:
+			reason = "merged"
+		case constraints.GeofencePushedDown:
+			reason = "geofence"
+		}
+		mt.CQL2Injected.WithLabelValues(req.SearchReq.FilterLang, reason).Inc()
+	}
 	return nil
 }
 
@@ -261,11 +273,91 @@ func notFound(req *middleware.STACRequest) *middleware.STACResponse {
 	}
 }
 
-// filterResponseByGeofence filters response items by geofence.
+// filterResponseByGeofence post-filters a FeatureCollection response
+// against a geofence: items whose geometry doesn't intersect the
+// allowed area (or that fall entirely inside a denied area) are
+// removed in place. Items with missing/invalid geometry are dropped
+// conservatively. The response is returned unchanged when the body
+// isn't a FeatureCollection, the geofence is empty, or the response
+// status indicates an upstream error.
+//
+// This is the fallback path for upstreams that don't support the
+// STAC Filter Extension. Origins that do support it get the
+// equivalent predicate pushed down via maybePushDownGeofence in
+// ProcessRequest, and ProcessResponse skips this branch via the
+// GeofencePushedDown gate.
 func filterResponseByGeofence(resp *middleware.STACResponse, geofence *GeofenceConstraint) (*middleware.STACResponse, error) {
-	// This would use the geo package to filter items
-	// For now, return response unchanged
-	return resp, nil
+	if resp == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp, nil
+	}
+	if len(resp.Body) == 0 || geofence == nil {
+		return resp, nil
+	}
+	allowed, err := parseGeoJSONInterface(geofence.AllowedArea)
+	if err != nil {
+		return resp, nil // unparseable geofence — fail open at this layer
+	}
+	denied, _ := parseGeoJSONInterface(geofence.DeniedArea)
+	if allowed == nil && denied == nil {
+		return resp, nil
+	}
+
+	var fc map[string]interface{}
+	if err := json.Unmarshal(resp.Body, &fc); err != nil {
+		return resp, nil // not JSON; pass through
+	}
+	features, ok := fc["features"].([]interface{})
+	if !ok {
+		return resp, nil // not a FeatureCollection shape; pass through
+	}
+
+	kept := make([]interface{}, 0, len(features))
+	for _, f := range features {
+		item, ok := f.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		itemGeom, err := parseGeoJSONInterface(item["geometry"])
+		if err != nil || itemGeom == nil {
+			continue
+		}
+		if allowed != nil && !allowed.Intersects(itemGeom) {
+			continue
+		}
+		if denied != nil && denied.Contains(itemGeom) {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	fc["features"] = kept
+	if _, has := fc["numberReturned"]; has {
+		fc["numberReturned"] = len(kept)
+	}
+	if _, has := fc["numberMatched"]; has {
+		// numberMatched is an upstream estimate of total hits across
+		// pages. After post-filtering we can only honestly say "at
+		// most this many" — clamp to current page size.
+		fc["numberMatched"] = len(kept)
+	}
+
+	newBody, err := json.Marshal(fc)
+	if err != nil {
+		return resp, err
+	}
+	out := *resp
+	out.Body = newBody
+	return &out, nil
+}
+
+// parseGeoJSONInterface converts an opaque GeoJSON value (typically
+// a map[string]interface{} from JSON decoding) into a *geo.Geometry.
+// Nil input returns nil with no error so callers can treat absence
+// uniformly.
+func parseGeoJSONInterface(v interface{}) (*geo.Geometry, error) {
+	if v == nil {
+		return nil, nil
+	}
+	return geo.ParseGeoJSON(v)
 }
 
 // DecisionFromContext retrieves the authorization decision from context.

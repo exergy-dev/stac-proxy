@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // PolicyEnforcer enforces file-based authorization policies.
@@ -266,11 +270,100 @@ func (e *PolicyEnforcer) matchesAction(actions []string, req *RequestInfo) bool 
 	return false
 }
 
-// evaluateCondition evaluates a condition against input.
+// evaluateCondition evaluates a single Condition against the authz
+// input. Returns true when the condition is satisfied (i.e. the
+// surrounding policy may proceed). Unknown condition types
+// fail-closed (return false) so a misconfigured policy doesn't
+// silently grant access.
+//
+// Supported types:
+//   - "time_range": Config is a map with "start" and/or "end"
+//     RFC3339 strings; the current wall clock must fall inside.
+//   - "ip_range": Config is a map with "cidrs" (a []string of CIDR
+//     blocks); the request's ClientIP must match at least one.
+//   - "attribute": Config is a map with "key" and "value"; the
+//     principal's Attributes[key] must equal value (string compare).
 func (e *PolicyEnforcer) evaluateCondition(cond Condition, input *AuthzInput) bool {
-	// Placeholder for condition evaluation
-	// Would implement time_range, ip_range, attribute conditions
+	cfg, ok := cond.Config.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	switch cond.Type {
+	case "time_range":
+		return evalTimeRange(cfg)
+	case "ip_range":
+		return evalIPRange(cfg, input)
+	case "attribute":
+		return evalAttribute(cfg, input)
+	default:
+		return false
+	}
+}
+
+func evalTimeRange(cfg map[string]interface{}) bool {
+	now := time.Now().UTC()
+	if s, ok := cfg["start"].(string); ok && s != "" {
+		start, err := time.Parse(time.RFC3339, s)
+		if err != nil || now.Before(start) {
+			return false
+		}
+	}
+	if s, ok := cfg["end"].(string); ok && s != "" {
+		end, err := time.Parse(time.RFC3339, s)
+		if err != nil || now.After(end) {
+			return false
+		}
+	}
 	return true
+}
+
+func evalIPRange(cfg map[string]interface{}, input *AuthzInput) bool {
+	if input == nil || input.Request == nil || input.Request.ClientIP == "" {
+		return false
+	}
+	// Strip port if present (RemoteAddr is "host:port").
+	host := input.Request.ClientIP
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	cidrs, ok := cfg["cidrs"].([]interface{})
+	if !ok {
+		return false
+	}
+	for _, c := range cidrs {
+		s, ok := c.(string)
+		if !ok {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(s)
+		if err != nil {
+			continue
+		}
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func evalAttribute(cfg map[string]interface{}, input *AuthzInput) bool {
+	if input == nil || input.Principal == nil {
+		return false
+	}
+	key, _ := cfg["key"].(string)
+	want, hasWant := cfg["value"]
+	if key == "" || !hasWant {
+		return false
+	}
+	got, ok := input.Principal.Attributes[key]
+	if !ok {
+		return false
+	}
+	return fmt.Sprintf("%v", got) == fmt.Sprintf("%v", want)
 }
 
 // loadPoliciesFromFile loads policies from a JSON file.

@@ -4,12 +4,16 @@ package federation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/observability"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -189,9 +193,24 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 	adaptedReq := h.adaptRequestForOrigin(searchReq, origin)
 
 	// Execute the search
+	start := time.Now()
 	fc, err := client.Search(ctx, adaptedReq)
+	if m := observability.Default(); m != nil {
+		m.UpstreamRequestDuration.WithLabelValues(origin.ID).Observe(time.Since(start).Seconds())
+		status := "ok"
+		if err != nil {
+			status = "error"
+			m.UpstreamErrors.WithLabelValues(origin.ID, classifyError(err)).Inc()
+		}
+		m.UpstreamRequestsTotal.WithLabelValues(origin.ID, status).Inc()
+		m.FederationOriginsQueried.WithLabelValues(origin.ID, status).Inc()
+	}
 	if err != nil {
 		result.Error = err
+		zap.L().Error("federation origin search failed",
+			zap.String("origin", origin.ID),
+			zap.Duration("duration", time.Since(start)),
+			zap.Error(err))
 		return result
 	}
 
@@ -200,6 +219,21 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 	result.Links = fc.Links
 
 	return result
+}
+
+// classifyError buckets an upstream error into a short tag suitable
+// for use as a Prometheus label cardinality-friendly value.
+func classifyError(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "network"
 }
 
 // adaptRequestForOrigin modifies the search request for a specific origin.

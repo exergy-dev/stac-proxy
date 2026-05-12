@@ -9,6 +9,7 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
+	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 // Middleware implements rate limiting for incoming requests.
@@ -86,6 +87,13 @@ func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACReq
 	req.Context = ctx
 
 	if !allowed {
+		if mt := observability.Default(); mt != nil {
+			keyType := "principal"
+			if principalID == "" {
+				keyType = "ip"
+			}
+			mt.RateLimitExceeded.WithLabelValues(keyType).Inc()
+		}
 		return nil, &middleware.RateLimitError{
 			RetryAfter: info.RetryAfter,
 		}

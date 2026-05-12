@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -92,6 +93,11 @@ func (c *OriginClient) DoRequest(ctx context.Context, method, path string,
 	req.Header.Set("Accept", "application/geo+json, application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	// Forward the inbound request ID so per-origin logs correlate
+	// with the proxy's request log.
+	if rid, ok := ctx.Value(middleware.RequestIDKey).(string); ok && rid != "" {
+		req.Header.Set("X-Request-ID", rid)
 	}
 
 	// Apply origin-specific authentication

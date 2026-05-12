@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
@@ -114,10 +115,12 @@ type contextKeyType string
 
 const startTimeKey contextKeyType = "logging_start_time"
 
-// generateRequestID generates a unique request ID.
+// generateRequestID generates a globally unique request ID. Used
+// when an upstream client didn't already inject one. UUIDv4 is the
+// portable, collision-resistant choice and is what every observability
+// stack (Grafana, Datadog, etc.) recognises.
 func generateRequestID() string {
-	// Simple implementation - in production use UUID
-	return time.Now().Format("20060102150405.000000")
+	return uuid.NewString()
 }
 
 // WithLogger returns a new middleware with the given logger.

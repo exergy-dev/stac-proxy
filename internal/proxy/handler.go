@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/observability"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -91,11 +92,19 @@ func (h *Handler) Handle(ctx context.Context, req *middleware.STACRequest) (*mid
 		method = http.MethodPost
 	}
 
+	start := time.Now()
 	resp, err := h.client.Do(ctx, method, path, body)
 	if err != nil {
+		if m := observability.Default(); m != nil {
+			m.UpstreamErrors.WithLabelValues("upstream", "network").Inc()
+		}
 		return nil, fmt.Errorf("upstream request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if m := observability.Default(); m != nil {
+		m.UpstreamRequestsTotal.WithLabelValues("upstream", fmt.Sprintf("%d", resp.StatusCode)).Inc()
+		m.UpstreamRequestDuration.WithLabelValues("upstream").Observe(time.Since(start).Seconds())
+	}
 
 	// Read response body
 	respBody, err := io.ReadAll(resp.Body)
