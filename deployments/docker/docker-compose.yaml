@@ -1,0 +1,72 @@
+# docker-compose for a single-node stac-proxy deployment.
+#
+# Boot:
+#   docker compose -f deployments/docker/docker-compose.yaml up -d
+# Tail logs:
+#   docker compose -f deployments/docker/docker-compose.yaml logs -f
+# Smoke:
+#   curl -fsS http://localhost:8080/health
+#
+# Secrets (API keys, JWKS URLs, bearer tokens, etc.) should be
+# injected via environment variables, not committed to the YAML. The
+# example below reads STAC_PROXY_UPSTREAM and STAC_PROXY_PORT from
+# the host env; configs/example.yaml does $-expansion on load.
+
+services:
+  stac-proxy:
+    image: stac-proxy:dev
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT:  ${COMMIT:-local}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    container_name: stac-proxy
+    restart: unless-stopped
+
+    # Mount the operator's real config + policies read-only at the
+    # paths the binary expects. Replace the source paths with your
+    # actual config/policy locations.
+    volumes:
+      - ../../configs/example.yaml:/etc/stac-proxy/example.yaml:ro
+      - ../../policies:/etc/stac-proxy/policies:ro
+
+    # All secret-bearing config values are env-var-expanded in the
+    # YAML (e.g. `secret: ${JWT_SECRET}`). Add the variables you
+    # actually use here.
+    environment:
+      STAC_PROXY_UPSTREAM: ${STAC_PROXY_UPSTREAM:-https://earth-search.aws.element84.com/v1}
+      # JWT_SECRET: ${JWT_SECRET}
+      # PLANET_API_KEY: ${PLANET_API_KEY}
+      # COPERNICUS_CLIENT_ID: ${COPERNICUS_CLIENT_ID}
+      # COPERNICUS_CLIENT_SECRET: ${COPERNICUS_CLIENT_SECRET}
+
+    ports:
+      - "${STAC_PROXY_PORT:-8080}:8080" # public API
+      - "9090:9090"                      # Prometheus /metrics
+
+    # The image's HEALTHCHECK keeps Docker swarm / autoheal in sync.
+    # Explicit here so it's visible to operators reading the compose
+    # file directly.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/stac-proxy", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    # SIGTERM-then-drain. The binary cancels the context, the HTTP
+    # server's Shutdown drains in-flight requests up to 30s, then
+    # exits 0.
+    stop_signal: SIGTERM
+    stop_grace_period: 45s
+
+    # Conservative resource bounds for the example. Tune for your
+    # actual traffic; lift CPU before memory if you push CQL2-heavy
+    # workloads.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M

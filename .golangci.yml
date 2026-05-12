@@ -1,0 +1,59 @@
+# golangci-lint configuration for stac-proxy.
+# See https://golangci-lint.run/usage/configuration for the full schema.
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    # Default essentials
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    # Style + correctness
+    - gocritic
+    - gosec
+    - revive
+
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - performance
+      - style
+      - diagnostic
+    disabled-checks:
+      - ifElseChain          # noisy on dispatch switches
+      - whyNoLint
+  gosec:
+    # G101 (hardcoded credentials) is rife with false positives in
+    # test fixtures and config docs. G104 duplicates errcheck.
+    excludes:
+      - G101
+      - G104
+      - G404                # math/rand in tests is fine
+  revive:
+    rules:
+      - name: exported       # require comments on exported symbols
+        disabled: false
+      - name: var-naming
+      - name: error-strings
+      - name: unused-parameter
+        disabled: true       # noisy across the chain interfaces
+
+issues:
+  exclude-rules:
+    # Test files: relax exported-comment and gosec.
+    - path: _test\.go
+      linters:
+        - revive
+        - gosec
+    # Generated example configs and policies aren't Go; nothing to skip.
+
+  # Don't cap reported issues; surface everything in CI so reviewers
+  # see the full picture.
+  max-issues-per-linter: 0
+  max-same-issues: 0
