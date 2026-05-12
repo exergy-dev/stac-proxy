@@ -51,6 +51,11 @@ federation:
       auto_discover: true
       discovery_interval: 1h
       timeout: 30s
+      # When true, the proxy pushes authz CQL2 filters (including
+      # geofence S_INTERSECTS) into the search request rather than
+      # post-filtering responses. Requires this origin to support the
+      # STAC Filter Extension. Defaults to false.
+      # supports_filter_extension: true
 
     # Another public STAC server
     - id: planetary-computer
@@ -105,6 +110,22 @@ middleware:
   #         jwks_url: "https://auth.example.com/.well-known/jwks.json"
   #         issuer: "https://auth.example.com"
   #         audience: "stac-proxy"
+
+# Authorization configuration (uncomment to enable)
+# authz:
+#   policy_source: opa
+#   default_effect: deny
+#   opa:
+#     embedded: true
+#     rego_files:
+#       - policies/stac_authz.rego
+#   # CQL2 filter injection. When enabled and an origin has
+#   # supports_filter_extension: true, the proxy pushes the policy's
+#   # cql2_filter (and any geofence as S_INTERSECTS) into the search
+#   # request rather than post-filtering responses.
+#   cql2_injection:
+#     enabled: true
+#     combine: and    # reserved for future strategies; only "and" today
 
   # - name: rate_limit
   #   config:

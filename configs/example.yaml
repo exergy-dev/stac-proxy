@@ -31,6 +31,28 @@ mode: single
 upstream:
   url: "https://earth-search.aws.element84.com/v1"
   timeout: 30s
+  # When true, the proxy pushes authz CQL2 filters (including geofence
+  # S_INTERSECTS predicates) into the search request rather than
+  # post-filtering responses. Requires the upstream to support the STAC
+  # Filter Extension (cql2-text / cql2-json).
+  # supports_filter_extension: true
+
+# Authorization configuration (uncomment to enable)
+# authz:
+#   policy_source: opa
+#   default_effect: deny
+#   opa:
+#     embedded: true
+#     rego_files:
+#       - policies/stac_authz.rego
+#   # CQL2 filter injection. When enabled, policies may emit a
+#   # `cql2_filter` (or `cql2_filter_json`) constraint that the proxy
+#   # AND-combines with any client-supplied filter and forwards
+#   # upstream. The post-response geofence filter is automatically
+#   # skipped for requests whose geofence was successfully pushed down.
+#   cql2_injection:
+#     enabled: true
+#     combine: and    # reserved for future strategies; only "and" today
 
 # Middleware configuration (order matters for priority)
 middleware:

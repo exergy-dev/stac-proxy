@@ -99,12 +99,41 @@ allowed_collections := collections if {
 }
 
 # Build constraints
+#
+# Additional keys understood by the proxy:
+#   cql2_filter      (string) — a cql2-text expression AND-combined with
+#                               any client-supplied filter and pushed to
+#                               the upstream STAC API.
+#   cql2_filter_json (object) — same effect, but as cql2-json. If both
+#                               are set, the JSON variant wins.
+#   geofence.allowed_area (GeoJSON) — when the proxy's CQL2 injection
+#                               is enabled and the upstream supports the
+#                               Filter Extension, the geofence is pushed
+#                               down as S_INTERSECTS rather than
+#                               post-filtered.
 constraints := c if {
     allow
     c := {
         "allowed_collections": allowed_collections,
-        "max_results": max_results
+        "max_results": max_results,
+        "cql2_filter": cql2_filter,
     }
+}
+
+# Example: clamp cloud cover for non-premium users so the upstream
+# returns clearer scenes only. Premium users get an empty filter.
+cql2_filter := "eo:cloud_cover < 20" if {
+    input.principal
+    not "premium" in input.principal.roles
+}
+
+cql2_filter := "" if {
+    not input.principal
+}
+
+cql2_filter := "" if {
+    input.principal
+    "premium" in input.principal.roles
 }
 
 constraints := {} if {
