@@ -58,19 +58,77 @@ func TestGeofenceToCQL2_Nil(t *testing.T) {
 	}
 }
 
-func TestGeofenceToCQL2_DeniedAreaSkipped(t *testing.T) {
+func TestGeofenceToCQL2_DeniedAreaOnly(t *testing.T) {
 	g := &GeofenceConstraint{
 		DeniedArea: map[string]interface{}{
-			"type":        "Point",
-			"coordinates": []interface{}{0.0, 0.0},
+			"type": "Polygon",
+			"coordinates": []interface{}{
+				[]interface{}{
+					[]interface{}{0.0, 0.0},
+					[]interface{}{1.0, 0.0},
+					[]interface{}{1.0, 1.0},
+					[]interface{}{0.0, 1.0},
+					[]interface{}{0.0, 0.0},
+				},
+			},
 		},
 	}
 	got, err := geofenceToCQL2(g)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != nil {
-		t.Fatalf("denied-area push-down should not be supported yet; got %s", encText(t, got))
+	if got == nil {
+		t.Fatal("expected non-nil expression for denied area")
+	}
+	s := strings.ToUpper(encText(t, got))
+	if !strings.Contains(s, "S_INTERSECTS") {
+		t.Fatalf("want S_INTERSECTS in NOT predicate, got %q", s)
+	}
+	if !strings.Contains(s, "NOT") {
+		t.Fatalf("want NOT wrapper around denied-area intersect, got %q", s)
+	}
+}
+
+func TestGeofenceToCQL2_AllowedAndDenied(t *testing.T) {
+	g := &GeofenceConstraint{
+		AllowedArea: map[string]interface{}{
+			"type": "Polygon",
+			"coordinates": []interface{}{
+				[]interface{}{
+					[]interface{}{-10.0, -10.0},
+					[]interface{}{10.0, -10.0},
+					[]interface{}{10.0, 10.0},
+					[]interface{}{-10.0, 10.0},
+					[]interface{}{-10.0, -10.0},
+				},
+			},
+		},
+		DeniedArea: map[string]interface{}{
+			"type": "Polygon",
+			"coordinates": []interface{}{
+				[]interface{}{
+					[]interface{}{0.0, 0.0},
+					[]interface{}{1.0, 0.0},
+					[]interface{}{1.0, 1.0},
+					[]interface{}{0.0, 1.0},
+					[]interface{}{0.0, 0.0},
+				},
+			},
+		},
+	}
+	got, err := geofenceToCQL2(g)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil expression for allowed + denied")
+	}
+	s := strings.ToUpper(encText(t, got))
+	if !strings.Contains(s, "AND") {
+		t.Fatalf("want AND between allowed and denied, got %q", s)
+	}
+	if !strings.Contains(s, "NOT") {
+		t.Fatalf("want NOT for denied, got %q", s)
 	}
 }
 

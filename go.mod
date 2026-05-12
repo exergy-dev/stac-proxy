@@ -26,6 +26,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
+// pinned: no upstream tag yet — bump deliberately and re-run helper tests
 require github.com/exergy-dev/go-cql2 v0.0.0-20260504204024-796456d5f243
 
 require (

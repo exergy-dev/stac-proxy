@@ -148,9 +148,7 @@ func parseOPAConstraints(raw map[string]interface{}) *AuthzConstraints {
 		}
 	}
 
-	if maxResults, ok := raw["max_results"].(float64); ok {
-		constraints.MaxResults = int(maxResults)
-	}
+	constraints.MaxResults = toInt(raw["max_results"])
 
 	if geofence, ok := raw["geofence"].(map[string]interface{}); ok {
 		constraints.Geofence = &GeofenceConstraint{}
@@ -173,7 +171,40 @@ func parseOPAConstraints(raw map[string]interface{}) *AuthzConstraints {
 		constraints.CQL2FilterJSON = v
 	}
 
+	if rf, ok := raw["required_filters"].(map[string]interface{}); ok {
+		constraints.RequiredFilters = rf
+	}
+
 	return constraints
+}
+
+// toInt coerces a JSON-decoded numeric value to int. OPA may return
+// numbers as float64, int, int64, or json.Number depending on origin
+// and version, so this normalises across them. Unknown/nil values
+// yield 0.
+func toInt(v interface{}) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case float32:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	case json.Number:
+		i, err := n.Int64()
+		if err == nil {
+			return int(i)
+		}
+		f, err := n.Float64()
+		if err == nil {
+			return int(f)
+		}
+	}
+	return 0
 }
 
 // OPAHealthCheck checks if the OPA server is healthy.

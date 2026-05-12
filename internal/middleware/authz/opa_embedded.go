@@ -177,7 +177,14 @@ func parseEmbeddedResult(result rego.Result) (*AuthzDecision, error) {
 		case bool:
 			decision.Allowed = v
 		case map[string]interface{}:
-			// Structured result
+			// When the query was `data.stac.authz` (the default), the
+			// value is the whole package and the structured response
+			// lives under "result". Unwrap if present.
+			if r, ok := v["result"].(map[string]interface{}); ok {
+				if _, hasAllow := r["allow"]; hasAllow {
+					v = r
+				}
+			}
 			if allow, ok := v["allow"].(bool); ok {
 				decision.Allowed = allow
 			}

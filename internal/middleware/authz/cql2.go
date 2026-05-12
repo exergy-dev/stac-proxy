@@ -34,34 +34,47 @@ func andNonNil(exprs ...*cql2.Expr) *cql2.Expr {
 	}
 }
 
-// geofenceToCQL2 builds a CQL2 expression that enforces a geofence by
-// requiring the item's geometry to intersect the geofence's allowed
-// area. Returns nil if g is nil, has no allowed area, or has a denied
-// area (denied-area push-down is not yet supported; callers should fall
-// back to post-filtering in that case).
+// geofenceToCQL2 builds a CQL2 expression that enforces a geofence:
+//   - AllowedArea (if present) becomes S_INTERSECTS(geometry, allowed).
+//   - DeniedArea (if present) becomes NOT S_INTERSECTS(geometry, denied).
+//   - When both are set the two predicates are AND-combined.
 //
-// The allowed area is expected to be a GeoJSON geometry (Point,
-// Polygon, MultiPolygon, etc.) as a Go value that json-marshals to a
-// valid GeoJSON object — typically a map[string]interface{}.
+// Returns nil if g is nil or has neither an allowed nor a denied area.
+//
+// Each area is expected to be a GeoJSON geometry (Point, Polygon,
+// MultiPolygon, etc.) as a Go value that json-marshals to a valid
+// GeoJSON object — typically a map[string]interface{}.
 func geofenceToCQL2(g *GeofenceConstraint) (*cql2.Expr, error) {
-	if g == nil || g.AllowedArea == nil {
+	if g == nil {
 		return nil, nil
 	}
-	// Denied-area push-down requires NOT(S_INTERSECTS(...)) and an
-	// agreed-upon property name; defer to the post-filter for now.
+	var allowed, denied *cql2.Expr
+	if g.AllowedArea != nil {
+		raw, err := json.Marshal(g.AllowedArea)
+		if err != nil {
+			return nil, fmt.Errorf("geofence: marshal allowed area: %w", err)
+		}
+		geom, err := geojson.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("geofence: parse allowed area as GeoJSON: %w", err)
+		}
+		e := cql2.SIntersects("geometry", geom)
+		allowed = &e
+	}
 	if g.DeniedArea != nil {
-		return nil, nil
+		raw, err := json.Marshal(g.DeniedArea)
+		if err != nil {
+			return nil, fmt.Errorf("geofence: marshal denied area: %w", err)
+		}
+		geom, err := geojson.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("geofence: parse denied area as GeoJSON: %w", err)
+		}
+		inter := cql2.SIntersects("geometry", geom)
+		notExpr := cql2.Not(inter)
+		denied = &notExpr
 	}
-	raw, err := json.Marshal(g.AllowedArea)
-	if err != nil {
-		return nil, fmt.Errorf("geofence: marshal allowed area: %w", err)
-	}
-	geom, err := geojson.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("geofence: parse allowed area as GeoJSON: %w", err)
-	}
-	expr := cql2.SIntersects("geometry", geom)
-	return &expr, nil
+	return andNonNil(allowed, denied), nil
 }
 
 // parsePolicyCQL2 turns the CQL2 fields on AuthzConstraints into an Expr.

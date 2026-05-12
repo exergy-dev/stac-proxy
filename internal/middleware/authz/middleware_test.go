@@ -228,6 +228,45 @@ func TestParseOPAConstraints_CQL2Fields(t *testing.T) {
 	}
 }
 
+func TestEmbeddedOPA_EmitsCQL2Filter(t *testing.T) {
+	policy := `package stac.authz
+
+default allow := true
+
+result := {
+    "allow": allow,
+    "reasons": [],
+    "constraints": {
+        "cql2_filter": "eo:cloud_cover < 15"
+    }
+}
+`
+	enf, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+		Name:    "test",
+		Modules: map[string]string{"test.rego": policy},
+	})
+	if err != nil {
+		t.Fatalf("NewEmbeddedOPAEnforcer: %v", err)
+	}
+
+	d, err := enf.Authorize(context.Background(), &AuthzInput{
+		Request:  &RequestInfo{Method: "GET", Path: "/search"},
+		Resource: &ResourceInfo{Type: "search"},
+	})
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !d.Allowed {
+		t.Fatalf("decision not allowed")
+	}
+	if d.Constraints == nil {
+		t.Fatal("no constraints on decision")
+	}
+	if d.Constraints.CQL2Filter != "eo:cloud_cover < 15" {
+		t.Fatalf("want CQL2Filter passthrough, got %q", d.Constraints.CQL2Filter)
+	}
+}
+
 func TestProcessRequest_NonSearchRequest_NoInject(t *testing.T) {
 	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
