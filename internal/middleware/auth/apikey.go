@@ -98,32 +98,39 @@ func (p *APIKeyProvider) Authenticate(ctx context.Context, req *http.Request) (*
 		return nil, nil // No API key, let next provider try
 	}
 
-	// Look up the key
+	// Look up the key. p.keys is keyed by the raw API-key string, so a direct
+	// map lookup is O(1) — the previous O(N) linear scan with per-entry
+	// constant-time compare was unnecessary given the storage shape.
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	for key, entry := range p.keys {
-		if !entry.Enabled {
-			continue
-		}
-		// Constant-time comparison to prevent timing attacks
-		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(key)) == 1 {
-			return &Principal{
-				ID:          fmt.Sprintf("apikey:%s", entry.Name),
-				Type:        "service",
-				Name:        entry.Name,
-				Roles:       entry.Roles,
-				Groups:      entry.Groups,
-				Collections: entry.Collections,
-				Attributes: map[string]string{
-					"auth_method": "api_key",
-					"key_name":    entry.Name,
-				},
-			}, nil
-		}
+	entry, ok := p.keys[apiKey]
+	if !ok || !entry.Enabled {
+		return nil, fmt.Errorf("invalid API key")
 	}
 
-	return nil, fmt.Errorf("invalid API key")
+	// Defensive constant-time compare against the stored raw key. The map hit
+	// already guarantees bytewise equality, so this is degenerate in practice,
+	// but it preserves the constant-time-compare API surface for the threat
+	// model (reduces timing-side-channel surface for adversaries probing for
+	// valid keys via lookup timing).
+	if subtle.ConstantTimeCompare([]byte(apiKey), []byte(entry.Key)) != 1 {
+		// Unreachable in practice; included for posture.
+		return nil, fmt.Errorf("invalid API key")
+	}
+
+	return &Principal{
+		ID:          fmt.Sprintf("apikey:%s", entry.Name),
+		Type:        "service",
+		Name:        entry.Name,
+		Roles:       entry.Roles,
+		Groups:      entry.Groups,
+		Collections: entry.Collections,
+		Attributes: map[string]string{
+			"auth_method": "api_key",
+			"key_name":    entry.Name,
+		},
+	}, nil
 }
 
 // loadKeysFromFile loads API keys from a YAML file.

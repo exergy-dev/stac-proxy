@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1309,6 +1310,52 @@ func TestAPIKeyProvider_Integration(t *testing.T) {
 	// Test provider name
 	if provider.Name() != "production-api-keys" {
 		t.Errorf("expected name=production-api-keys, got %s", provider.Name())
+	}
+}
+
+// BenchmarkAuthenticate_1Key measures Authenticate cost with a single key.
+func BenchmarkAuthenticate_1Key(b *testing.B) { benchmarkAuthenticateN(b, 1) }
+
+// BenchmarkAuthenticate_100Keys measures Authenticate cost with 100 keys.
+func BenchmarkAuthenticate_100Keys(b *testing.B) { benchmarkAuthenticateN(b, 100) }
+
+// BenchmarkAuthenticate_10kKeys measures Authenticate cost with 10,000 keys.
+func BenchmarkAuthenticate_10kKeys(b *testing.B) { benchmarkAuthenticateN(b, 10000) }
+
+// benchmarkAuthenticateN builds a provider with n enabled keys and benchmarks
+// Authenticate using the LAST key (worst case for the old linear scan; should
+// be indistinguishable from any other key under the O(1) map lookup).
+func benchmarkAuthenticateN(b *testing.B, n int) {
+	keys := make(map[string]*APIKeyEntry, n)
+	var lastKey string
+	for i := 0; i < n; i++ {
+		k := fmt.Sprintf("bench-key-%08d", i)
+		keys[k] = &APIKeyEntry{
+			Name:    fmt.Sprintf("svc-%d", i),
+			Enabled: true,
+		}
+		lastKey = k
+	}
+
+	provider, err := NewAPIKeyProvider(APIKeyConfig{
+		Header: "X-API-Key",
+		Keys:   keys,
+	})
+	if err != nil {
+		b.Fatalf("failed to create provider: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-API-Key", lastKey)
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		p, err := provider.Authenticate(ctx, req)
+		if err != nil || p == nil {
+			b.Fatalf("authenticate failed: p=%v err=%v", p, err)
+		}
 	}
 }
 
