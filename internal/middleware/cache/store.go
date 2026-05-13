@@ -56,12 +56,6 @@ type Stats struct {
 	Size   int64
 }
 
-// StoreWithStats extends Store with statistics.
-type StoreWithStats interface {
-	Store
-	Stats() Stats
-}
-
 // CacheEntry is the faithful representation of a cached upstream
 // response. The middleware JSON-encodes it into the Store's []byte
 // payload so status code and headers are restored on hit.

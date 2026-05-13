@@ -160,14 +160,6 @@ func (v *Validator) validateFederation(cfg FederationConfig) {
 		v.validateOrigin(i, origin, seenIDs)
 	}
 
-	// Validate search strategy
-	validStrategies := map[string]bool{
-		"parallel": true, "sequential": true, "priority": true,
-	}
-	if cfg.SearchStrategy != "" && !validStrategies[cfg.SearchStrategy] {
-		v.addError("federation.search_strategy must be one of: parallel, sequential, priority")
-	}
-
 	// Validate conflict strategy
 	validConflict := map[string]bool{
 		"first_wins": true, "priority": true, "merge": true,

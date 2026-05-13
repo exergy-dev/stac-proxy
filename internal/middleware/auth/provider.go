@@ -31,22 +31,12 @@ type Principal struct {
 	ExpiresAt   int64             // Token expiration (Unix timestamp)
 }
 
-// IsAnonymous returns true if this is an anonymous principal.
+// IsAnonymous reports whether this principal represents an unauthenticated caller.
 func (p *Principal) IsAnonymous() bool {
 	return p.Type == "anonymous"
 }
 
-// HasRole checks if the principal has a specific role.
-func (p *Principal) HasRole(role string) bool {
-	for _, r := range p.Roles {
-		if r == role {
-			return true
-		}
-	}
-	return false
-}
-
-// HasGroup checks if the principal is a member of a specific group.
+// HasGroup reports whether the principal is a member of group.
 func (p *Principal) HasGroup(group string) bool {
 	for _, g := range p.Groups {
 		if g == group {
@@ -56,10 +46,21 @@ func (p *Principal) HasGroup(group string) bool {
 	return false
 }
 
-// CanAccessCollection checks if the principal can access a collection.
+// HasRole reports whether the principal carries role.
+func (p *Principal) HasRole(role string) bool {
+	for _, r := range p.Roles {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+// CanAccessCollection reports whether the principal is allowed to touch
+// the named collection. An empty Collections slice means "all".
 func (p *Principal) CanAccessCollection(collection string) bool {
 	if len(p.Collections) == 0 {
-		return true // No restrictions
+		return true
 	}
 	for _, c := range p.Collections {
 		if c == collection || c == "*" {
@@ -102,15 +103,3 @@ func AnonymousPrincipal() *Principal {
 	}
 }
 
-// ProviderFunc is an adapter for functions to implement Provider.
-type ProviderFunc func(ctx context.Context, req *http.Request) (*Principal, error)
-
-// Authenticate calls the function.
-func (f ProviderFunc) Authenticate(ctx context.Context, req *http.Request) (*Principal, error) {
-	return f(ctx, req)
-}
-
-// Name returns "func".
-func (f ProviderFunc) Name() string {
-	return "func"
-}

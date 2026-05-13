@@ -4,14 +4,28 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
-	"github.com/yourorg/stac-proxy/internal/testutil"
 )
+
+// newSTACRequest builds a minimal STACRequest for ratelimit tests.
+// Inlined here when internal/testutil was deleted; the previous
+// testutil.NewSTACRequest always passed nil body, so we drop that arg.
+func newSTACRequest(method, path string) *middleware.STACRequest {
+	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Content-Type", "application/json")
+	return &middleware.STACRequest{
+		Request:     req,
+		Context:     context.Background(),
+		RequestType: middleware.RequestTypeSearch,
+		Params:      make(map[string]interface{}),
+	}
+}
 
 // errInternalTest is a test error simulating an internal error.
 var errInternalTest = errors.New("internal test error")
@@ -270,7 +284,7 @@ func TestMiddleware_ProcessRequest_Allow(t *testing.T) {
 				DefaultQuota: tt.quota,
 			})
 
-			req := testutil.NewSTACRequest(http.MethodGet, "/search", nil)
+			req := newSTACRequest(http.MethodGet, "/search")
 			req.RemoteAddr = tt.remoteAddr
 
 			ctx := context.Background()
@@ -381,7 +395,7 @@ func TestMiddleware_ProcessRequest_KeyGeneration(t *testing.T) {
 				DefaultQuota: Quota{Requests: 100, Window: time.Minute},
 			})
 
-			req := testutil.NewSTACRequest(http.MethodGet, "/search", nil)
+			req := newSTACRequest(http.MethodGet, "/search")
 			req.RemoteAddr = tt.remoteAddr
 
 			ctx := context.Background()
@@ -491,7 +505,7 @@ func TestMiddleware_ProcessRequest_QuotaSelection(t *testing.T) {
 				Roles: tt.roles,
 			}
 
-			req := testutil.NewSTACRequest(http.MethodGet, "/search", nil)
+			req := newSTACRequest(http.MethodGet, "/search")
 			req.RemoteAddr = "192.168.1.1"
 			ctx := context.WithValue(context.Background(), middleware.PrincipalKey, principal)
 			req.Context = ctx
@@ -599,7 +613,7 @@ func TestMiddleware_ProcessResponse(t *testing.T) {
 
 			m := NewMiddleware(Config{})
 			ctx := tt.setupContext()
-			req := testutil.NewSTACRequest(http.MethodGet, "/search", nil)
+			req := newSTACRequest(http.MethodGet, "/search")
 
 			result, err := m.ProcessResponse(ctx, req, tt.response)
 			if err != nil {
@@ -660,7 +674,7 @@ func TestMiddleware_ConcurrentRequests(t *testing.T) {
 					Roles: []string{"user"},
 				}
 
-				req := testutil.NewSTACRequest(http.MethodGet, "/search", nil)
+				req := newSTACRequest(http.MethodGet, "/search")
 				req.RemoteAddr = "192.168.1.1"
 				ctx := context.WithValue(context.Background(), middleware.PrincipalKey, principal)
 				req.Context = ctx
@@ -1249,7 +1263,7 @@ func TestMiddleware_Integration(t *testing.T) {
 			deniedCount := 0
 
 			for i := 0; i < tt.requests; i++ {
-				req := testutil.NewSTACRequest(http.MethodGet, "/search", nil)
+				req := newSTACRequest(http.MethodGet, "/search")
 				req.RemoteAddr = "192.168.1.1"
 				ctx := context.WithValue(context.Background(), middleware.PrincipalKey, tt.principal)
 				req.Context = ctx
@@ -1314,7 +1328,7 @@ func BenchmarkMiddleware_ProcessRequest(b *testing.B) {
 		Roles: []string{"user"},
 	}
 
-	req := testutil.NewSTACRequest(http.MethodGet, "/search", nil)
+	req := newSTACRequest(http.MethodGet, "/search")
 	req.RemoteAddr = "192.168.1.1"
 	ctx := context.WithValue(context.Background(), middleware.PrincipalKey, principal)
 	req.Context = ctx
@@ -1338,7 +1352,7 @@ func BenchmarkMiddleware_ProcessRequest_Parallel(b *testing.B) {
 			Roles: []string{"user"},
 		}
 
-		req := testutil.NewSTACRequest(http.MethodGet, "/search", nil)
+		req := newSTACRequest(http.MethodGet, "/search")
 		req.RemoteAddr = "192.168.1.1"
 		ctx := context.WithValue(context.Background(), middleware.PrincipalKey, principal)
 		req.Context = ctx

@@ -13,9 +13,8 @@ import (
 // Metrics contains all Prometheus metrics for the proxy.
 type Metrics struct {
 	// Request metrics
-	RequestsTotal    *prometheus.CounterVec
-	RequestDuration  *prometheus.HistogramVec
-	RequestsInFlight prometheus.Gauge
+	RequestsTotal   *prometheus.CounterVec
+	RequestDuration *prometheus.HistogramVec
 
 	// Upstream/Origin metrics
 	UpstreamRequestsTotal   *prometheus.CounterVec
@@ -25,7 +24,6 @@ type Metrics struct {
 	// Cache metrics
 	CacheHits   *prometheus.CounterVec
 	CacheMisses *prometheus.CounterVec
-	CacheSize   prometheus.Gauge
 
 	// Auth metrics
 	AuthSuccesses *prometheus.CounterVec
@@ -36,8 +34,6 @@ type Metrics struct {
 
 	// Federation metrics
 	FederationOriginsQueried *prometheus.CounterVec
-	FederationItemsMerged    prometheus.Counter
-	FederationDuplicates     prometheus.Counter
 
 	// CQL2 injection metrics
 	CQL2Injected *prometheus.CounterVec // labels: lang, reason ("policy"|"geofence"|"merged")
@@ -67,14 +63,6 @@ func NewMetrics(namespace string) *Metrics {
 				Buckets:   prometheus.DefBuckets,
 			},
 			[]string{"method", "path"},
-		),
-
-		RequestsInFlight: promauto.NewGauge(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Name:      "requests_in_flight",
-				Help:      "Number of HTTP requests currently being processed",
-			},
 		),
 
 		UpstreamRequestsTotal: promauto.NewCounterVec(
@@ -123,14 +111,6 @@ func NewMetrics(namespace string) *Metrics {
 			[]string{"type"},
 		),
 
-		CacheSize: promauto.NewGauge(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Name:      "cache_size_bytes",
-				Help:      "Current cache size in bytes",
-			},
-		),
-
 		AuthSuccesses: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: namespace,
@@ -165,22 +145,6 @@ func NewMetrics(namespace string) *Metrics {
 				Help:      "Total number of origins queried in federation",
 			},
 			[]string{"origin", "success"},
-		),
-
-		FederationItemsMerged: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "federation_items_merged_total",
-				Help:      "Total number of items merged from federated sources",
-			},
-		),
-
-		FederationDuplicates: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "federation_duplicates_total",
-				Help:      "Total number of duplicate items detected in federation",
-			},
 		),
 
 		CQL2Injected: promauto.NewCounterVec(

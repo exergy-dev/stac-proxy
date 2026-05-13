@@ -281,9 +281,6 @@ func TestSetDefaults(t *testing.T) {
 		if cfg.Logging.Format != "json" {
 			t.Errorf("expected default log format 'json', got %q", cfg.Logging.Format)
 		}
-		if cfg.Logging.Output != "stdout" {
-			t.Errorf("expected default log output 'stdout', got %q", cfg.Logging.Output)
-		}
 	})
 
 	t.Run("health check defaults", func(t *testing.T) {
@@ -342,9 +339,6 @@ func TestSetDefaults(t *testing.T) {
 		if cfg.Federation.ConflictStrategy != "priority" {
 			t.Errorf("expected default conflict strategy 'priority', got %q", cfg.Federation.ConflictStrategy)
 		}
-		if cfg.Federation.SearchStrategy != "parallel" {
-			t.Errorf("expected default search strategy 'parallel', got %q", cfg.Federation.SearchStrategy)
-		}
 		if cfg.Federation.DefaultPageSize != 100 {
 			t.Errorf("expected default page size 100, got %d", cfg.Federation.DefaultPageSize)
 		}
@@ -393,7 +387,6 @@ func TestSetDefaults(t *testing.T) {
 			Logging: LoggingConfig{
 				Level:  "debug",
 				Format: "console",
-				Output: "stderr",
 			},
 			Health: HealthConfig{
 				Path: "/healthz",
@@ -1748,33 +1741,6 @@ func TestOriginAuthValidation(t *testing.T) {
 
 // TestFederationValidation tests federation configuration validation
 func TestFederationValidation(t *testing.T) {
-	t.Run("invalid search strategy", func(t *testing.T) {
-		t.Parallel()
-
-		cfg := &Config{
-			Mode: "federation",
-			Server: ServerConfig{
-				Port: 8080,
-			},
-			Federation: &FederationConfig{
-				SearchStrategy: "invalid",
-				Origins: []OriginConfig{
-					{ID: "origin1", BaseURL: "https://origin1.com"},
-				},
-			},
-		}
-		cfg.setDefaults()
-
-		validator := NewValidator()
-		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "search_strategy") {
-			t.Errorf("expected error about search_strategy, got: %v", err)
-		}
-	})
-
 	t.Run("invalid conflict strategy", func(t *testing.T) {
 		t.Parallel()
 
@@ -2085,32 +2051,6 @@ func TestEdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("valid search strategies", func(t *testing.T) {
-		t.Parallel()
-
-		strategies := []string{"parallel", "sequential", "priority"}
-		for _, strategy := range strategies {
-			cfg := &Config{
-				Mode: "federation",
-				Server: ServerConfig{
-					Port: 8080,
-				},
-				Federation: &FederationConfig{
-					SearchStrategy: strategy,
-					Origins: []OriginConfig{
-						{ID: "origin1", BaseURL: "https://origin1.com"},
-					},
-				},
-			}
-			cfg.setDefaults()
-
-			validator := NewValidator()
-			err := validator.Validate(cfg)
-			if err != nil {
-				t.Errorf("unexpected error for search strategy %q: %v", strategy, err)
-			}
-		}
-	})
 
 	t.Run("valid conflict strategies", func(t *testing.T) {
 		t.Parallel()

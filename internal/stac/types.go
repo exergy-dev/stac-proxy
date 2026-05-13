@@ -151,10 +151,7 @@ type SearchRequest struct {
 	FilterCRS   string      `json:"filter-crs,omitempty"`
 
 	// Query extension (deprecated but still used)
-	Query       map[string]interface{} `json:"query,omitempty"`
-
-	// Fields extension
-	Fields      *FieldsFilter `json:"fields,omitempty"`
+	Query map[string]interface{} `json:"query,omitempty"`
 }
 
 // SortSpec specifies a sort field and direction.
@@ -163,40 +160,8 @@ type SortSpec struct {
 	Direction string `json:"direction"` // "asc" or "desc"
 }
 
-// FieldsFilter specifies which fields to include/exclude.
-type FieldsFilter struct {
-	Include []string `json:"include,omitempty"`
-	Exclude []string `json:"exclude,omitempty"`
-}
-
-// TimeRange represents a temporal range for filtering.
-type TimeRange struct {
-	Start *time.Time `json:"start,omitempty"`
-	End   *time.Time `json:"end,omitempty"`
-}
-
 // CollectionsResponse is the response for GET /collections.
 type CollectionsResponse struct {
 	Collections []Collection `json:"collections"`
 	Links       []Link       `json:"links,omitempty"`
-}
-
-// Conformance classes supported by the proxy.
-var ConformanceClasses = []string{
-	"https://api.stacspec.org/v1.0.0/core",
-	"https://api.stacspec.org/v1.0.0/item-search",
-	"https://api.stacspec.org/v1.0.0/ogcapi-features",
-	"http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core",
-	"http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/geojson",
-}
-
-// LandingPage represents the STAC API landing page response.
-type LandingPage struct {
-	Type        string   `json:"type,omitempty"` // "Catalog"
-	ID          string   `json:"id"`
-	Title       string   `json:"title,omitempty"`
-	Description string   `json:"description"`
-	StacVersion string   `json:"stac_version"`
-	ConformsTo  []string `json:"conformsTo,omitempty"`
-	Links       []Link   `json:"links"`
 }

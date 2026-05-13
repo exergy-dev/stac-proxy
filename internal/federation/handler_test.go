@@ -13,7 +13,7 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
-	"github.com/yourorg/stac-proxy/internal/testutil"
+	
 )
 
 // TestNewHandler tests handler initialization
@@ -199,17 +199,17 @@ func TestHandleSearch(t *testing.T) {
 	}{
 		{
 			name: "successful search from multiple origins",
-			searchReq: testutil.SampleSearchRequest(
-				testutil.WithCollections("collection1"),
-				testutil.WithLimit(10),
+			searchReq: SampleSearchRequest(
+				WithCollections("collection1"),
+				WithLimit(10),
 			),
 			mockResponses: map[string]*stac.FeatureCollection{
-				"origin1": testutil.SampleFeatureCollection(
-					testutil.SampleItem("item1", testutil.WithCollection("collection1")),
-					testutil.SampleItem("item2", testutil.WithCollection("collection1")),
+				"origin1": SampleFeatureCollection(
+					SampleItem("item1", WithCollection("collection1")),
+					SampleItem("item2", WithCollection("collection1")),
 				),
-				"origin2": testutil.SampleFeatureCollection(
-					testutil.SampleItem("item3", testutil.WithCollection("collection1")),
+				"origin2": SampleFeatureCollection(
+					SampleItem("item3", WithCollection("collection1")),
 				),
 			},
 			expectedItems:  3,
@@ -217,9 +217,9 @@ func TestHandleSearch(t *testing.T) {
 		},
 		{
 			name: "search with no results",
-			searchReq: testutil.SampleSearchRequest(
-				testutil.WithCollections("nonexistent"),
-				testutil.WithLimit(10),
+			searchReq: SampleSearchRequest(
+				WithCollections("nonexistent"),
+				WithLimit(10),
 			),
 			mockResponses:  map[string]*stac.FeatureCollection{},
 			expectedItems:  0,
@@ -227,15 +227,15 @@ func TestHandleSearch(t *testing.T) {
 		},
 		{
 			name: "search with limit applied (single origin pass-through)",
-			searchReq: testutil.SampleSearchRequest(
-				testutil.WithCollections("collection1"),
-				testutil.WithLimit(2),
+			searchReq: SampleSearchRequest(
+				WithCollections("collection1"),
+				WithLimit(2),
 			),
 			mockResponses: map[string]*stac.FeatureCollection{
-				"origin1": testutil.SampleFeatureCollection(
-					testutil.SampleItem("item1", testutil.WithCollection("collection1")),
-					testutil.SampleItem("item2", testutil.WithCollection("collection1")),
-					testutil.SampleItem("item3", testutil.WithCollection("collection1")),
+				"origin1": SampleFeatureCollection(
+					SampleItem("item1", WithCollection("collection1")),
+					SampleItem("item2", WithCollection("collection1")),
+					SampleItem("item3", WithCollection("collection1")),
 				),
 			},
 			// In single-origin mode the proxy is a transparent
@@ -255,7 +255,7 @@ func TestHandleSearch(t *testing.T) {
 			// Create test servers for each origin
 			origins := make([]*Origin, 0)
 			for originID, fc := range tt.mockResponses {
-				server := testutil.NewTestServerWithJSONResponse(fc)
+				server := NewTestServerWithJSONResponse(fc)
 				defer server.Close()
 
 				origins = append(origins, &Origin{
@@ -315,13 +315,13 @@ func TestHandleSearchWithErrors(t *testing.T) {
 	t.Parallel()
 
 	// Create one failing and one successful origin
-	successFC := testutil.SampleFeatureCollection(
-		testutil.SampleItem("item1", testutil.WithCollection("collection1")),
+	successFC := SampleFeatureCollection(
+		SampleItem("item1", WithCollection("collection1")),
 	)
-	successServer := testutil.NewTestServerWithJSONResponse(successFC)
+	successServer := NewTestServerWithJSONResponse(successFC)
 	defer successServer.Close()
 
-	failServer := testutil.NewTestServerWithError(http.StatusInternalServerError, "origin error")
+	failServer := NewTestServerWithError(http.StatusInternalServerError, "origin error")
 	defer failServer.Close()
 
 	handler, err := NewHandler(HandlerConfig{
@@ -357,9 +357,9 @@ func TestHandleSearchWithErrors(t *testing.T) {
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
-		SearchReq: testutil.SampleSearchRequest(
-			testutil.WithCollections("collection1"),
-			testutil.WithLimit(10),
+		SearchReq: SampleSearchRequest(
+			WithCollections("collection1"),
+			WithLimit(10),
 		),
 	}
 
@@ -382,13 +382,13 @@ func TestHandleSearchWithErrors(t *testing.T) {
 // TestHandleSearchTimeout tests timeout handling
 func TestHandleSearchTimeout(t *testing.T) {
 	// Create a slow server
-	slowServer := testutil.NewTestServerWithDelay(2*time.Second, testutil.SampleFeatureCollection(
-		testutil.SampleItem("item1"),
+	slowServer := NewTestServerWithDelay(2*time.Second, SampleFeatureCollection(
+		SampleItem("item1"),
 	))
 	defer slowServer.Close()
 
-	slowServer2 := testutil.NewTestServerWithDelay(2*time.Second, testutil.SampleFeatureCollection(
-		testutil.SampleItem("item2"),
+	slowServer2 := NewTestServerWithDelay(2*time.Second, SampleFeatureCollection(
+		SampleItem("item2"),
 	))
 	defer slowServer2.Close()
 
@@ -426,8 +426,8 @@ func TestHandleSearchTimeout(t *testing.T) {
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
-		SearchReq: testutil.SampleSearchRequest(
-			testutil.WithCollections("collection1"),
+		SearchReq: SampleSearchRequest(
+			WithCollections("collection1"),
 		),
 	}
 
@@ -450,13 +450,13 @@ func TestHandleSearchTimeout(t *testing.T) {
 // TestHandleSearchContextCancellation tests context cancellation
 func TestHandleSearchContextCancellation(t *testing.T) {
 	// Create a slow server
-	slowServer := testutil.NewTestServerWithDelay(2*time.Second, testutil.SampleFeatureCollection(
-		testutil.SampleItem("item1"),
+	slowServer := NewTestServerWithDelay(2*time.Second, SampleFeatureCollection(
+		SampleItem("item1"),
 	))
 	defer slowServer.Close()
 
-	slowServer2 := testutil.NewTestServerWithDelay(2*time.Second, testutil.SampleFeatureCollection(
-		testutil.SampleItem("item2"),
+	slowServer2 := NewTestServerWithDelay(2*time.Second, SampleFeatureCollection(
+		SampleItem("item2"),
 	))
 	defer slowServer2.Close()
 
@@ -494,8 +494,8 @@ func TestHandleSearchContextCancellation(t *testing.T) {
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     ctx,
 		RequestType: middleware.RequestTypeSearch,
-		SearchReq: testutil.SampleSearchRequest(
-			testutil.WithCollections("collection1"),
+		SearchReq: SampleSearchRequest(
+			WithCollections("collection1"),
 		),
 	}
 
@@ -529,11 +529,11 @@ func TestHandleGetCollections(t *testing.T) {
 			name: "collections from multiple origins",
 			mockResponses: map[string][]stac.Collection{
 				"origin1": {
-					*testutil.SampleCollection("coll1"),
-					*testutil.SampleCollection("coll2"),
+					*SampleCollection("coll1"),
+					*SampleCollection("coll2"),
 				},
 				"origin2": {
-					*testutil.SampleCollection("coll3"),
+					*SampleCollection("coll3"),
 				},
 			},
 			expectedCollCount: 3,
@@ -543,10 +543,10 @@ func TestHandleGetCollections(t *testing.T) {
 			name: "duplicate collections deduplicated",
 			mockResponses: map[string][]stac.Collection{
 				"origin1": {
-					*testutil.SampleCollection("coll1"),
+					*SampleCollection("coll1"),
 				},
 				"origin2": {
-					*testutil.SampleCollection("coll1"), // Same ID
+					*SampleCollection("coll1"), // Same ID
 				},
 			},
 			expectedCollCount: 1,
@@ -568,7 +568,7 @@ func TestHandleGetCollections(t *testing.T) {
 			origins := make([]*Origin, 0)
 			for originID, collections := range tt.mockResponses {
 				resp := &stac.CollectionsResponse{Collections: collections}
-				server := testutil.NewTestServerWithJSONResponse(resp)
+				server := NewTestServerWithJSONResponse(resp)
 				defer server.Close()
 
 				origins = append(origins, &Origin{
@@ -641,7 +641,7 @@ func TestHandleGetCollection(t *testing.T) {
 		{
 			name:           "collection found",
 			collectionID:   "test-collection",
-			mockCollection: testutil.SampleCollection("test-collection"),
+			mockCollection: SampleCollection("test-collection"),
 			mockStatus:     http.StatusOK,
 			expectedStatus: http.StatusOK,
 		},
@@ -661,9 +661,9 @@ func TestHandleGetCollection(t *testing.T) {
 
 			var server *httptest.Server
 			if tt.mockCollection != nil {
-				server = testutil.NewTestServerWithJSONResponse(tt.mockCollection)
+				server = NewTestServerWithJSONResponse(tt.mockCollection)
 			} else {
-				server = testutil.NewTestServerWithError(tt.mockStatus, "not found")
+				server = NewTestServerWithError(tt.mockStatus, "not found")
 			}
 			defer server.Close()
 
@@ -728,8 +728,8 @@ func TestHandleGetCollection(t *testing.T) {
 func TestHandleGetCollectionWithPrefix(t *testing.T) {
 	t.Parallel()
 
-	coll := testutil.SampleCollection("my-collection")
-	server := testutil.NewTestServerWithJSONResponse(coll)
+	coll := SampleCollection("my-collection")
+	server := NewTestServerWithJSONResponse(coll)
 	defer server.Close()
 
 	handler, err := NewHandler(HandlerConfig{
@@ -784,7 +784,7 @@ func TestHandleGetItem(t *testing.T) {
 			name:           "item found",
 			collectionID:   "test-collection",
 			itemID:         "test-item",
-			mockItem:       testutil.SampleItem("test-item", testutil.WithCollection("test-collection")),
+			mockItem:       SampleItem("test-item", WithCollection("test-collection")),
 			mockStatus:     http.StatusOK,
 			expectedStatus: http.StatusOK,
 		},
@@ -805,9 +805,9 @@ func TestHandleGetItem(t *testing.T) {
 
 			var server *httptest.Server
 			if tt.mockItem != nil {
-				server = testutil.NewTestServerWithJSONResponse(tt.mockItem)
+				server = NewTestServerWithJSONResponse(tt.mockItem)
 			} else {
-				server = testutil.NewTestServerWithError(tt.mockStatus, "not found")
+				server = NewTestServerWithError(tt.mockStatus, "not found")
 			}
 			defer server.Close()
 
@@ -873,8 +873,8 @@ func TestHandleGetItem(t *testing.T) {
 func TestHandleGetItemWithPrefix(t *testing.T) {
 	t.Parallel()
 
-	item := testutil.SampleItem("test-item", testutil.WithCollection("my-collection"))
-	server := testutil.NewTestServerWithJSONResponse(item)
+	item := SampleItem("test-item", WithCollection("my-collection"))
+	server := NewTestServerWithJSONResponse(item)
 	defer server.Close()
 
 	handler, err := NewHandler(HandlerConfig{
@@ -921,7 +921,7 @@ func TestHandleGenericProxy(t *testing.T) {
 	mockResp := map[string]interface{}{
 		"message": "generic response",
 	}
-	server := testutil.NewTestServerWithJSONResponse(mockResp)
+	server := NewTestServerWithJSONResponse(mockResp)
 	defer server.Close()
 
 	handler, err := NewHandler(HandlerConfig{
@@ -1120,8 +1120,8 @@ func TestBuildSearchResponse(t *testing.T) {
 	fc := &stac.FeatureCollection{
 		Type: "FeatureCollection",
 		Features: []stac.Item{
-			*testutil.SampleItem("item1"),
-			*testutil.SampleItem("item2"),
+			*SampleItem("item1"),
+			*SampleItem("item2"),
 		},
 		Context: &stac.SearchContext{
 			Returned: 2,
@@ -1226,10 +1226,10 @@ func TestFanOutSearch(t *testing.T) {
 	// Create multiple test servers
 	origins := make([]*Origin, 3)
 	for i := 0; i < 3; i++ {
-		fc := testutil.SampleFeatureCollection(
-			testutil.SampleItem("item" + string(rune('1'+i))),
+		fc := SampleFeatureCollection(
+			SampleItem("item" + string(rune('1'+i))),
 		)
-		server := testutil.NewTestServerWithJSONResponse(fc)
+		server := NewTestServerWithJSONResponse(fc)
 		defer server.Close()
 
 		origins[i] = &Origin{
@@ -1252,9 +1252,9 @@ func TestFanOutSearch(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 
-	searchReq := testutil.SampleSearchRequest(
-		testutil.WithCollections("collection1"),
-		testutil.WithLimit(10),
+	searchReq := SampleSearchRequest(
+		WithCollections("collection1"),
+		WithLimit(10),
 	)
 
 	ctx := context.Background()
@@ -1287,9 +1287,9 @@ func TestSearchOrigin(t *testing.T) {
 	}{
 		{
 			name: "successful search",
-			mockFC: testutil.SampleFeatureCollection(
-				testutil.SampleItem("item1"),
-				testutil.SampleItem("item2"),
+			mockFC: SampleFeatureCollection(
+				SampleItem("item1"),
+				SampleItem("item2"),
 			),
 			wantError: false,
 		},
@@ -1308,9 +1308,9 @@ func TestSearchOrigin(t *testing.T) {
 
 			var server *httptest.Server
 			if tt.mockFC != nil {
-				server = testutil.NewTestServerWithJSONResponse(tt.mockFC)
+				server = NewTestServerWithJSONResponse(tt.mockFC)
 			} else {
-				server = testutil.NewTestServerWithError(http.StatusInternalServerError, "error")
+				server = NewTestServerWithError(http.StatusInternalServerError, "error")
 			}
 			defer server.Close()
 
@@ -1332,8 +1332,8 @@ func TestSearchOrigin(t *testing.T) {
 				t.Fatalf("failed to create handler: %v", err)
 			}
 
-			searchReq := testutil.SampleSearchRequest(
-				testutil.WithCollections("collection1"),
+			searchReq := SampleSearchRequest(
+				WithCollections("collection1"),
 			)
 
 			result := handler.searchOrigin(context.Background(), origin, searchReq)
@@ -1400,10 +1400,10 @@ func TestHandlerPaginationLimits(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fc := testutil.SampleFeatureCollection(
-				testutil.SampleItem("item1"),
+			fc := SampleFeatureCollection(
+				SampleItem("item1"),
 			)
-			server := testutil.NewTestServerWithJSONResponse(fc)
+			server := NewTestServerWithJSONResponse(fc)
 			defer server.Close()
 
 			handler, err := NewHandler(HandlerConfig{
@@ -1425,9 +1425,9 @@ func TestHandlerPaginationLimits(t *testing.T) {
 				t.Fatalf("failed to create handler: %v", err)
 			}
 
-			searchReq := testutil.SampleSearchRequest(
-				testutil.WithCollections("collection1"),
-				testutil.WithLimit(tt.requestLimit),
+			searchReq := SampleSearchRequest(
+				WithCollections("collection1"),
+				WithLimit(tt.requestLimit),
 			)
 
 			req := &middleware.STACRequest{
@@ -1483,8 +1483,8 @@ func TestHandleWithNoMatchingOrigins(t *testing.T) {
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
-		SearchReq: testutil.SampleSearchRequest(
-			testutil.WithCollections("nonexistent-collection"),
+		SearchReq: SampleSearchRequest(
+			WithCollections("nonexistent-collection"),
 		),
 	}
 
@@ -1512,11 +1512,11 @@ func TestHandleCollectionPriority(t *testing.T) {
 	t.Parallel()
 
 	// Create two servers, one that will fail and one that will succeed
-	failServer := testutil.NewTestServerWithError(http.StatusNotFound, "not found")
+	failServer := NewTestServerWithError(http.StatusNotFound, "not found")
 	defer failServer.Close()
 
-	coll := testutil.SampleCollection("test-collection")
-	successServer := testutil.NewTestServerWithJSONResponse(coll)
+	coll := SampleCollection("test-collection")
+	successServer := NewTestServerWithJSONResponse(coll)
 	defer successServer.Close()
 
 	handler, err := NewHandler(HandlerConfig{
@@ -1568,10 +1568,10 @@ func TestHandleCollectionPriority(t *testing.T) {
 func TestHandleSearchWithBbox(t *testing.T) {
 	t.Parallel()
 
-	fc := testutil.SampleFeatureCollection(
-		testutil.SampleItem("item1"),
+	fc := SampleFeatureCollection(
+		SampleItem("item1"),
 	)
-	server := testutil.NewTestServerWithJSONResponse(fc)
+	server := NewTestServerWithJSONResponse(fc)
 	defer server.Close()
 
 	handler, err := NewHandler(HandlerConfig{
@@ -1594,8 +1594,8 @@ func TestHandleSearchWithBbox(t *testing.T) {
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
-		SearchReq: testutil.SampleSearchRequest(
-			testutil.WithSearchBbox(testutil.SampleBbox()),
+		SearchReq: SampleSearchRequest(
+			WithSearchBbox(SampleBbox()),
 		),
 	}
 
@@ -1613,10 +1613,10 @@ func TestHandleSearchWithBbox(t *testing.T) {
 func TestHandleSearchWithDatetime(t *testing.T) {
 	t.Parallel()
 
-	fc := testutil.SampleFeatureCollection(
-		testutil.SampleItem("item1"),
+	fc := SampleFeatureCollection(
+		SampleItem("item1"),
 	)
-	server := testutil.NewTestServerWithJSONResponse(fc)
+	server := NewTestServerWithJSONResponse(fc)
 	defer server.Close()
 
 	handler, err := NewHandler(HandlerConfig{
@@ -1639,8 +1639,8 @@ func TestHandleSearchWithDatetime(t *testing.T) {
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
-		SearchReq: testutil.SampleSearchRequest(
-			testutil.WithSearchDatetime("2023-01-01T00:00:00Z/2023-12-31T23:59:59Z"),
+		SearchReq: SampleSearchRequest(
+			WithSearchDatetime("2023-01-01T00:00:00Z/2023-12-31T23:59:59Z"),
 		),
 	}
 

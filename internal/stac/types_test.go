@@ -660,10 +660,6 @@ func TestSearchRequestMarshalJSON(t *testing.T) {
 				},
 				Filter:     map[string]interface{}{"eo:cloud_cover": map[string]interface{}{"lt": 10}},
 				FilterLang: "cql2-json",
-				Fields: &FieldsFilter{
-					Include: []string{"id", "properties.datetime"},
-					Exclude: []string{"assets"},
-				},
 			},
 			validate: func(t *testing.T, data []byte) {
 				var result map[string]interface{}
@@ -821,10 +817,6 @@ func TestSearchRequestRoundTrip(t *testing.T) {
 		FilterLang: "cql2-json",
 		FilterCRS:  "http://www.opengis.net/def/crs/OGC/1.3/CRS84",
 		Query:      map[string]interface{}{"eo:cloud_cover": map[string]interface{}{"lt": 20}},
-		Fields: &FieldsFilter{
-			Include: []string{"id", "geometry", "properties"},
-			Exclude: []string{"links"},
-		},
 	}
 
 	// Marshal
@@ -1866,163 +1858,6 @@ func TestCollectionsResponseMarshalJSON(t *testing.T) {
 	}
 }
 
-// TestLandingPageMarshalJSON tests marshaling LandingPage.
-func TestLandingPageMarshalJSON(t *testing.T) {
-	t.Parallel()
-
-	landing := &LandingPage{
-		Type:        "Catalog",
-		ID:          "stac-proxy",
-		Title:       "STAC Proxy",
-		Description: "A STAC API proxy",
-		StacVersion: "1.0.0",
-		ConformsTo:  ConformanceClasses,
-		Links: []Link{
-			{Href: "https://example.com", Rel: "self"},
-		},
-	}
-
-	data, err := json.Marshal(landing)
-	if err != nil {
-		t.Fatalf("Marshal failed: %v", err)
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("Failed to unmarshal: %v", err)
-	}
-
-	if result["id"] != "stac-proxy" {
-		t.Errorf("id = %v", result["id"])
-	}
-}
-
-// TestLandingPageUnmarshalJSON tests unmarshaling LandingPage.
-func TestLandingPageUnmarshalJSON(t *testing.T) {
-	t.Parallel()
-
-	jsonData := `{
-		"type": "Catalog",
-		"id": "stac-proxy",
-		"title": "STAC Proxy",
-		"description": "A STAC API proxy",
-		"stac_version": "1.0.0",
-		"conformsTo": [
-			"https://api.stacspec.org/v1.0.0/core"
-		],
-		"links": [
-			{"href": "https://example.com", "rel": "self"}
-		]
-	}`
-
-	var landing LandingPage
-	if err := json.Unmarshal([]byte(jsonData), &landing); err != nil {
-		t.Fatalf("Unmarshal failed: %v", err)
-	}
-
-	if landing.ID != "stac-proxy" {
-		t.Errorf("ID = %v", landing.ID)
-	}
-	if len(landing.ConformsTo) != 1 {
-		t.Errorf("ConformsTo count = %d, want 1", len(landing.ConformsTo))
-	}
-}
-
-// TestFieldsFilterMarshalJSON tests marshaling FieldsFilter.
-func TestFieldsFilterMarshalJSON(t *testing.T) {
-	t.Parallel()
-
-	filter := &FieldsFilter{
-		Include: []string{"id", "geometry", "properties"},
-		Exclude: []string{"links", "assets"},
-	}
-
-	data, err := json.Marshal(filter)
-	if err != nil {
-		t.Fatalf("Marshal failed: %v", err)
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("Failed to unmarshal: %v", err)
-	}
-
-	include, ok := result["include"].([]interface{})
-	if !ok || len(include) != 3 {
-		t.Errorf("include count = %v, want 3", len(include))
-	}
-}
-
-// TestFieldsFilterUnmarshalJSON tests unmarshaling FieldsFilter.
-func TestFieldsFilterUnmarshalJSON(t *testing.T) {
-	t.Parallel()
-
-	jsonData := `{
-		"include": ["id", "geometry"],
-		"exclude": ["links"]
-	}`
-
-	var filter FieldsFilter
-	if err := json.Unmarshal([]byte(jsonData), &filter); err != nil {
-		t.Fatalf("Unmarshal failed: %v", err)
-	}
-
-	if len(filter.Include) != 2 {
-		t.Errorf("Include count = %d, want 2", len(filter.Include))
-	}
-	if len(filter.Exclude) != 1 {
-		t.Errorf("Exclude count = %d, want 1", len(filter.Exclude))
-	}
-}
-
-// TestTimeRangeMarshalJSON tests marshaling TimeRange.
-func TestTimeRangeMarshalJSON(t *testing.T) {
-	t.Parallel()
-
-	tr := &TimeRange{
-		Start: timePtr(time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)),
-		End:   timePtr(time.Date(2023, 12, 31, 23, 59, 59, 0, time.UTC)),
-	}
-
-	data, err := json.Marshal(tr)
-	if err != nil {
-		t.Fatalf("Marshal failed: %v", err)
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("Failed to unmarshal: %v", err)
-	}
-
-	if result["start"] == nil {
-		t.Error("start should not be nil")
-	}
-	if result["end"] == nil {
-		t.Error("end should not be nil")
-	}
-}
-
-// TestTimeRangeUnmarshalJSON tests unmarshaling TimeRange.
-func TestTimeRangeUnmarshalJSON(t *testing.T) {
-	t.Parallel()
-
-	jsonData := `{
-		"start": "2023-01-01T00:00:00Z",
-		"end": "2023-12-31T23:59:59Z"
-	}`
-
-	var tr TimeRange
-	if err := json.Unmarshal([]byte(jsonData), &tr); err != nil {
-		t.Fatalf("Unmarshal failed: %v", err)
-	}
-
-	if tr.Start == nil {
-		t.Error("Start should not be nil")
-	}
-	if tr.End == nil {
-		t.Error("End should not be nil")
-	}
-}
 
 // Helper function to create time pointers.
 func timePtr(t time.Time) *time.Time {

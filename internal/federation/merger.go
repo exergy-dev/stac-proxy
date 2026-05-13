@@ -108,29 +108,25 @@ func (m *ResultMerger) itemKey(originID string, item stac.Item) string {
 }
 
 // resolveConflict handles duplicate items from different origins.
+//
+// The strategy enum has five values for config compat, but the actual
+// resolver only branches three ways: Merge (combine assets), RejectDuplicates
+// (error out), and "keep existing" (FirstWins / PriorityWins / Namespace).
+// The semantic distinction between the three "keep existing" strategies
+// lives upstream of this function: PriorityWins relies on a priority
+// pre-sort, FirstWins is a race that depends on arrival order, and
+// Namespace prefixes keys so duplicates never reach here in the first place.
 func (m *ResultMerger) resolveConflict(existing *itemWithOrigin,
 	incoming *stac.Item, incomingOrigin string) (stac.Item, error) {
 
 	switch m.strategy {
-	case ConflictFirstWins:
-		return existing.item, nil
-
-	case ConflictPriorityWins:
-		// existing is already sorted by priority, so keep it
-		return existing.item, nil
-
 	case ConflictMerge:
 		return m.mergeItems(existing.item, *incoming, incomingOrigin), nil
-
-	case ConflictNamespace:
-		// Shouldn't happen since keys are different
-		return existing.item, nil
-
 	case ConflictRejectDuplicates:
 		return stac.Item{}, fmt.Errorf("duplicate item ID %s from origins %s and %s",
 			incoming.ID, existing.originID, incomingOrigin)
-
 	default:
+		// ConflictFirstWins, ConflictPriorityWins, ConflictNamespace.
 		return existing.item, nil
 	}
 }

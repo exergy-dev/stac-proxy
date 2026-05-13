@@ -52,7 +52,6 @@ type TimeoutConfig struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level"`  // debug, info, warn, error
 	Format string `yaml:"format"` // json, console
-	Output string `yaml:"output"` // stdout, stderr, or file path
 }
 
 // MetricsConfig contains Prometheus metrics settings.
@@ -64,9 +63,7 @@ type MetricsConfig struct {
 
 // HealthConfig contains health check settings.
 type HealthConfig struct {
-	Path           string        `yaml:"path"`
-	CheckUpstreams bool          `yaml:"check_upstreams"`
-	CheckInterval  time.Duration `yaml:"check_interval"`
+	Path string `yaml:"path"`
 }
 
 // MiddlewareConfig contains configuration for a single middleware.
@@ -89,13 +86,12 @@ type UpstreamConfig struct {
 
 // FederationConfig contains multi-origin federation settings.
 type FederationConfig struct {
-	Origins          []OriginConfig   `yaml:"origins"`
-	SearchStrategy   string           `yaml:"search_strategy"`    // parallel, sequential, priority
-	MaxConcurrent    int              `yaml:"max_concurrent"`
-	AggregateTimeout time.Duration    `yaml:"aggregate_timeout"`
-	ConflictStrategy string           `yaml:"conflict_strategy"`  // first_wins, priority, merge, namespace
-	DefaultPageSize  int              `yaml:"default_page_size"`
-	MaxPageSize      int              `yaml:"max_page_size"`
+	Origins          []OriginConfig `yaml:"origins"`
+	MaxConcurrent    int            `yaml:"max_concurrent"`
+	AggregateTimeout time.Duration  `yaml:"aggregate_timeout"`
+	ConflictStrategy string         `yaml:"conflict_strategy"` // first_wins, priority, merge, namespace
+	DefaultPageSize  int            `yaml:"default_page_size"`
+	MaxPageSize      int            `yaml:"max_page_size"`
 }
 
 // OriginConfig contains configuration for a single upstream STAC server.
@@ -227,11 +223,7 @@ type AuthProviderConfig struct {
 
 // AuthzConfig contains authorization settings.
 type AuthzConfig struct {
-	PolicySource  string               `yaml:"policy_source"` // file, opa, both
-	PolicyFile    string               `yaml:"policy_file"`
-	DefaultEffect string               `yaml:"default_effect"` // allow, deny
 	OPA           *OPAConfig           `yaml:"opa"`
-	Geofencing    *GeofenceConfig      `yaml:"geofencing"`
 	CQL2Injection *CQL2InjectionConfig `yaml:"cql2_injection"`
 }
 
@@ -266,20 +258,6 @@ type OPAConfig struct {
 	Timeout        time.Duration `yaml:"timeout"`
 	CacheDecisions bool          `yaml:"cache_decisions"`
 	CacheTTL       time.Duration `yaml:"cache_ttl"`
-}
-
-// GeofenceConfig contains geofencing settings.
-type GeofenceConfig struct {
-	Enabled            bool          `yaml:"enabled"`
-	RegionsFile        string        `yaml:"regions_file"`
-	RegionsURL         string        `yaml:"regions_url"`
-	RefreshInterval    time.Duration `yaml:"refresh_interval"`
-	DefaultAllow       bool          `yaml:"default_allow"`
-	EnforceOnSearch    bool          `yaml:"enforce_on_search"`
-	EnforceOnItems     bool          `yaml:"enforce_on_items"`
-	UserFenceSource    string        `yaml:"user_fence_source"` // jwt_claim, ldap, database, config
-	UserFenceClaimName string        `yaml:"user_fence_claim"`
-	ExclusionZones     []string      `yaml:"exclusion_zones"`
 }
 
 // CacheConfig contains caching settings.
@@ -366,9 +344,6 @@ func (c *Config) setDefaults() {
 	if c.Logging.Format == "" {
 		c.Logging.Format = "json"
 	}
-	if c.Logging.Output == "" {
-		c.Logging.Output = "stdout"
-	}
 	if c.Health.Path == "" {
 		c.Health.Path = "/health"
 	}
@@ -384,9 +359,6 @@ func (c *Config) setDefaults() {
 		}
 		if c.Federation.ConflictStrategy == "" {
 			c.Federation.ConflictStrategy = "priority"
-		}
-		if c.Federation.SearchStrategy == "" {
-			c.Federation.SearchStrategy = "parallel"
 		}
 		if c.Federation.DefaultPageSize == 0 {
 			c.Federation.DefaultPageSize = 100
