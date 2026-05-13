@@ -1,9 +1,8 @@
 // Package auth provides authentication middleware.
 //
-// Auth is a chi-style http middleware (func(http.Handler) http.Handler)
-// rather than going through the buffered middleware.Middleware contract:
-// it operates only on the inbound *http.Request and writes either a
-// Principal into context or a 401 response — no parsed STAC body needed.
+// Auth is a chi-style http middleware (func(http.Handler) http.Handler):
+// it operates on the inbound *http.Request and writes either a Principal
+// into context or a 401 response.
 package auth
 
 import (

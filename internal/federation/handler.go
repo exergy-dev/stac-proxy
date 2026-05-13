@@ -867,7 +867,8 @@ func adaptRequestStripCollectionPrefix(req *middleware.STACRequest, prefix strin
 		return req
 	}
 	stripped := strings.Replace(req.Request.URL.Path, "/collections/"+req.Collection, "/collections/"+strings.TrimPrefix(req.Collection, prefix), 1)
-	cloned := req.Clone()
+	clonedV := *req
+	cloned := &clonedV
 	// Clone the URL so we don't mutate the inbound one.
 	newURL := *cloned.Request.URL
 	newURL.Path = stripped

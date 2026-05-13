@@ -1,10 +1,7 @@
 // Package logging provides request/response logging middleware.
 //
-// Logging is a chi-style http middleware (func(http.Handler) http.Handler)
-// rather than going through the buffered middleware.Middleware contract:
-// it doesn't need the parsed response body, and registering it at the
-// chi router level means it runs once per request without per-iteration
-// chain bookkeeping.
+// Logging is a chi-style http middleware (func(http.Handler) http.Handler).
+// It records request method, path, status, and duration once per request.
 package logging
 
 import (

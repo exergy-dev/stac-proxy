@@ -50,14 +50,12 @@ func (rt RequestType) String() string {
 	}
 }
 
-// STACRequest wraps an HTTP request with STAC-specific context.
-//
-// Request is an explicit named field rather than an embedded pointer so
-// that code reading req.Context always gets the field (which middleware
-// may have mutated), not the *http.Request.Context() method (which
-// returns the original context untouched). The previous embedded form
-// was a footgun: req.Context() compiled fine and silently bypassed
-// chain mutations.
+// STACRequest carries the parsed STAC shape alongside the underlying
+// http.Request through federation's internal dispatch. Chi-style
+// middleware reads the same data from r.Context() via STACInfo; the
+// STACRequest form survives because federation's per-route handlers
+// (handleSearch, handleGetCollection, etc.) and the buildOutboundRequest
+// path consume it directly.
 type STACRequest struct {
 	Request     *http.Request
 	Context     context.Context
@@ -67,66 +65,13 @@ type STACRequest struct {
 	SearchReq   *stac.SearchRequest // Parsed search request (if applicable)
 }
 
-// Clone creates a shallow copy of the STACRequest.
-func (r *STACRequest) Clone() *STACRequest {
-	clone := *r
-	return &clone
-}
-
-// STACResponse wraps an HTTP response. The body is the canonical
-// payload; downstream middleware reads/mutates Body directly rather
-// than going through any parallel parsed-data field.
+// STACResponse is federation's internal response value. ServeHTTP
+// translates it to the wire ResponseWriter; the chi-style middleware
+// chain only sees http.ResponseWriter/Request.
 type STACResponse struct {
 	StatusCode int
 	Headers    http.Header
 	Body       []byte
-}
-
-// Middleware defines the interface for all middleware components.
-type Middleware interface {
-	// Name returns a unique identifier for this middleware.
-	Name() string
-
-	// ProcessRequest handles incoming requests before upstream.
-	// Return modified request, or error to short-circuit.
-	ProcessRequest(ctx context.Context, req *STACRequest) (*STACRequest, error)
-
-	// ProcessResponse handles responses before returning to client.
-	ProcessResponse(ctx context.Context, req *STACRequest, resp *STACResponse) (*STACResponse, error)
-
-	// Priority determines ordering (lower = earlier in chain).
-	Priority() int
-}
-
-// BaseMiddleware provides a default implementation that can be embedded.
-type BaseMiddleware struct {
-	name     string
-	priority int
-}
-
-// NewBaseMiddleware creates a new BaseMiddleware.
-func NewBaseMiddleware(name string, priority int) BaseMiddleware {
-	return BaseMiddleware{name: name, priority: priority}
-}
-
-// Name returns the middleware name.
-func (m BaseMiddleware) Name() string {
-	return m.name
-}
-
-// Priority returns the middleware priority.
-func (m BaseMiddleware) Priority() int {
-	return m.priority
-}
-
-// ProcessRequest is a no-op that passes through the request.
-func (m BaseMiddleware) ProcessRequest(ctx context.Context, req *STACRequest) (*STACRequest, error) {
-	return req, nil
-}
-
-// ProcessResponse is a no-op that passes through the response.
-func (m BaseMiddleware) ProcessResponse(ctx context.Context, req *STACRequest, resp *STACResponse) (*STACResponse, error) {
-	return resp, nil
 }
 
 // MiddlewarePriorities defines standard priority levels for middleware.
@@ -148,20 +93,6 @@ const (
 	PriorityTransform = 600
 	PriorityLast      = 1000
 )
-
-// Handler is the interface for the core request handler (proxy or federation).
-type Handler interface {
-	// Handle processes a STAC request and returns a response.
-	Handle(ctx context.Context, req *STACRequest) (*STACResponse, error)
-}
-
-// HandlerFunc is an adapter to allow the use of ordinary functions as Handlers.
-type HandlerFunc func(ctx context.Context, req *STACRequest) (*STACResponse, error)
-
-// Handle calls f(ctx, req).
-func (f HandlerFunc) Handle(ctx context.Context, req *STACRequest) (*STACResponse, error) {
-	return f(ctx, req)
-}
 
 // Context keys for storing values in context.
 type contextKey string

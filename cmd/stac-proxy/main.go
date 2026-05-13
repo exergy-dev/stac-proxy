@@ -205,26 +205,6 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 	return srv.Start()
 }
 
-// buildMiddlewareChain creates the middleware chain from configuration.
-func buildMiddlewareChain(cfg *config.Config, logger *zap.Logger, metrics *observability.Metrics) (*middleware.Chain, error) {
-	var middlewares []middleware.Middleware
-
-	for _, mwCfg := range cfg.Middleware {
-		mw, err := createMiddleware(mwCfg, logger, metrics)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create middleware %s: %w", mwCfg.Name, err)
-		}
-		if mw != nil {
-			middlewares = append(middlewares, mw)
-		}
-	}
-
-	// Authz now wires as chi middleware (see buildAuthzHTTPMiddleware),
-	// not via the buffered chain.
-
-	return middleware.NewChain(middlewares...), nil
-}
-
 // buildAuthzMiddleware wires the authz middleware (including CQL2
 // injection) from the top-level authz config. Returns (nil, nil) when
 // authz is not configured.
@@ -287,38 +267,6 @@ func buildAuthzHTTPMiddleware(cfg *config.Config, logger *zap.Logger) (func(http
 		CQL2InjectionEnabled: cql2Enabled,
 		FilterExtensionCheck: filterCheck,
 	}), nil
-}
-
-// createMiddleware creates a middleware from configuration.
-func createMiddleware(cfg config.MiddlewareConfig, logger *zap.Logger, metrics *observability.Metrics) (middleware.Middleware, error) {
-	switch cfg.Name {
-	case "logging":
-		// Logging is wired as chi middleware at the router level, not
-		// in the buffered chain. Silently skip the config entry so old
-		// YAMLs that listed it continue to load without error.
-		return nil, nil
-
-	case "auth":
-		// Auth is wired as chi middleware at the router level (see
-		// buildAuthHTTPMiddleware). Silently skip the legacy chain entry.
-		return nil, nil
-
-	case "cache":
-		// Cache is wired as chi middleware at the router level.
-		return nil, nil
-
-	case "rate_limit":
-		// Rate limit is wired as chi middleware at the router level.
-		return nil, nil
-
-	case "url_remap":
-		// Remap is wired as chi middleware at the router level.
-		return nil, nil
-
-	default:
-		logger.Warn("Unknown middleware, skipping", zap.String("name", cfg.Name))
-		return nil, nil
-	}
 }
 
 // buildAuthHTTPMiddleware builds the chi-style auth middleware from the

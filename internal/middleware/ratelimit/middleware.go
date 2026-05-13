@@ -1,9 +1,8 @@
 // Package ratelimit provides rate limiting middleware.
 //
-// Ratelimit is a chi-style http middleware (func(http.Handler) http.Handler)
-// rather than going through the buffered middleware.Middleware contract:
-// it operates only on the inbound *http.Request and writes either the
-// X-RateLimit-* headers + a 200 (allowed) or a 429 response (denied).
+// Ratelimit is a chi-style http middleware (func(http.Handler) http.Handler):
+// it inspects the inbound *http.Request, sets X-RateLimit-* response
+// headers, and either lets the request through or short-circuits with 429.
 package ratelimit
 
 import (
