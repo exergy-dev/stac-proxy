@@ -4,8 +4,8 @@ package server
 import (
 	"net/http"
 	"strconv"
-	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
@@ -142,46 +142,17 @@ func (r *Router) handleCollectionQueryables(w http.ResponseWriter, req *http.Req
 // can read the parsed STAC shape, then delegates to the inner handler.
 // Request-level metrics are recorded after the handler returns.
 func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, rt middleware.RequestType, collection, itemID string) {
-	start := time.Now()
 	info := &middleware.STACInfo{RequestType: rt, Collection: collection, ItemID: itemID}
 	ctx := middleware.WithSTACInfo(req.Context(), info)
 	req = req.WithContext(ctx)
 
-	sw := &statusWriter{ResponseWriter: w}
-	r.handler.ServeHTTP(sw, req)
-	r.observeRequest(req, sw.status, start)
-}
-
-// statusWriter captures the response status code for the metrics path.
-type statusWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (s *statusWriter) WriteHeader(code int) {
-	s.status = code
-	s.ResponseWriter.WriteHeader(code)
-}
-
-func (s *statusWriter) Write(b []byte) (int, error) {
-	if s.status == 0 {
-		s.status = http.StatusOK
-	}
-	return s.ResponseWriter.Write(b)
-}
-
-// observeRequest records end-to-end request duration and a status-coded
-// counter. Status 0 means the handler returned an error before producing
-// a response; the handler's structured error mapping picks the final
-// status code.
-func (r *Router) observeRequest(req *http.Request, status int, start time.Time) {
-	if r.metrics == nil {
-		return
-	}
-	path := req.URL.Path
-	r.metrics.RequestDuration.WithLabelValues(req.Method, path).Observe(time.Since(start).Seconds())
-	if status != 0 {
-		r.metrics.RequestsTotal.WithLabelValues(req.Method, path, strconv.Itoa(status)).Inc()
+	m := httpsnoop.CaptureMetrics(r.handler, w, req)
+	if r.metrics != nil {
+		path := req.URL.Path
+		r.metrics.RequestDuration.WithLabelValues(req.Method, path).Observe(m.Duration.Seconds())
+		if m.Code != 0 {
+			r.metrics.RequestsTotal.WithLabelValues(req.Method, path, strconv.Itoa(m.Code)).Inc()
+		}
 	}
 }
 

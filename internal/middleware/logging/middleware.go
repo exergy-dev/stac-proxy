@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
@@ -51,7 +51,6 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
 			requestID, _ := r.Context().Value(middleware.RequestIDKey).(string)
 			if requestID == "" {
 				requestID = generateRequestID()
@@ -67,51 +66,27 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				zap.String("user_agent", r.UserAgent()),
 			)
 
-			sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-			sr.Header().Set("X-Request-ID", requestID)
-			next.ServeHTTP(sr, r.WithContext(ctx))
+			w.Header().Set("X-Request-ID", requestID)
+			m := httpsnoop.CaptureMetrics(next, w, r.WithContext(ctx))
 
 			fields := []zap.Field{
 				zap.String("request_id", requestID),
 				zap.String("method", r.Method),
 				zap.String("path", r.URL.Path),
-				zap.Int("status", sr.status),
-				zap.Duration("duration", time.Since(start)),
-				zap.Int("response_size", sr.written),
+				zap.Int("status", m.Code),
+				zap.Duration("duration", m.Duration),
+				zap.Int64("response_size", m.Written),
 			}
 			switch {
-			case sr.status >= 500:
+			case m.Code >= 500:
 				logger.Error("request_completed", fields...)
-			case sr.status >= 400:
+			case m.Code >= 400:
 				logger.Warn("request_completed", fields...)
 			default:
 				logger.Info("request_completed", fields...)
 			}
 		})
 	}
-}
-
-// statusRecorder wraps an http.ResponseWriter so the middleware can
-// observe the status code and bytes written after the handler returns.
-type statusRecorder struct {
-	http.ResponseWriter
-	status  int
-	written int
-	wrote   bool
-}
-
-func (s *statusRecorder) WriteHeader(code int) {
-	if !s.wrote {
-		s.status = code
-		s.wrote = true
-	}
-	s.ResponseWriter.WriteHeader(code)
-}
-
-func (s *statusRecorder) Write(b []byte) (int, error) {
-	n, err := s.ResponseWriter.Write(b)
-	s.written += n
-	return n, err
 }
 
 // redactQuery returns a copy of rawQuery with values for any key in
