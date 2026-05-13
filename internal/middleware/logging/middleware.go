@@ -1,8 +1,15 @@
-// Package logging provides logging middleware.
+// Package logging provides request/response logging middleware.
+//
+// Logging is a chi-style http middleware (func(http.Handler) http.Handler)
+// rather than going through the buffered middleware.Middleware contract:
+// it doesn't need the parsed response body, and registering it at the
+// chi router level means it runs once per request without per-iteration
+// chain bookkeeping.
 package logging
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -20,6 +27,94 @@ import (
 var defaultRedactedQueryParams = []string{
 	"token", "access_token", "refresh_token", "id_token",
 	"signature", "sig", "api_key", "apikey", "key", "password",
+}
+
+// Config contains configuration for the logging middleware.
+type Config struct {
+	Logger *zap.Logger
+	// RedactedQueryParams, when set, replaces the default set of
+	// query-parameter names whose values are redacted in logs.
+	// Nil/empty falls back to defaultRedactedQueryParams.
+	RedactedQueryParams []string
+}
+
+// NewHTTPMiddleware returns chi-compatible middleware that:
+//   - generates a request ID if none is already in context,
+//   - logs request_started before the handler runs,
+//   - logs request_completed (at level matching status code) after,
+//   - sets X-Request-ID on the response.
+func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
+	logger := cfg.Logger
+	if logger == nil {
+		logger, _ = zap.NewProduction()
+	}
+	redacted := cfg.RedactedQueryParams
+	if len(redacted) == 0 {
+		redacted = defaultRedactedQueryParams
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			requestID, _ := r.Context().Value(middleware.RequestIDKey).(string)
+			if requestID == "" {
+				requestID = generateRequestID()
+			}
+			ctx := context.WithValue(r.Context(), middleware.RequestIDKey, requestID)
+
+			logger.Info("request_started",
+				zap.String("request_id", requestID),
+				zap.String("method", r.Method),
+				zap.String("path", r.URL.Path),
+				zap.String("query", redactQuery(r.URL.RawQuery, redacted)),
+				zap.String("remote_addr", r.RemoteAddr),
+				zap.String("user_agent", r.UserAgent()),
+			)
+
+			sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			sr.Header().Set("X-Request-ID", requestID)
+			next.ServeHTTP(sr, r.WithContext(ctx))
+
+			fields := []zap.Field{
+				zap.String("request_id", requestID),
+				zap.String("method", r.Method),
+				zap.String("path", r.URL.Path),
+				zap.Int("status", sr.status),
+				zap.Duration("duration", time.Since(start)),
+				zap.Int("response_size", sr.written),
+			}
+			switch {
+			case sr.status >= 500:
+				logger.Error("request_completed", fields...)
+			case sr.status >= 400:
+				logger.Warn("request_completed", fields...)
+			default:
+				logger.Info("request_completed", fields...)
+			}
+		})
+	}
+}
+
+// statusRecorder wraps an http.ResponseWriter so the middleware can
+// observe the status code and bytes written after the handler returns.
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written int
+	wrote   bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if !s.wrote {
+		s.status = code
+		s.wrote = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	n, err := s.ResponseWriter.Write(b)
+	s.written += n
+	return n, err
 }
 
 // redactQuery returns a copy of rawQuery with values for any key in
@@ -45,134 +140,8 @@ func redactQuery(rawQuery string, names []string) string {
 	return values.Encode()
 }
 
-// Middleware logs requests and responses.
-type Middleware struct {
-	middleware.BaseMiddleware
-	logger          *zap.Logger
-	includeBody     bool
-	redactedParams  []string
-}
-
-// Config contains configuration for the logging middleware.
-type Config struct {
-	Logger      *zap.Logger
-	IncludeBody bool
-	// RedactedQueryParams, when set, replaces the default set of
-	// query-parameter names whose values are redacted in logs.
-	// Nil/empty falls back to defaultRedactedQueryParams.
-	RedactedQueryParams []string
-}
-
-// NewMiddleware creates a new logging middleware.
-func NewMiddleware(cfg Config) *Middleware {
-	logger := cfg.Logger
-	if logger == nil {
-		logger, _ = zap.NewProduction()
-	}
-
-	redacted := cfg.RedactedQueryParams
-	if len(redacted) == 0 {
-		redacted = defaultRedactedQueryParams
-	}
-
-	return &Middleware{
-		BaseMiddleware: middleware.NewBaseMiddleware("logging", middleware.PriorityLogging),
-		logger:         logger,
-		includeBody:    cfg.IncludeBody,
-		redactedParams: redacted,
-	}
-}
-
-// ProcessRequest logs the incoming request. Context values are added
-// onto the existing request context — never replacing it wholesale —
-// so values set by earlier middleware are preserved.
-func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACRequest) (*middleware.STACRequest, error) {
-	start := time.Now()
-
-	ctx = context.WithValue(ctx, startTimeKey, start)
-
-	requestID, ok := ctx.Value(middleware.RequestIDKey).(string)
-	if !ok || requestID == "" {
-		requestID = generateRequestID()
-		ctx = context.WithValue(ctx, middleware.RequestIDKey, requestID)
-	}
-	req.Context = ctx
-
-	m.logger.Info("request_started",
-		zap.String("request_id", requestID),
-		zap.String("method", req.Method),
-		zap.String("path", req.URL.Path),
-		zap.String("query", redactQuery(req.URL.RawQuery, m.redactedParams)),
-		zap.String("remote_addr", req.RemoteAddr),
-		zap.String("user_agent", req.UserAgent()),
-		zap.String("request_type", req.RequestType.String()),
-	)
-
-	return req, nil
-}
-
-// ProcessResponse logs the response.
-func (m *Middleware) ProcessResponse(ctx context.Context, req *middleware.STACRequest, resp *middleware.STACResponse) (*middleware.STACResponse, error) {
-	duration := time.Duration(0)
-	if start, ok := ctx.Value(startTimeKey).(time.Time); ok {
-		duration = time.Since(start)
-	}
-
-	requestID, _ := ctx.Value(middleware.RequestIDKey).(string)
-
-	fields := []zap.Field{
-		zap.String("request_id", requestID),
-		zap.String("method", req.Method),
-		zap.String("path", req.URL.Path),
-		zap.Int("status", resp.StatusCode),
-		zap.Duration("duration", duration),
-		zap.Int("response_size", len(resp.Body)),
-	}
-
-	// Add body size for responses
-	if m.includeBody && len(resp.Body) < 1024 {
-		fields = append(fields, zap.ByteString("response_body", resp.Body))
-	}
-
-	// Log at appropriate level based on status code
-	if resp.StatusCode >= 500 {
-		m.logger.Error("request_completed", fields...)
-	} else if resp.StatusCode >= 400 {
-		m.logger.Warn("request_completed", fields...)
-	} else {
-		m.logger.Info("request_completed", fields...)
-	}
-
-	// Add request ID to response headers
-	if requestID != "" {
-		if resp.Headers == nil {
-			resp.Headers = make(map[string][]string)
-		}
-		resp.Headers.Set("X-Request-ID", requestID)
-	}
-
-	return resp, nil
-}
-
-// Context key for start time
-type contextKeyType string
-
-const startTimeKey contextKeyType = "logging_start_time"
-
-// generateRequestID generates a globally unique request ID. Used
-// when an upstream client didn't already inject one. UUIDv4 is the
-// portable, collision-resistant choice and is what every observability
-// stack (Grafana, Datadog, etc.) recognises.
+// generateRequestID returns a UUIDv4 string suitable as a request ID
+// when no upstream chain has already provided one.
 func generateRequestID() string {
 	return uuid.NewString()
-}
-
-// WithLogger returns a new middleware with the given logger.
-func (m *Middleware) WithLogger(logger *zap.Logger) *Middleware {
-	return &Middleware{
-		BaseMiddleware: m.BaseMiddleware,
-		logger:         logger,
-		includeBody:    m.includeBody,
-		redactedParams: m.redactedParams,
-	}
 }

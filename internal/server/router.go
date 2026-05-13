@@ -38,6 +38,11 @@ type RouterConfig struct {
 	// MaxBodyBytes caps the size of any inbound request body. 0 uses
 	// DefaultMaxBodyBytes; negative disables the cap.
 	MaxBodyBytes int64
+	// HTTPMiddlewares are chi-style middlewares registered via r.Use
+	// BEFORE the buffered middleware Chain runs. Used for cross-cutting
+	// concerns that don't need the parsed STACResponse (logging,
+	// request-ID forwarding, etc.).
+	HTTPMiddlewares []func(http.Handler) http.Handler
 }
 
 // NewRouter creates a new router with STAC API endpoints.
@@ -54,6 +59,11 @@ func NewRouter(cfg RouterConfig) *Router {
 	r.Use(chimiddleware.RequestID)
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.Recoverer)
+
+	// Operator-supplied chi middlewares (logging, etc.).
+	for _, mw := range cfg.HTTPMiddlewares {
+		r.Use(mw)
+	}
 
 	// Cap inbound bodies before any handler reads them.
 	limit := cfg.MaxBodyBytes

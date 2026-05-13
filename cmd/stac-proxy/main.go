@@ -133,13 +133,18 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 		return fmt.Errorf("failed to build handler: %w", err)
 	}
 
-	// Create router
+	// Create router. Logging is registered as chi-style middleware here
+	// rather than inside the buffered Chain so it sits at the request
+	// boundary and doesn't pay chain-iteration overhead.
 	router := server.NewRouter(server.RouterConfig{
 		Handler:       handler,
 		Chain:         chain,
 		HealthChecker: healthChecker,
 		Metrics:       metrics,
 		MaxBodyBytes:  cfg.Server.MaxBodyBytes,
+		HTTPMiddlewares: []func(http.Handler) http.Handler{
+			logging.NewHTTPMiddleware(logging.Config{Logger: logger}),
+		},
 	})
 
 	// Create and start HTTP server
@@ -287,14 +292,10 @@ func buildAuthzMiddleware(cfg *config.Config, logger *zap.Logger) (middleware.Mi
 func createMiddleware(cfg config.MiddlewareConfig, logger *zap.Logger, metrics *observability.Metrics) (middleware.Middleware, error) {
 	switch cfg.Name {
 	case "logging":
-		includeBody := false
-		if v, ok := cfg.Config["include_body"].(bool); ok {
-			includeBody = v
-		}
-		return logging.NewMiddleware(logging.Config{
-			Logger:      logger,
-			IncludeBody: includeBody,
-		}), nil
+		// Logging is wired as chi middleware at the router level, not
+		// in the buffered chain. Silently skip the config entry so old
+		// YAMLs that listed it continue to load without error.
+		return nil, nil
 
 	case "auth":
 		return buildAuthMiddleware(cfg.Config, logger)
