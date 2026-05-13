@@ -73,32 +73,13 @@ func (r *STACRequest) Clone() *STACRequest {
 	return &clone
 }
 
-// STACResponse wraps an HTTP response with parsed STAC data.
+// STACResponse wraps an HTTP response. The body is the canonical
+// payload; downstream middleware reads/mutates Body directly rather
+// than going through any parallel parsed-data field.
 type STACResponse struct {
-	StatusCode  int
-	Headers     http.Header
-	Body        []byte
-	Items       []stac.Item       // Parsed items (if applicable)
-	Collections []stac.Collection // Parsed collections (if applicable)
-}
-
-// Clone creates a copy of the STACResponse.
-func (r *STACResponse) Clone() *STACResponse {
-	clone := STACResponse{
-		StatusCode: r.StatusCode,
-		Headers:    r.Headers.Clone(),
-		Body:       make([]byte, len(r.Body)),
-	}
-	copy(clone.Body, r.Body)
-	if r.Items != nil {
-		clone.Items = make([]stac.Item, len(r.Items))
-		copy(clone.Items, r.Items)
-	}
-	if r.Collections != nil {
-		clone.Collections = make([]stac.Collection, len(r.Collections))
-		copy(clone.Collections, r.Collections)
-	}
-	return &clone
+	StatusCode int
+	Headers    http.Header
+	Body       []byte
 }
 
 // Middleware defines the interface for all middleware components.
