@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -62,13 +61,11 @@ result := {
 	}))
 	defer srv.Close()
 
-	// Build the authz middleware as buildAuthzMiddleware would, with
-	// SupportsFilterExtension=true on the upstream gate.
-	mw := authz.NewAuthzMiddleware(authz.AuthzMiddlewareConfig{
+	mw := authz.NewHTTPMiddleware(authz.HTTPConfig{
 		Enforcer:             enf,
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
-		FilterExtensionCheck: func(_ *middleware.STACRequest) bool { return true },
+		FilterExtensionCheck: func(_ *http.Request, _ *middleware.STACInfo) bool { return true },
 	})
 
 	handler, err := federation.NewHandler(federation.HandlerConfig{
@@ -88,19 +85,10 @@ result := {
 	}
 
 	httpReq := httptest.NewRequest("GET", "/search", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
+	withChain(t, mw, handler, httpReq, &middleware.STACInfo{
 		RequestType: middleware.RequestTypeSearch,
 		SearchReq:   &stac.SearchRequest{Limit: 10},
-	}
-
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("authz ProcessRequest: %v", err)
-	}
-	if _, err := handler.Handle(context.Background(), req); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	})
 
 	var body map[string]interface{}
 	if err := json.Unmarshal(cap.body, &body); err != nil {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
@@ -76,7 +77,7 @@ func TestIntegration_FederationFilterRidesAlong(t *testing.T) {
 		t.Fatalf("NewOriginClient B: %v", err)
 	}
 
-	mw := authz.NewAuthzMiddleware(authz.AuthzMiddlewareConfig{
+	mw := authz.NewHTTPMiddleware(authz.HTTPConfig{
 		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
 			Allowed: true,
 			Constraints: &authz.AuthzConstraints{
@@ -87,30 +88,26 @@ func TestIntegration_FederationFilterRidesAlong(t *testing.T) {
 		CQL2InjectionEnabled: true,
 	})
 
+	sr := &stac.SearchRequest{
+		Filter:     "datetime > '2025-01-01'",
+		FilterLang: "cql2-text",
+		Limit:      10,
+	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	httpReq := httptest.NewRequest("GET", "/search", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
-		RequestType: middleware.RequestTypeSearch,
-		SearchReq: &stac.SearchRequest{
-			Filter:     "datetime > '2025-01-01'",
-			FilterLang: "cql2-text",
-			Limit:      10,
-		},
-	}
+	ctx := middleware.WithSTACInfo(httpReq.Context(), info)
+	ctx = context.WithValue(ctx, middleware.PrincipalKey, &auth.Principal{ID: "anon", Type: "anonymous"})
+	httpReq = httpReq.WithContext(ctx)
 
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("authz ProcessRequest: %v", err)
-	}
+	// Run authz chi middleware over a no-op inner handler so it
+	// mutates sr.Filter pre-fanout, then dispatch directly to each
+	// origin client (simulating federation fan-out).
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})).ServeHTTP(httptest.NewRecorder(), httpReq)
 
-	// Simulate the federation fan-out: each origin client serializes
-	// the same SearchReq independently. This is what
-	// federation.Handler does internally.
-	ctx := context.Background()
-	if _, err := originA.Search(ctx, req.SearchReq); err != nil {
+	if _, err := originA.Search(context.Background(), sr); err != nil {
 		t.Fatalf("originA Search: %v", err)
 	}
-	if _, err := originB.Search(ctx, req.SearchReq); err != nil {
+	if _, err := originB.Search(context.Background(), sr); err != nil {
 		t.Fatalf("originB Search: %v", err)
 	}
 

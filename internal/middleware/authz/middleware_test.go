@@ -2,11 +2,13 @@ package authz
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -15,58 +17,71 @@ type stubEnforcer struct {
 	decision *AuthzDecision
 }
 
-func (s *stubEnforcer) Name() string                                           { return "stub" }
+func (s *stubEnforcer) Name() string { return "stub" }
 func (s *stubEnforcer) Authorize(_ context.Context, _ *AuthzInput) (*AuthzDecision, error) {
 	return s.decision, nil
 }
 
-func newReq(method, path string, sr *stac.SearchRequest) *middleware.STACRequest {
-	httpReq := httptest.NewRequest(method, path, nil)
-	return &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
-		RequestType: middleware.RequestTypeSearch,
-		SearchReq:   sr,
-	}
+// withInfo returns r wrapped in a context carrying STACInfo and an
+// anonymous principal so the chi-style authz middleware proceeds.
+func withInfo(r *http.Request, info *middleware.STACInfo) *http.Request {
+	ctx := middleware.WithSTACInfo(r.Context(), info)
+	ctx = context.WithValue(ctx, middleware.PrincipalKey, &auth.Principal{ID: "anon", Type: "anonymous"})
+	return r.WithContext(ctx)
 }
 
-func TestProcessRequest_CQL2InjectionDisabled_NoOp(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+// runMW invokes mw against a no-op inner handler and returns the recorder.
+func runMW(mw func(http.Handler) http.Handler, r *http.Request) *httptest.ResponseRecorder {
+	rr := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, r)
+	return rr
+}
+
+// runMWWithBody invokes mw against an inner handler that writes status+body.
+func runMWWithBody(mw func(http.Handler) http.Handler, r *http.Request, status int, body []byte) *httptest.ResponseRecorder {
+	rr := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	})).ServeHTTP(rr, r)
+	return rr
+}
+
+func TestAuthz_CQL2InjectionDisabled_NoOp(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				CQL2Filter: "eo:cloud_cover < 20",
-			},
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
 		}},
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: false,
 	})
 	sr := &stac.SearchRequest{}
-	req := newReq("GET", "/search", sr)
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
+	runMW(mw, r)
 	if sr.Filter != nil {
 		t.Fatalf("want untouched Filter when disabled, got %v", sr.Filter)
 	}
 }
 
-func TestProcessRequest_PolicyCQL2Only(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+func TestAuthz_PolicyCQL2Only(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				CQL2Filter: "eo:cloud_cover < 20",
-			},
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
 		}},
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
 	})
 	sr := &stac.SearchRequest{}
-	req := newReq("GET", "/search", sr)
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
+	runMW(mw, r)
+
 	s, ok := sr.Filter.(string)
 	if !ok {
 		t.Fatalf("want string filter (cql2-text), got %T %v", sr.Filter, sr.Filter)
@@ -79,13 +94,11 @@ func TestProcessRequest_PolicyCQL2Only(t *testing.T) {
 	}
 }
 
-func TestProcessRequest_UserAndPolicyANDCombined(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+func TestAuthz_UserAndPolicyANDCombined(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				CQL2Filter: "eo:cloud_cover < 20",
-			},
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
 		}},
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
@@ -94,10 +107,10 @@ func TestProcessRequest_UserAndPolicyANDCombined(t *testing.T) {
 		Filter:     "datetime > '2025-01-01'",
 		FilterLang: "cql2-text",
 	}
-	req := newReq("GET", "/search", sr)
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
+	runMW(mw, r)
+
 	s, ok := sr.Filter.(string)
 	if !ok {
 		t.Fatalf("want string filter, got %T %v", sr.Filter, sr.Filter)
@@ -110,24 +123,20 @@ func TestProcessRequest_UserAndPolicyANDCombined(t *testing.T) {
 	}
 }
 
-func TestProcessRequest_PreservesCQL2JSONLang(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+func TestAuthz_PreservesCQL2JSONLang(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				CQL2Filter: "eo:cloud_cover < 20",
-			},
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
 		}},
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
 	})
-	sr := &stac.SearchRequest{
-		FilterLang: "cql2-json",
-	}
-	req := newReq("POST", "/search", sr)
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
+	sr := &stac.SearchRequest{FilterLang: "cql2-json"}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	runMW(mw, r)
+
 	if _, ok := sr.Filter.(map[string]interface{}); !ok {
 		t.Fatalf("want cql2-json map output, got %T %v", sr.Filter, sr.Filter)
 	}
@@ -136,7 +145,7 @@ func TestProcessRequest_PreservesCQL2JSONLang(t *testing.T) {
 	}
 }
 
-func TestProcessRequest_GeofencePushDown(t *testing.T) {
+func TestAuthz_GeofencePushDown(t *testing.T) {
 	polygon := map[string]interface{}{
 		"type": "Polygon",
 		"coordinates": []interface{}{
@@ -152,22 +161,19 @@ func TestProcessRequest_GeofencePushDown(t *testing.T) {
 	enforcer := &stubEnforcer{decision: &AuthzDecision{
 		Allowed: true,
 		Constraints: &AuthzConstraints{
-			Geofence: &GeofenceConstraint{
-				AllowedArea: polygon,
-				FilterMode:  true,
-			},
+			Geofence: &GeofenceConstraint{AllowedArea: polygon, FilterMode: true},
 		},
 	}}
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer:             enforcer,
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
 	})
 	sr := &stac.SearchRequest{}
-	req := newReq("GET", "/search", sr)
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
+	runMW(mw, r)
+
 	s, ok := sr.Filter.(string)
 	if !ok {
 		t.Fatalf("want cql2-text output, got %T %v", sr.Filter, sr.Filter)
@@ -177,36 +183,6 @@ func TestProcessRequest_GeofencePushDown(t *testing.T) {
 	}
 	if !enforcer.decision.Constraints.GeofencePushedDown {
 		t.Fatal("want GeofencePushedDown=true after push-down")
-	}
-}
-
-func TestProcessResponse_PostFilterGatedByPushDown(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
-		Enforcer:             &stubEnforcer{},
-		AllowAnonymous:       true,
-		CQL2InjectionEnabled: true,
-	})
-
-	// Decision with geofence in filter mode AND pushed down.
-	decision := &AuthzDecision{
-		Allowed: true,
-		Constraints: &AuthzConstraints{
-			Geofence:           &GeofenceConstraint{FilterMode: true},
-			GeofencePushedDown: true,
-		},
-	}
-	ctx := context.WithValue(context.Background(), middleware.AuthzDecisionKey, decision)
-	resp := &middleware.STACResponse{StatusCode: 200, Body: []byte("ok")}
-	req := newReq("GET", "/search", nil)
-
-	got, err := mw.ProcessResponse(ctx, req, resp)
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	// filterResponseByGeofence is currently a stub returning resp as-is,
-	// but the gate must prevent the call entirely (we observe by sentinel).
-	if got != resp {
-		t.Fatal("when push-down is set, ProcessResponse should not transform the response")
 	}
 }
 
@@ -227,134 +203,95 @@ func TestParseOPAConstraints_CQL2Fields(t *testing.T) {
 	}
 }
 
-func TestProcessRequest_FilterExtensionCheck_SkipsWhenUnsupported(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+func TestAuthz_FilterExtensionCheck_SkipsWhenUnsupported(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				CQL2Filter: "eo:cloud_cover < 20",
-			},
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
 		}},
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
-		FilterExtensionCheck: func(_ *middleware.STACRequest) bool { return false },
+		FilterExtensionCheck: func(_ *http.Request, _ *middleware.STACInfo) bool { return false },
 	})
 	sr := &stac.SearchRequest{}
-	req := newReq("GET", "/search", sr)
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
+	runMW(mw, r)
 	if sr.Filter != nil {
 		t.Fatalf("want no injection when upstream lacks Filter Extension, got %v", sr.Filter)
 	}
 }
 
-func TestProcessRequest_FilterExtensionCheck_AllowsWhenSupported(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+func TestAuthz_FilterExtensionCheck_AllowsWhenSupported(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				CQL2Filter: "eo:cloud_cover < 20",
-			},
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
 		}},
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
-		FilterExtensionCheck: func(_ *middleware.STACRequest) bool { return true },
+		FilterExtensionCheck: func(_ *http.Request, _ *middleware.STACInfo) bool { return true },
 	})
 	sr := &stac.SearchRequest{}
-	req := newReq("GET", "/search", sr)
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
+	runMW(mw, r)
 	if sr.Filter == nil {
 		t.Fatal("want injection to happen when target supports Filter Extension")
 	}
 }
 
-func TestProcessResponse_SingleRecord_AllowMatching(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
-		Enforcer:             &stubEnforcer{},
+func TestAuthz_SingleRecord_AllowMatching(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
+		}},
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
 	})
-	decision := &AuthzDecision{
-		Allowed: true,
-		Constraints: &AuthzConstraints{
-			CQL2Filter: "eo:cloud_cover < 20",
-		},
-	}
-	ctx := context.WithValue(context.Background(), middleware.AuthzDecisionKey, decision)
-	httpReq := httptest.NewRequest("GET", "/collections/x/items/abc", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
-		RequestType: middleware.RequestTypeItem,
-	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeItem, Collection: "x", ItemID: "abc"}
+	r := withInfo(httptest.NewRequest("GET", "/collections/x/items/abc", nil), info)
 	body := []byte(`{"id":"abc","collection":"x","properties":{"eo:cloud_cover":12.5}}`)
-	resp := &middleware.STACResponse{StatusCode: 200, Body: body}
-	got, err := mw.ProcessResponse(ctx, req, resp)
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if got.StatusCode != 200 {
-		t.Fatalf("want 200 for matching item, got %d", got.StatusCode)
+	rr := runMWWithBody(mw, r, http.StatusOK, body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200 for matching item, got %d", rr.Code)
 	}
 }
 
-func TestProcessResponse_SingleRecord_404OnMismatch(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
-		Enforcer:             &stubEnforcer{},
+func TestAuthz_SingleRecord_404OnMismatch(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 5"},
+		}},
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
 	})
-	decision := &AuthzDecision{
-		Allowed: true,
-		Constraints: &AuthzConstraints{
-			CQL2Filter: "eo:cloud_cover < 5",
-		},
-	}
-	ctx := context.WithValue(context.Background(), middleware.AuthzDecisionKey, decision)
-	httpReq := httptest.NewRequest("GET", "/collections/x/items/abc", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
-		RequestType: middleware.RequestTypeItem,
-	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeItem, Collection: "x", ItemID: "abc"}
+	r := withInfo(httptest.NewRequest("GET", "/collections/x/items/abc", nil), info)
 	body := []byte(`{"id":"abc","collection":"x","properties":{"eo:cloud_cover":12.5}}`)
-	resp := &middleware.STACResponse{StatusCode: 200, Body: body}
-	got, err := mw.ProcessResponse(ctx, req, resp)
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if got.StatusCode != 404 {
-		t.Fatalf("want 404 for non-matching item, got %d", got.StatusCode)
+	rr := runMWWithBody(mw, r, http.StatusOK, body)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("want 404 for non-matching item, got %d", rr.Code)
 	}
 }
 
-func TestProcessResponse_SingleRecord_DisabledIsPassthrough(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
-		Enforcer:       &stubEnforcer{},
+func TestAuthz_SingleRecord_DisabledIsPassthrough(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 5"},
+		}},
 		AllowAnonymous: true,
-		// CQL2InjectionEnabled: false (default)
+		// CQL2InjectionEnabled: false
 	})
-	decision := &AuthzDecision{
-		Allowed: true,
-		Constraints: &AuthzConstraints{
-			CQL2Filter: "eo:cloud_cover < 5",
-		},
-	}
-	ctx := context.WithValue(context.Background(), middleware.AuthzDecisionKey, decision)
-	httpReq := httptest.NewRequest("GET", "/collections/x/items/abc", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
-		RequestType: middleware.RequestTypeItem,
-	}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeItem, Collection: "x", ItemID: "abc"}
+	r := withInfo(httptest.NewRequest("GET", "/collections/x/items/abc", nil), info)
 	body := []byte(`{"id":"abc","properties":{"eo:cloud_cover":12.5}}`)
-	resp := &middleware.STACResponse{StatusCode: 200, Body: body}
-	got, _ := mw.ProcessResponse(ctx, req, resp)
-	if got.StatusCode != 200 {
-		t.Fatalf("disabled injection should not gate single-record GETs; got %d", got.StatusCode)
+	rr := runMWWithBody(mw, r, http.StatusOK, body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("disabled injection should not gate single-record GETs; got %d", rr.Code)
 	}
 }
 
@@ -397,26 +334,19 @@ result := {
 	}
 }
 
-func TestProcessRequest_NonSearchRequest_NoInject(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
+func TestAuthz_NonSearchRequest_NoInject(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				CQL2Filter: "eo:cloud_cover < 20",
-			},
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
 		}},
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: true,
 	})
-	httpReq := httptest.NewRequest("GET", "/collections/foo", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
-		RequestType: middleware.RequestTypeCollection,
-		// SearchReq deliberately nil
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeCollection, Collection: "foo"}
+	r := withInfo(httptest.NewRequest("GET", "/collections/foo", nil), info)
+	rr := runMW(mw, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200 pass-through, got %d", rr.Code)
 	}
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	// No filter to inject into; the test just guarantees no panic/error.
 }

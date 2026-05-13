@@ -3,13 +3,15 @@ package authz
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 )
 
-func TestFilterResponseByGeofence_DropsOutsideItems(t *testing.T) {
+func TestFilterByGeofence_DropsOutsideItems(t *testing.T) {
 	// Allow polygon (-10..10). Items inside should pass; outside drops.
 	g := &GeofenceConstraint{
 		AllowedArea: map[string]interface{}{
@@ -35,13 +37,12 @@ func TestFilterResponseByGeofence_DropsOutsideItems(t *testing.T) {
 		"numberReturned": 2,
 	})
 
-	resp := &middleware.STACResponse{StatusCode: 200, Body: body}
-	got, err := filterResponseByGeofence(resp, g)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	out, ok := filterByGeofence(body, g)
+	if !ok {
+		t.Fatal("filterByGeofence should mutate a FeatureCollection body")
 	}
 	var fc map[string]interface{}
-	if err := json.Unmarshal(got.Body, &fc); err != nil {
+	if err := json.Unmarshal(out, &fc); err != nil {
 		t.Fatalf("body not JSON: %v", err)
 	}
 	feats := fc["features"].([]interface{})
@@ -56,17 +57,12 @@ func TestFilterResponseByGeofence_DropsOutsideItems(t *testing.T) {
 	}
 }
 
-func TestFilterResponseByGeofence_PassThroughOnNonOK(t *testing.T) {
+func TestFilterByGeofence_NonFeatureCollectionPassesThrough(t *testing.T) {
 	g := &GeofenceConstraint{
 		AllowedArea: map[string]interface{}{"type": "Point", "coordinates": []interface{}{0.0, 0.0}},
 	}
-	resp := &middleware.STACResponse{StatusCode: 500, Body: []byte(`{"error":"boom"}`)}
-	got, err := filterResponseByGeofence(resp, g)
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if got != resp {
-		t.Fatal("non-2xx response should pass through unchanged")
+	if _, ok := filterByGeofence([]byte(`{"error":"boom"}`), g); ok {
+		t.Fatal("non-FeatureCollection body should pass through unchanged")
 	}
 }
 
@@ -81,7 +77,6 @@ func TestEvaluateCondition_TimeRange(t *testing.T) {
 	if !e.evaluateCondition(cond, in) {
 		t.Fatal("want pass for in-range window")
 	}
-	// Future-only window
 	cond.Config = map[string]interface{}{"start": "2999-01-01T00:00:00Z"}
 	if e.evaluateCondition(cond, in) {
 		t.Fatal("want fail for future-only window")
@@ -129,35 +124,32 @@ func TestEvaluateCondition_UnknownTypeFailsClosed(t *testing.T) {
 	}
 }
 
-// TestProcessResponse_GeofencePostFilter ensures the middleware
-// pipeline runs the geofence post-filter when push-down didn't fire.
-func TestProcessResponse_GeofencePostFilter(t *testing.T) {
-	mw := NewAuthzMiddleware(AuthzMiddlewareConfig{
-		Enforcer: &stubEnforcer{},
-		// CQL2InjectionEnabled left false; geofence won't push down,
-		// but ProcessResponse should still post-filter.
-	})
-	decision := &AuthzDecision{
-		Allowed: true,
-		Constraints: &AuthzConstraints{
-			Geofence: &GeofenceConstraint{
-				AllowedArea: map[string]interface{}{
-					"type": "Polygon",
-					"coordinates": []interface{}{
-						[]interface{}{
-							[]interface{}{-10.0, -10.0},
-							[]interface{}{10.0, -10.0},
-							[]interface{}{10.0, 10.0},
-							[]interface{}{-10.0, 10.0},
-							[]interface{}{-10.0, -10.0},
-						},
-					},
-				},
-				FilterMode: true,
+// TestAuthz_GeofencePostFilter ensures the middleware pipeline runs the
+// geofence post-filter when push-down didn't fire (CQL2InjectionEnabled=false).
+func TestAuthz_GeofencePostFilter(t *testing.T) {
+	polygon := map[string]interface{}{
+		"type": "Polygon",
+		"coordinates": []interface{}{
+			[]interface{}{
+				[]interface{}{-10.0, -10.0},
+				[]interface{}{10.0, -10.0},
+				[]interface{}{10.0, 10.0},
+				[]interface{}{-10.0, 10.0},
+				[]interface{}{-10.0, -10.0},
 			},
 		},
 	}
-	ctx := context.WithValue(context.Background(), middleware.AuthzDecisionKey, decision)
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				Geofence: &GeofenceConstraint{AllowedArea: polygon, FilterMode: true},
+			},
+		}},
+		AllowAnonymous: true,
+		// CQL2InjectionEnabled left false; post-filter is the path under test.
+	})
+
 	body, _ := json.Marshal(map[string]interface{}{
 		"type": "FeatureCollection",
 		"features": []map[string]interface{}{
@@ -165,19 +157,22 @@ func TestProcessResponse_GeofencePostFilter(t *testing.T) {
 			{"id": "out", "geometry": map[string]interface{}{"type": "Point", "coordinates": []interface{}{50.0, 50.0}}},
 		},
 	})
-	httpReq := httptest.NewRequest("GET", "/search", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
-		RequestType: middleware.RequestTypeSearch,
-	}
-	resp := &middleware.STACResponse{StatusCode: 200, Body: body}
-	got, err := mw.ProcessResponse(ctx, req, resp)
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
+
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch}
+	r := httptest.NewRequest("GET", "/search", nil)
+	ctx := middleware.WithSTACInfo(r.Context(), info)
+	ctx = context.WithValue(ctx, middleware.PrincipalKey, &auth.Principal{ID: "anon", Type: "anonymous"})
+	r = r.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/geo+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})).ServeHTTP(rr, r)
+
 	var fc map[string]interface{}
-	if err := json.Unmarshal(got.Body, &fc); err != nil {
+	if err := json.Unmarshal(rr.Body.Bytes(), &fc); err != nil {
 		t.Fatalf("body not JSON: %v", err)
 	}
 	feats := fc["features"].([]interface{})

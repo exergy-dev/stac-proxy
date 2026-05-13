@@ -3,6 +3,7 @@ package authz
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
@@ -112,26 +113,28 @@ type Enforcer interface {
 	Name() string
 }
 
-// BuildAuthzInput creates AuthzInput from a STAC request.
-func BuildAuthzInput(req *middleware.STACRequest, principal *auth.Principal) *AuthzInput {
+// BuildAuthzInput creates AuthzInput from an http.Request plus the
+// parsed STAC info and authenticated principal. info may be nil for
+// non-STAC routes; in that case Resource is left empty.
+func BuildAuthzInput(r *http.Request, info *middleware.STACInfo, principal *auth.Principal) *AuthzInput {
 	input := &AuthzInput{
 		Request: &RequestInfo{
-			Method:      req.Request.Method,
-			Path:        req.Request.URL.Path,
-			RequestType: req.RequestType.String(),
-			Query:       req.Request.URL.Query(),
-			Headers:     extractHeaders(req.Request.Header),
-			ClientIP:    req.Request.RemoteAddr,
+			Method:   r.Method,
+			Path:     r.URL.Path,
+			Query:    r.URL.Query(),
+			Headers:  extractHeaders(r.Header),
+			ClientIP: r.RemoteAddr,
 		},
-		Resource: &ResourceInfo{
-			Type:       resourceTypeFromRequest(req.RequestType),
-			Collection: req.Collection,
-			ItemID:     req.ItemID,
-		},
+		Resource: &ResourceInfo{},
+	}
+	if info != nil {
+		input.Request.RequestType = info.RequestType.String()
+		input.Resource.Type = resourceTypeFromRequest(info.RequestType)
+		input.Resource.Collection = info.Collection
+		input.Resource.ItemID = info.ItemID
 	}
 
 	if principal != nil {
-		// Convert Attributes from map[string]string to map[string]interface{}
 		attrs := make(map[string]interface{}, len(principal.Attributes))
 		for k, v := range principal.Attributes {
 			attrs[k] = v
@@ -146,11 +149,8 @@ func BuildAuthzInput(req *middleware.STACRequest, principal *auth.Principal) *Au
 		}
 	}
 
-	// Extract request ID from context if available
-	if reqID := req.Context.Value(middleware.RequestIDKey); reqID != nil {
-		if id, ok := reqID.(string); ok {
-			input.Request.RequestID = id
-		}
+	if reqID, ok := r.Context().Value(middleware.RequestIDKey).(string); ok {
+		input.Request.RequestID = reqID
 	}
 
 	return input

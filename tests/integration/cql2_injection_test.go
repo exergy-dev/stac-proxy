@@ -16,9 +16,61 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
+
+// federationInner is an http.Handler that reads STACInfo from the
+// request context (populated upstream by middleware/router shim),
+// builds a STACRequest, and delegates to federation.Handler.Handle —
+// mirroring what the production router does after the chi-style
+// middleware chain runs.
+func federationInner(h *federation.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info := middleware.STACInfoFromContext(r.Context())
+		if info == nil {
+			http.Error(w, "no STACInfo", http.StatusInternalServerError)
+			return
+		}
+		sreq := &middleware.STACRequest{
+			Request:     r,
+			Context:     r.Context(),
+			RequestType: info.RequestType,
+			Collection:  info.Collection,
+			ItemID:      info.ItemID,
+			SearchReq:   info.SearchReq,
+		}
+		resp, err := h.Handle(r.Context(), sreq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		for k, vs := range resp.Headers {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		if resp.StatusCode == 0 {
+			resp.StatusCode = http.StatusOK
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(resp.Body)
+	})
+}
+
+// withChain wires the chi-style authz middleware around the federation
+// inner handler, populates STACInfo + an anonymous principal in the
+// request context, and serves a single request.
+func withChain(t *testing.T, mw func(http.Handler) http.Handler, h *federation.Handler, req *http.Request, info *middleware.STACInfo) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx := middleware.WithSTACInfo(req.Context(), info)
+	ctx = context.WithValue(ctx, middleware.PrincipalKey, &auth.Principal{ID: "anon", Type: "anonymous"})
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+	mw(federationInner(h)).ServeHTTP(rr, req)
+	return rr
+}
 
 // newSingleOriginFederation wires a federation-of-1 against srv.URL for
 // integration tests that previously used proxy.NewHandler. The fast-path
@@ -78,9 +130,7 @@ func (e *fixedEnforcer) Authorize(_ context.Context, _ *authz.AuthzInput) (*auth
 func TestIntegration_PolicyCQL2FlowsToUpstreamSingleOrigin(t *testing.T) {
 	srv, cap := newUpstream(t)
 
-	// Build the authz middleware with CQL2 injection enabled and a
-	// stubbed enforcer that emits a policy CQL2 filter.
-	mw := authz.NewAuthzMiddleware(authz.AuthzMiddlewareConfig{
+	mw := authz.NewHTTPMiddleware(authz.HTTPConfig{
 		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
 			Allowed: true,
 			Constraints: &authz.AuthzConstraints{
@@ -91,29 +141,18 @@ func TestIntegration_PolicyCQL2FlowsToUpstreamSingleOrigin(t *testing.T) {
 		CQL2InjectionEnabled: true,
 	})
 
-	// Build the single-origin federation handler (federation-of-1).
 	handler := newSingleOriginFederation(t, srv.URL)
 
-	// Simulate an incoming GET /search with a client-supplied filter,
-	// after the server router has parsed it into SearchReq.
+	sr := &stac.SearchRequest{
+		Filter:     "datetime > '2025-01-01'",
+		FilterLang: "cql2-text",
+		Limit:      10,
+	}
 	httpReq := httptest.NewRequest("GET", "/search?limit=10", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
+	withChain(t, mw, handler, httpReq, &middleware.STACInfo{
 		RequestType: middleware.RequestTypeSearch,
-		SearchReq: &stac.SearchRequest{
-			Filter:     "datetime > '2025-01-01'",
-			FilterLang: "cql2-text",
-			Limit:      10,
-		},
-	}
-
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("authz ProcessRequest: %v", err)
-	}
-	if _, err := handler.Handle(context.Background(), req); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+		SearchReq:   sr,
+	})
 
 	if cap.method != http.MethodPost {
 		t.Fatalf("upstream method = %q, want POST", cap.method)
@@ -161,7 +200,7 @@ func TestIntegration_GeofencePushdownThroughProxy(t *testing.T) {
 		},
 	}
 
-	mw := authz.NewAuthzMiddleware(authz.AuthzMiddlewareConfig{
+	mw := authz.NewHTTPMiddleware(authz.HTTPConfig{
 		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
 			Allowed: true,
 			Constraints: &authz.AuthzConstraints{
@@ -178,19 +217,10 @@ func TestIntegration_GeofencePushdownThroughProxy(t *testing.T) {
 	handler := newSingleOriginFederation(t, srv.URL)
 
 	httpReq := httptest.NewRequest("GET", "/search", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
+	withChain(t, mw, handler, httpReq, &middleware.STACInfo{
 		RequestType: middleware.RequestTypeSearch,
 		SearchReq:   &stac.SearchRequest{Limit: 5},
-	}
-
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("authz ProcessRequest: %v", err)
-	}
-	if _, err := handler.Handle(context.Background(), req); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	})
 
 	var body map[string]interface{}
 	if err := json.Unmarshal(cap.body, &body); err != nil {
@@ -206,7 +236,7 @@ func TestIntegration_DisabledByDefault(t *testing.T) {
 	srv, cap := newUpstream(t)
 
 	// CQL2InjectionEnabled NOT set => default off, no injection.
-	mw := authz.NewAuthzMiddleware(authz.AuthzMiddlewareConfig{
+	mw := authz.NewHTTPMiddleware(authz.HTTPConfig{
 		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
 			Allowed: true,
 			Constraints: &authz.AuthzConstraints{
@@ -219,19 +249,10 @@ func TestIntegration_DisabledByDefault(t *testing.T) {
 	handler := newSingleOriginFederation(t, srv.URL)
 
 	httpReq := httptest.NewRequest("GET", "/search", nil)
-	req := &middleware.STACRequest{
-		Request:     httpReq,
-		Context:     httpReq.Context(),
+	withChain(t, mw, handler, httpReq, &middleware.STACInfo{
 		RequestType: middleware.RequestTypeSearch,
 		SearchReq:   &stac.SearchRequest{},
-	}
-
-	if _, err := mw.ProcessRequest(req.Context, req); err != nil {
-		t.Fatalf("authz ProcessRequest: %v", err)
-	}
-	if _, err := handler.Handle(context.Background(), req); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	})
 
 	// Body should not contain the policy filter — injection was off.
 	if strings.Contains(string(cap.body), "eo:cloud_cover") {

@@ -152,6 +152,11 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 	} else if cMW != nil {
 		httpMiddlewares = append(httpMiddlewares, cMW)
 	}
+	if azMW, err := buildAuthzHTTPMiddleware(cfg, logger); err != nil {
+		return fmt.Errorf("failed to build authz middleware: %w", err)
+	} else if azMW != nil {
+		httpMiddlewares = append(httpMiddlewares, azMW)
+	}
 	if rmMW, err := buildRemapHTTPMiddleware(cfg); err != nil {
 		return fmt.Errorf("failed to build remap middleware: %w", err)
 	} else if rmMW != nil {
@@ -222,14 +227,8 @@ func buildMiddlewareChain(cfg *config.Config, logger *zap.Logger, metrics *obser
 		}
 	}
 
-	// Authz lives under its own top-level `authz:` config rather than
-	// the middleware list. Build it after the list so its CQL2
-	// injection sees any earlier mutations.
-	if mw, err := buildAuthzMiddleware(cfg, logger); err != nil {
-		return nil, fmt.Errorf("failed to create authz middleware: %w", err)
-	} else if mw != nil {
-		middlewares = append(middlewares, mw)
-	}
+	// Authz now wires as chi middleware (see buildAuthzHTTPMiddleware),
+	// not via the buffered chain.
 
 	return middleware.NewChain(middlewares...), nil
 }
@@ -237,22 +236,18 @@ func buildMiddlewareChain(cfg *config.Config, logger *zap.Logger, metrics *obser
 // buildAuthzMiddleware wires the authz middleware (including CQL2
 // injection) from the top-level authz config. Returns (nil, nil) when
 // authz is not configured.
-func buildAuthzMiddleware(cfg *config.Config, logger *zap.Logger) (middleware.Middleware, error) {
+func buildAuthzHTTPMiddleware(cfg *config.Config, logger *zap.Logger) (func(http.Handler) http.Handler, error) {
 	az := cfg.Authz
-	if az == nil {
-		return nil, nil
-	}
-	if az.OPA == nil {
+	if az == nil || az.OPA == nil {
 		return nil, nil
 	}
 
 	var enforcer authz.Enforcer
 	if az.OPA.Embedded {
-		opaCfg := authz.EmbeddedOPAConfig{
+		enf, err := authz.NewEmbeddedOPAEnforcer(authz.EmbeddedOPAConfig{
 			Name:        "embedded-opa",
 			PolicyPaths: az.OPA.RegoFiles,
-		}
-		enf, err := authz.NewEmbeddedOPAEnforcer(opaCfg)
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -267,10 +262,8 @@ func buildAuthzMiddleware(cfg *config.Config, logger *zap.Logger) (middleware.Mi
 	}
 
 	// Single-origin: gate push-down on cfg.Upstream.SupportsFilterExtension.
-	// Federation: conservative AND across configured origins (only push
-	// down when every enabled origin advertises Filter Extension
-	// support). Per-request origin-routing is a future refinement.
-	var filterCheck func(_ *middleware.STACRequest) bool
+	// Federation: conservative AND across configured origins.
+	var filterCheck func(*http.Request, *middleware.STACInfo) bool
 	if cfg.IsFederation() {
 		allSupport := true
 		any := false
@@ -284,14 +277,11 @@ func buildAuthzMiddleware(cfg *config.Config, logger *zap.Logger) (middleware.Mi
 				break
 			}
 		}
-		if any && allSupport {
-			filterCheck = func(_ *middleware.STACRequest) bool { return true }
-		} else {
-			filterCheck = func(_ *middleware.STACRequest) bool { return false }
-		}
+		supports := any && allSupport
+		filterCheck = func(_ *http.Request, _ *middleware.STACInfo) bool { return supports }
 	} else if cfg.Upstream != nil {
 		supports := cfg.Upstream.SupportsFilterExtension
-		filterCheck = func(_ *middleware.STACRequest) bool { return supports }
+		filterCheck = func(_ *http.Request, _ *middleware.STACInfo) bool { return supports }
 	}
 
 	logger.Info("authz middleware configured",
@@ -299,7 +289,7 @@ func buildAuthzMiddleware(cfg *config.Config, logger *zap.Logger) (middleware.Mi
 		zap.Bool("filter_extension_check", filterCheck != nil),
 	)
 
-	return authz.NewAuthzMiddleware(authz.AuthzMiddlewareConfig{
+	return authz.NewHTTPMiddleware(authz.HTTPConfig{
 		Enforcer:             enforcer,
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: cql2Enabled,
