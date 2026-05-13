@@ -3,8 +3,11 @@ package ratelimit
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // Limiter defines the interface for rate limiters.
@@ -14,91 +17,60 @@ type Limiter interface {
 	Allow(ctx context.Context, key string, quota Quota) (bool, Info, error)
 }
 
-// Quota defines a rate limit quota.
+// Quota defines a rate limit quota. Requests/Window sets the sustained
+// rate; Burst is the maximum burst capacity (defaults to Requests when 0).
 type Quota struct {
-	Requests int           // Number of requests allowed
-	Window   time.Duration // Time window for the quota
-	Burst    int           // Maximum burst size (0 = same as Requests)
+	Requests int
+	Window   time.Duration
+	Burst    int
 }
 
 // Info contains rate limit information for response headers.
 type Info struct {
 	Limit      int   // Maximum requests allowed
-	Remaining  int   // Remaining requests in current window
-	ResetAt    int64 // Unix timestamp when the limit resets
+	Remaining  int   // Approximate remaining capacity
+	ResetAt    int64 // Unix timestamp when full capacity is restored
 	RetryAfter int   // Seconds until retry is allowed (if limited)
 }
 
-// SlidingWindowLimiter implements rate limiting using a sliding window algorithm.
-type SlidingWindowLimiter struct {
-	windows         map[string]*window
+// TokenBucketLimiter is the default Limiter, backed by golang.org/x/time/rate.
+// It maintains one rate.Limiter per key.
+type TokenBucketLimiter struct {
 	mu              sync.RWMutex
+	buckets         map[string]*bucket
 	cleanupInterval time.Duration
+	stop            chan struct{}
 }
 
-type window struct {
-	current   int
-	previous  int
-	timestamp time.Time
-	mu        sync.Mutex
+type bucket struct {
+	limiter  *rate.Limiter
+	quota    Quota
+	lastSeen time.Time
 }
 
-// NewSlidingWindowLimiter creates a new sliding window rate limiter.
-func NewSlidingWindowLimiter() *SlidingWindowLimiter {
-	l := &SlidingWindowLimiter{
-		windows:         make(map[string]*window),
+// NewSlidingWindowLimiter creates a TokenBucketLimiter. The historical
+// constructor name is retained so existing wiring compiles unchanged;
+// callers that wanted strict sliding-window semantics should evaluate
+// whether the token-bucket equivalent (same sustained rate, burst-shaped
+// transient capacity) is acceptable — for the common "Requests per
+// Window" quota the visible behavior under typical load is identical.
+func NewSlidingWindowLimiter() *TokenBucketLimiter {
+	l := &TokenBucketLimiter{
+		buckets:         make(map[string]*bucket),
 		cleanupInterval: 10 * time.Minute,
+		stop:            make(chan struct{}),
 	}
-
-	// Start cleanup goroutine
 	go l.cleanupLoop()
-
 	return l
 }
 
 // Allow checks if a request is allowed under the rate limit.
-func (l *SlidingWindowLimiter) Allow(ctx context.Context, key string, quota Quota) (bool, Info, error) {
-	l.mu.RLock()
-	w, exists := l.windows[key]
-	l.mu.RUnlock()
-
-	if !exists {
-		l.mu.Lock()
-		w, exists = l.windows[key]
-		if !exists {
-			w = &window{
-				timestamp: time.Now(),
-			}
-			l.windows[key] = w
-		}
-		l.mu.Unlock()
-	}
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
+func (l *TokenBucketLimiter) Allow(_ context.Context, key string, quota Quota) (bool, Info, error) {
+	b := l.getOrCreate(key, quota)
 
 	now := time.Now()
-	windowStart := now.Truncate(quota.Window)
-
-	// Check if we need to slide the window
-	if w.timestamp.Before(windowStart) {
-		// Current window is old, slide
-		if w.timestamp.Add(quota.Window).Before(windowStart) {
-			// Both windows are old
-			w.previous = 0
-			w.current = 0
-		} else {
-			// Only current is old
-			w.previous = w.current
-			w.current = 0
-		}
-		w.timestamp = windowStart
-	}
-
-	// Calculate weighted count using sliding window
-	elapsed := now.Sub(windowStart)
-	weight := float64(quota.Window-elapsed) / float64(quota.Window)
-	count := int(float64(w.previous)*weight) + w.current
+	res := b.limiter.ReserveN(now, 1)
+	delay := res.DelayFrom(now)
 
 	burst := quota.Burst
 	if burst == 0 {
@@ -106,66 +78,104 @@ func (l *SlidingWindowLimiter) Allow(ctx context.Context, key string, quota Quot
 	}
 
 	info := Info{
-		Limit:     quota.Requests,
-		Remaining: quota.Requests - count - 1,
-		ResetAt:   windowStart.Add(quota.Window).Unix(),
+		Limit:   quota.Requests,
+		ResetAt: now.Add(time.Duration(burst) * quota.Window / time.Duration(quota.Requests)).Unix(),
 	}
 
-	if info.Remaining < 0 {
+	if delay > 0 {
+		// Over capacity: cancel the reservation so we don't block the
+		// bucket, then report Retry-After.
+		res.CancelAt(now)
 		info.Remaining = 0
-	}
-
-	// Check if over limit
-	if count >= burst {
-		info.RetryAfter = int(quota.Window.Seconds() - elapsed.Seconds())
+		info.RetryAfter = int(math.Ceil(delay.Seconds()))
 		if info.RetryAfter < 1 {
 			info.RetryAfter = 1
 		}
 		return false, info, nil
 	}
 
-	// Allow and increment
-	w.current++
+	tokens := b.limiter.TokensAt(now)
+	rem := int(math.Floor(tokens))
+	if rem < 0 {
+		rem = 0
+	}
+	info.Remaining = rem
 	return true, info, nil
 }
 
-// cleanupLoop periodically removes old windows.
-func (l *SlidingWindowLimiter) cleanupLoop() {
+// getOrCreate looks up the per-key bucket or creates one. When the
+// quota shape changes for an existing key (rare; happens if QuotaFunc
+// returns a different Quota for the same key), the bucket is rebuilt.
+func (l *TokenBucketLimiter) getOrCreate(key string, quota Quota) *bucket {
+	burst := quota.Burst
+	if burst == 0 {
+		burst = quota.Requests
+	}
+
+	l.mu.RLock()
+	b, ok := l.buckets[key]
+	l.mu.RUnlock()
+	if ok && b.quota == quota {
+		l.mu.Lock()
+		b.lastSeen = time.Now()
+		l.mu.Unlock()
+		return b
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b, ok = l.buckets[key]
+	if ok && b.quota == quota {
+		b.lastSeen = time.Now()
+		return b
+	}
+	limit := rate.Limit(float64(quota.Requests) / quota.Window.Seconds())
+	b = &bucket{
+		limiter:  rate.NewLimiter(limit, burst),
+		quota:    quota,
+		lastSeen: time.Now(),
+	}
+	l.buckets[key] = b
+	return b
+}
+
+// cleanupLoop periodically evicts idle buckets to bound memory.
+func (l *TokenBucketLimiter) cleanupLoop() {
 	ticker := time.NewTicker(l.cleanupInterval)
 	defer ticker.Stop()
-
-	for range ticker.C {
-		l.cleanup()
+	for {
+		select {
+		case <-ticker.C:
+			l.cleanup()
+		case <-l.stop:
+			return
+		}
 	}
 }
 
-// cleanup removes expired windows.
-func (l *SlidingWindowLimiter) cleanup() {
+func (l *TokenBucketLimiter) cleanup() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
 	cutoff := time.Now().Add(-2 * time.Hour)
-	for key, w := range l.windows {
-		w.mu.Lock()
-		if w.timestamp.Before(cutoff) {
-			delete(l.windows, key)
+	for k, b := range l.buckets {
+		if b.lastSeen.Before(cutoff) {
+			delete(l.buckets, k)
 		}
-		w.mu.Unlock()
 	}
 }
 
 // Reset clears all rate limit data.
-func (l *SlidingWindowLimiter) Reset() {
+func (l *TokenBucketLimiter) Reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.windows = make(map[string]*window)
+	l.buckets = make(map[string]*bucket)
 }
 
 // KeyFunc generates a rate limit key from a request.
 type KeyFunc func(ctx context.Context, principalID, clientIP string) string
 
 // DefaultKeyFunc returns the principal ID if available, otherwise the client IP.
-func DefaultKeyFunc(ctx context.Context, principalID, clientIP string) string {
+func DefaultKeyFunc(_ context.Context, principalID, clientIP string) string {
 	if principalID != "" && principalID != "anonymous" {
 		return "user:" + principalID
 	}
@@ -176,6 +186,6 @@ func DefaultKeyFunc(ctx context.Context, principalID, clientIP string) string {
 type QuotaFunc func(roles []string, defaultQuota Quota) Quota
 
 // DefaultQuotaFunc returns the default quota.
-func DefaultQuotaFunc(roles []string, defaultQuota Quota) Quota {
+func DefaultQuotaFunc(_ []string, defaultQuota Quota) Quota {
 	return defaultQuota
 }

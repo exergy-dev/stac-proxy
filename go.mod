@@ -1,6 +1,6 @@
 module github.com/yourorg/stac-proxy
 
-go 1.23
+go 1.25.0
 
 require (
 	// Web framework
@@ -59,6 +59,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.32.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/sys v0.26.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
