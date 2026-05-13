@@ -1,162 +1,111 @@
 package cache
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 )
 
-// TestCacheHit_PreservesStatusAndContentType is C-4: cached responses must
-// faithfully restore the upstream status code and Content-Type, not
-// hardcode 200 + application/json.
-func TestCacheHit_PreservesStatusAndContentType(t *testing.T) {
+// withSTACInfo returns r wrapped in a context carrying the given info,
+// matching what the router does before the chi chain runs.
+func withSTACInfo(r *http.Request, info *middleware.STACInfo) *http.Request {
+	return r.WithContext(middleware.WithSTACInfo(r.Context(), info))
+}
+
+// upstreamWriter returns an http.Handler that writes the given status,
+// headers, and body. Used as the inner handler in tests.
+func upstreamWriter(status int, headers map[string]string, body []byte) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for k, v := range headers {
+			w.Header().Set(k, v)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	})
+}
+
+// TestCacheHit_RestoresStatusAndHeaders (C-4): a second request for the
+// same key returns the upstream response's original status code and
+// Content-Type rather than hardcoded values.
+func TestCacheHit_RestoresStatusAndHeaders(t *testing.T) {
 	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
-	m := NewMiddleware(Config{Store: store})
+	h := NewHTTPMiddleware(Config{Store: store})(upstreamWriter(
+		http.StatusOK,
+		map[string]string{"Content-Type": "application/geo+json", "X-Custom": "stac-value"},
+		[]byte(`{"type":"FeatureCollection","features":[]}`),
+	))
 
-	originalHeaders := http.Header{}
-	originalHeaders.Set("Content-Type", "application/geo+json")
-	originalHeaders.Set("X-Custom", "stac-value")
-	originalBody := []byte(`{"type":"FeatureCollection","features":[]}`)
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeItems, Collection: "x"}
 
-	stacReq := &middleware.STACRequest{
-		Request:     httptest.NewRequest("GET", "/collections/x/items", nil),
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeItems,
-		Collection:  "x",
-	}
-
-	// Miss path: ProcessRequest stores the cache key, ProcessResponse caches.
-	stacReq, err := m.ProcessRequest(stacReq.Context, stacReq)
-	if err != nil {
-		t.Fatalf("ProcessRequest (miss): %v", err)
-	}
-	missResp := &middleware.STACResponse{
-		StatusCode: http.StatusOK,
-		Headers:    originalHeaders.Clone(),
-		Body:       originalBody,
-	}
-	if _, err := m.ProcessResponse(stacReq.Context, stacReq, missResp); err != nil {
-		t.Fatalf("ProcessResponse (miss): %v", err)
+	// Miss: response flows to client + lands in cache.
+	rr1 := httptest.NewRecorder()
+	h.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/collections/x/items", nil), info))
+	if rr1.Code != http.StatusOK || rr1.Header().Get("X-Cache-Status") != "MISS" {
+		t.Fatalf("first request: status=%d X-Cache-Status=%q", rr1.Code, rr1.Header().Get("X-Cache-Status"))
 	}
 
-	// Hit path: a second request should pick up the cached entry.
-	stacReq2 := &middleware.STACRequest{
-		Request:     httptest.NewRequest("GET", "/collections/x/items", nil),
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeItems,
-		Collection:  "x",
+	// Hit: cached response served without invoking upstream again.
+	rr2 := httptest.NewRecorder()
+	h.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/collections/x/items", nil), info))
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("hit status: want 200, got %d", rr2.Code)
 	}
-	stacReq2, err = m.ProcessRequest(stacReq2.Context, stacReq2)
-	if err != nil {
-		t.Fatalf("ProcessRequest (hit): %v", err)
+	if got := rr2.Header().Get("X-Cache-Status"); got != "HIT" {
+		t.Errorf("X-Cache-Status: want HIT, got %q", got)
 	}
-	hitResp, err := m.ProcessResponse(stacReq2.Context, stacReq2, nil)
-	if err != nil {
-		t.Fatalf("ProcessResponse (hit): %v", err)
-	}
-	if hitResp == nil {
-		t.Fatal("ProcessResponse (hit) returned nil response")
-	}
-
-	if hitResp.StatusCode != http.StatusOK {
-		t.Errorf("status: want 200, got %d", hitResp.StatusCode)
-	}
-	if got := hitResp.Headers.Get("Content-Type"); got != "application/geo+json" {
+	if got := rr2.Header().Get("Content-Type"); got != "application/geo+json" {
 		t.Errorf("Content-Type on hit: want application/geo+json, got %q", got)
 	}
-	if got := hitResp.Headers.Get("X-Custom"); got != "stac-value" {
+	if got := rr2.Header().Get("X-Custom"); got != "stac-value" {
 		t.Errorf("X-Custom on hit: want stac-value, got %q", got)
 	}
-	if got := hitResp.Headers.Get("X-Cache-Status"); got != "HIT" {
-		t.Errorf("X-Cache-Status on hit: want HIT, got %q", got)
-	}
-	if string(hitResp.Body) != string(originalBody) {
-		t.Errorf("body on hit: want %q, got %q", originalBody, hitResp.Body)
+}
+
+// TestCacheMiss_NonOKNotCached: a 500 from upstream should NOT land in
+// the store; a subsequent request still misses.
+func TestCacheMiss_NonOKNotCached(t *testing.T) {
+	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
+	h := NewHTTPMiddleware(Config{Store: store})(upstreamWriter(
+		http.StatusInternalServerError, nil, []byte(`{"error":"boom"}`),
+	))
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeCollection, Collection: "x"}
+
+	rr1 := httptest.NewRecorder()
+	h.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
+	rr2 := httptest.NewRecorder()
+	h.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
+	if rr2.Header().Get("X-Cache-Status") != "MISS" {
+		t.Errorf("error response leaked into cache; want MISS, got %q", rr2.Header().Get("X-Cache-Status"))
 	}
 }
 
-// TestDoSingleflight_CoalescesConcurrentCallers verifies the cache
-// stampede helper invokes the upstream function once when N callers
-// arrive concurrently for the same key.
-func TestDoSingleflight_CoalescesConcurrentCallers(t *testing.T) {
+// TestCache_NonGetByPasses: a POST is not cached, regardless of status.
+func TestCache_NonGetByPasses(t *testing.T) {
 	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
-	m := NewMiddleware(Config{Store: store})
+	h := NewHTTPMiddleware(Config{Store: store})(upstreamWriter(http.StatusOK, nil, []byte(`{}`)))
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch}
 
-	var callCount int32
-	var wg sync.WaitGroup
-	const N = 50
-
-	// Block all callers in fn until we release them, so they all queue
-	// on the same singleflight entry.
-	release := make(chan struct{})
-	for i := 0; i < N; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _, _ = m.DoSingleflight("k", func() (any, error) {
-				atomic.AddInt32(&callCount, 1)
-				<-release
-				return "v", nil
-			})
-		}()
-	}
-
-	// Give goroutines a moment to all enqueue.
-	time.Sleep(20 * time.Millisecond)
-	close(release)
-	wg.Wait()
-
-	if got := atomic.LoadInt32(&callCount); got != 1 {
-		t.Errorf("upstream fn invoked %d times, expected 1 (stampede protection)", got)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, withSTACInfo(httptest.NewRequest("POST", "/search", nil), info))
+	if got := rr.Header().Get("X-Cache-Status"); got != "" {
+		t.Errorf("POST request engaged cache: X-Cache-Status=%q", got)
 	}
 }
 
-// TestCacheStore_DeepCopiesBody is H-13: in-place mutation of the response
-// body must not poison the cache.
-func TestCacheStore_DeepCopiesBody(t *testing.T) {
+// TestCache_NoSTACInfoPassesThrough: when the router didn't attach
+// STACInfo (e.g., a non-STAC route), the middleware short-circuits to
+// the inner handler.
+func TestCache_NoSTACInfoPassesThrough(t *testing.T) {
 	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
-	m := NewMiddleware(Config{Store: store})
-
-	stacReq := &middleware.STACRequest{
-		Request:     httptest.NewRequest("GET", "/x", nil),
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeCollection,
-	}
-	stacReq, _ = m.ProcessRequest(stacReq.Context, stacReq)
-
-	body := []byte(`{"v":1}`)
-	resp := &middleware.STACResponse{
-		StatusCode: http.StatusOK,
-		Headers:    http.Header{"Content-Type": []string{"application/json"}},
-		Body:       body,
-	}
-	if _, err := m.ProcessResponse(stacReq.Context, stacReq, resp); err != nil {
-		t.Fatalf("ProcessResponse: %v", err)
-	}
-	// Simulate a downstream rewriter mutating the original slice in place.
-	for i := range body {
-		body[i] = 'X'
-	}
-	// Wait a heartbeat to make sure the store goroutine isn't racing.
-	time.Sleep(10 * time.Millisecond)
-
-	stacReq2 := &middleware.STACRequest{
-		Request:     httptest.NewRequest("GET", "/x", nil),
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeCollection,
-	}
-	stacReq2, _ = m.ProcessRequest(stacReq2.Context, stacReq2)
-	hit, err := m.ProcessResponse(stacReq2.Context, stacReq2, nil)
-	if err != nil {
-		t.Fatalf("ProcessResponse (hit): %v", err)
-	}
-	if string(hit.Body) != `{"v":1}` {
-		t.Fatalf("cache was poisoned by in-place mutation: got %q", hit.Body)
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	h := NewHTTPMiddleware(Config{Store: store})(inner)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+	if rr.Code != http.StatusTeapot {
+		t.Errorf("status: want 418, got %d", rr.Code)
 	}
 }

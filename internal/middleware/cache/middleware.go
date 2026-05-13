@@ -1,4 +1,12 @@
-// Package cache provides caching middleware.
+// Package cache provides response-caching middleware.
+//
+// Cache is a chi-style http middleware that, on each request:
+//   - reads the parsed STAC shape from r.Context() (set by the router)
+//   - asks the configured Strategy whether to cache and what key to use
+//   - on a cache hit, writes the cached response and short-circuits
+//   - on a miss, buffers the inner handler's response via
+//     httpx.ResponseCapture, writes it to the outer ResponseWriter,
+//     and stores it in the cache when the status was 200.
 package cache
 
 import (
@@ -10,19 +18,10 @@ import (
 	"net/http"
 	"time"
 
-	"golang.org/x/sync/singleflight"
-
+	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
-
-// Middleware implements response caching.
-type Middleware struct {
-	middleware.BaseMiddleware
-	store    Store
-	strategy Strategy
-	sf       singleflight.Group
-}
 
 // Config contains configuration for the cache middleware.
 type Config struct {
@@ -30,8 +29,18 @@ type Config struct {
 	Strategy Strategy
 }
 
-// NewMiddleware creates a new cache middleware.
-func NewMiddleware(cfg Config) *Middleware {
+// NewHTTPMiddleware returns chi-compatible response-cache middleware.
+//
+// The middleware only engages when:
+//   1. The router has populated a *middleware.STACInfo in r.Context().
+//   2. The Strategy says the request is cacheable (default: GETs only).
+//
+// On a hit, the cached response is written directly with X-Cache-Status:
+// HIT. On a miss, the inner handler runs into an httpx.ResponseCapture;
+// the captured bytes are forwarded to the client and (when the status
+// is 200 and the strategy returns a non-zero TTL) deep-copied into the
+// store for future hits. X-Cache-Status: MISS is added on the miss path.
+func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	strategy := cfg.Strategy
 	if strategy == nil {
 		strategy = &BasicStrategy{
@@ -40,19 +49,87 @@ func NewMiddleware(cfg Config) *Middleware {
 			SearchTTL:     30 * time.Second,
 		}
 	}
+	store := cfg.Store
+	if store == nil {
+		store = &NoOpStore{}
+	}
 
-	return &Middleware{
-		BaseMiddleware: middleware.NewBaseMiddleware("cache", middleware.PriorityCache),
-		store:          cfg.Store,
-		strategy:       strategy,
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			info := middleware.STACInfoFromContext(r.Context())
+			if info == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			cacheReq := CacheableRequest{
+				Method:      r.Method,
+				Path:        r.URL.Path,
+				Query:       r.URL.RawQuery,
+				RequestType: info.RequestType.String(),
+				Collection:  info.Collection,
+			}
+			if !strategy.ShouldCache(cacheReq) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			key := strategy.CacheKey(cacheReq)
+
+			if data, ok := store.Get(r.Context(), key); ok {
+				if entry, ok := decodeEntry(data); ok {
+					writeCachedResponse(w, entry)
+					if m := observability.Default(); m != nil {
+						m.CacheHits.WithLabelValues(cacheReq.RequestType).Inc()
+					}
+					return
+				}
+				// Corrupt entry — fall through to upstream as if miss.
+			}
+
+			if m := observability.Default(); m != nil {
+				m.CacheMisses.WithLabelValues(cacheReq.RequestType).Inc()
+			}
+
+			cap := httpx.NewResponseCapture()
+			next.ServeHTTP(cap, r)
+
+			// Forward captured headers + body to outer writer.
+			for k, vs := range cap.HeadersOut() {
+				for _, v := range vs {
+					w.Header().Add(k, v)
+				}
+			}
+			w.Header().Set("X-Cache-Status", "MISS")
+			w.WriteHeader(cap.Status())
+			body := cap.BodyBytes()
+			_, _ = w.Write(body)
+
+			if cap.Status() != http.StatusOK {
+				return
+			}
+			ttl := strategy.TTL(cacheReq, cap.Status())
+			if ttl <= 0 {
+				return
+			}
+			envelope, err := json.Marshal(CacheEntry{
+				Status:  cap.Status(),
+				Headers: cap.HeadersOut(),
+				Body:    append([]byte(nil), body...),
+			})
+			if err == nil {
+				// Store failures are transient — the response went out
+				// already; the next request will simply miss again.
+				_ = store.Set(r.Context(), key, envelope, ttl)
+			}
+		})
 	}
 }
 
-// NewFromConfig constructs a cache middleware from a raw YAML config
-// block (the shape carried by config.MiddlewareConfig.Config). Currently
-// only the in-memory store is wired; an unrecognized store type yields
-// an error rather than silently falling back so misconfiguration is loud.
-func NewFromConfig(cfg map[string]interface{}) (middleware.Middleware, error) {
+// NewFromConfig constructs a chi-style cache middleware from a raw
+// YAML config block (the shape carried by config.MiddlewareConfig.Config).
+// Currently only the in-memory store is wired; an unrecognized store
+// type yields an error rather than silently falling back so
+// misconfiguration is loud.
+func NewFromConfig(cfg map[string]interface{}) (func(http.Handler) http.Handler, error) {
 	storeType := "memory"
 	if v, ok := cfg["store"].(string); ok {
 		storeType = v
@@ -68,136 +145,35 @@ func NewFromConfig(cfg map[string]interface{}) (middleware.Middleware, error) {
 	default:
 		return nil, fmt.Errorf("unknown cache store type: %s", storeType)
 	}
-	return NewMiddleware(Config{Store: store}), nil
+	return NewHTTPMiddleware(Config{Store: store}), nil
 }
 
-// ProcessRequest checks for cached responses.
-func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACRequest) (*middleware.STACRequest, error) {
-	cacheReq := CacheableRequest{
-		Method:      req.Request.Method,
-		Path:        req.Request.URL.Path,
-		Query:       req.Request.URL.RawQuery,
-		RequestType: req.RequestType.String(),
-		Collection:  req.Collection,
+// decodeEntry parses a stored cache entry envelope.
+func decodeEntry(data []byte) (CacheEntry, bool) {
+	var e CacheEntry
+	if err := json.Unmarshal(data, &e); err != nil {
+		return CacheEntry{}, false
 	}
-
-	// Only cache GET requests
-	if !m.strategy.ShouldCache(cacheReq) {
-		return req, nil
-	}
-
-	key := m.strategy.CacheKey(cacheReq)
-
-	// Check cache
-	if data, found := m.store.Get(ctx, key); found {
-		// Cache hit - store in context for response building
-		ctx = context.WithValue(ctx, cacheHitKey, data)
-		ctx = context.WithValue(ctx, cacheKeyKey, key)
-		req.Context = ctx
-		if mt := observability.Default(); mt != nil {
-			mt.CacheHits.WithLabelValues(cacheReq.RequestType).Inc()
-		}
-	} else {
-		// Cache miss - store key for later caching
-		ctx = context.WithValue(ctx, cacheKeyKey, key)
-		ctx = context.WithValue(ctx, cacheRequestKey, cacheReq)
-		req.Context = ctx
-		if mt := observability.Default(); mt != nil {
-			mt.CacheMisses.WithLabelValues(cacheReq.RequestType).Inc()
-		}
-	}
-
-	return req, nil
+	return e, true
 }
 
-// ProcessResponse caches successful responses or returns cached response.
-func (m *Middleware) ProcessResponse(ctx context.Context, req *middleware.STACRequest,
-	resp *middleware.STACResponse) (*middleware.STACResponse, error) {
-
-	// Check for cache hit
-	if cachedData, ok := ctx.Value(cacheHitKey).([]byte); ok {
-		var entry CacheEntry
-		if err := json.Unmarshal(cachedData, &entry); err == nil {
-			headers := entry.Headers.Clone()
-			if headers == nil {
-				headers = make(http.Header)
-			}
-			headers.Set("X-Cache-Status", "HIT")
-			return &middleware.STACResponse{
-				StatusCode: entry.Status,
-				Headers:    headers,
-				Body:       append([]byte(nil), entry.Body...),
-			}, nil
-		}
-		// Corrupt cache entry — fall through to upstream response.
-	}
-
-	// Only cache successful responses
-	if resp.StatusCode != http.StatusOK {
-		return resp, nil
-	}
-
-	// Get cache key and request info
-	key, _ := ctx.Value(cacheKeyKey).(string)
-	cacheReq, _ := ctx.Value(cacheRequestKey).(CacheableRequest)
-
-	if key == "" {
-		return resp, nil
-	}
-
-	// Calculate TTL
-	ttl := m.strategy.TTL(cacheReq, resp.StatusCode)
-	if ttl > 0 {
-		// Body is deep-copied so future in-place rewrites by other
-		// middleware cannot poison the cache.
-		envelope, err := json.Marshal(CacheEntry{
-			Status:  resp.StatusCode,
-			Headers: resp.Headers,
-			Body:    append([]byte(nil), resp.Body...),
-		})
-		if err == nil {
-			// Cache Set failures are transient (full memory, Redis
-			// hiccup) — the upstream response still succeeded, so we
-			// pass it through unchanged. A future iteration could
-			// surface this through observability if it matters.
-			_ = m.store.Set(ctx, key, envelope, ttl)
+// writeCachedResponse emits a cache-hit response: restores the original
+// status code and headers, adds X-Cache-Status: HIT on top.
+func writeCachedResponse(w http.ResponseWriter, entry CacheEntry) {
+	for k, vs := range entry.Headers {
+		for _, v := range vs {
+			w.Header().Add(k, v)
 		}
 	}
-
-	// Add cache status header
-	if resp.Headers == nil {
-		resp.Headers = make(http.Header)
+	w.Header().Set("X-Cache-Status", "HIT")
+	if entry.Status == 0 {
+		entry.Status = http.StatusOK
 	}
-	resp.Headers.Set("X-Cache-Status", "MISS")
-
-	return resp, nil
+	w.WriteHeader(entry.Status)
+	_, _ = w.Write(entry.Body)
 }
 
-// DoSingleflight coalesces concurrent upstream calls for the same cache
-// key, returning the shared response to all callers. Use this at the
-// upstream-call boundary by passing the function that performs the
-// upstream request. Returns the response, a boolean indicating whether
-// the call was shared, and any upstream error.
-//
-// This is exposed (rather than wired into ProcessRequest/ProcessResponse)
-// because the middleware sees request/response separately; the handler
-// must invoke the upstream call inside this helper for coalescing to
-// take effect.
-func (m *Middleware) DoSingleflight(key string, fn func() (any, error)) (any, bool, error) {
-	v, err, shared := m.sf.Do(key, fn)
-	return v, shared, err
-}
-
-// Context keys
-type contextKeyType string
-
-const (
-	cacheHitKey     contextKeyType = "cache_hit"
-	cacheKeyKey     contextKeyType = "cache_key"
-	cacheRequestKey contextKeyType = "cache_request"
-)
-
-// BasicStrategy implements a basic caching strategy.
+// BasicStrategy implements a basic caching strategy keyed off method+path+query.
 type BasicStrategy struct {
 	CollectionTTL time.Duration
 	ItemTTL       time.Duration
@@ -211,18 +187,16 @@ func (s *BasicStrategy) ShouldCache(req CacheableRequest) bool {
 
 // CacheKey generates a cache key from the request.
 func (s *BasicStrategy) CacheKey(req CacheableRequest) string {
-	// Create a hash of the request details
 	data := fmt.Sprintf("%s:%s:%s", req.Method, req.Path, req.Query)
 	hash := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(hash[:16]) // Use first 16 bytes
+	return hex.EncodeToString(hash[:16])
 }
 
-// TTL returns the TTL for the cached response.
+// TTL returns the TTL for the cached response, varying by request type.
 func (s *BasicStrategy) TTL(req CacheableRequest, statusCode int) time.Duration {
 	if statusCode != http.StatusOK {
-		return 0 // Don't cache errors
+		return 0
 	}
-
 	switch req.RequestType {
 	case "collection", "collections":
 		return s.CollectionTTL

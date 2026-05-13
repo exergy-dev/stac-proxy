@@ -147,6 +147,11 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 	if rlMW := buildRateLimitHTTPMiddleware(cfg); rlMW != nil {
 		httpMiddlewares = append(httpMiddlewares, rlMW)
 	}
+	if cMW, err := buildCacheHTTPMiddleware(cfg); err != nil {
+		return fmt.Errorf("failed to build cache middleware: %w", err)
+	} else if cMW != nil {
+		httpMiddlewares = append(httpMiddlewares, cMW)
+	}
 	if rmMW, err := buildRemapHTTPMiddleware(cfg); err != nil {
 		return fmt.Errorf("failed to build remap middleware: %w", err)
 	} else if rmMW != nil {
@@ -317,7 +322,8 @@ func createMiddleware(cfg config.MiddlewareConfig, logger *zap.Logger, metrics *
 		return nil, nil
 
 	case "cache":
-		return cache.NewFromConfig(cfg.Config)
+		// Cache is wired as chi middleware at the router level.
+		return nil, nil
 
 	case "rate_limit":
 		// Rate limit is wired as chi middleware at the router level.
@@ -396,6 +402,23 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *zap.Logger) func(http.H
 		Providers:      providers,
 		AllowAnonymous: allowAnonymous,
 	})
+}
+
+// buildCacheHTTPMiddleware builds the chi-style cache middleware from
+// the `cache` block of the middleware config list. Returns (nil, nil)
+// when no block is configured.
+func buildCacheHTTPMiddleware(cfg *config.Config) (func(http.Handler) http.Handler, error) {
+	var rawCfg map[string]interface{}
+	for _, mw := range cfg.Middleware {
+		if mw.Name == "cache" {
+			rawCfg = mw.Config
+			break
+		}
+	}
+	if rawCfg == nil {
+		return nil, nil
+	}
+	return cache.NewFromConfig(rawCfg)
 }
 
 // buildRemapHTTPMiddleware builds the chi-style URL-remap middleware
