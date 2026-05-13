@@ -481,13 +481,13 @@ func (h *Handler) primaryOrigin() *Origin {
 func (h *Handler) parseSearchRequest(req *middleware.STACRequest) (*stac.SearchRequest, error) {
 	searchReq := &stac.SearchRequest{}
 
-	if req.Method == http.MethodPost && req.Body != nil {
-		if err := json.NewDecoder(req.Body).Decode(searchReq); err != nil {
+	if req.Request.Method == http.MethodPost && req.Request.Body != nil {
+		if err := json.NewDecoder(req.Request.Body).Decode(searchReq); err != nil {
 			return nil, err
 		}
 	} else {
 		// Parse from query parameters
-		q := req.URL.Query()
+		q := req.Request.URL.Query()
 		if colls := q.Get("collections"); colls != "" {
 			searchReq.Collections = []string{colls} // Simplified
 		}
@@ -642,10 +642,10 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient,
 	req *middleware.STACRequest) (*http.Request, error) {
 
-	method := req.Method
+	method := req.Request.Method
 	var body io.Reader
-	if req.Body != nil {
-		body = req.Body
+	if req.Request.Body != nil {
+		body = req.Request.Body
 	}
 
 	if req.SearchReq != nil && isSearchLike(req.RequestType) {
@@ -658,7 +658,7 @@ func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient
 	}
 
 	// Path+query — ReverseProxy.SetURL will rebase onto the origin.
-	pathQuery := req.URL.RequestURI()
+	pathQuery := req.Request.URL.RequestURI()
 
 	outReq, err := http.NewRequestWithContext(ctx, method, pathQuery, body)
 	if err != nil {
@@ -676,7 +676,7 @@ func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient
 	// Accept-Encoding, conditional GET headers (If-None-Match), and
 	// downstream-meaningful trace headers propagate.
 	if req.Request != nil {
-		for k, vs := range req.Header {
+		for k, vs := range req.Request.Header {
 			// Skip hop-by-hop; ReverseProxy strips them again at
 			// dispatch, but starting clean keeps the trace simple.
 			if isHopByHop(k) {
@@ -690,7 +690,7 @@ func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient
 		// ReverseProxy.Rewrite.SetXForwarded has values to read.
 		// SetXForwarded uses RemoteAddr/Host/TLS off the inbound *req*
 		// that was passed to ServeHTTP; in our flow that's outReq.
-		outReq.Host = req.Host
+		outReq.Host = req.Request.Host
 		outReq.RemoteAddr = req.Request.RemoteAddr
 		outReq.TLS = req.Request.TLS
 	}
@@ -808,10 +808,10 @@ func adaptRequestStripCollectionPrefix(req *middleware.STACRequest, prefix strin
 	if req.Request == nil || prefix == "" {
 		return req
 	}
-	stripped := strings.Replace(req.URL.Path, "/collections/"+req.Collection, "/collections/"+strings.TrimPrefix(req.Collection, prefix), 1)
+	stripped := strings.Replace(req.Request.URL.Path, "/collections/"+req.Collection, "/collections/"+strings.TrimPrefix(req.Collection, prefix), 1)
 	cloned := req.Clone()
 	// Clone the URL so we don't mutate the inbound one.
-	newURL := *cloned.URL
+	newURL := *cloned.Request.URL
 	newURL.Path = stripped
 	newReq := cloned.Request.Clone(cloned.Context)
 	newReq.URL = &newURL

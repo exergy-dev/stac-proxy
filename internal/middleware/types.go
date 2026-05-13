@@ -51,8 +51,15 @@ func (rt RequestType) String() string {
 }
 
 // STACRequest wraps an HTTP request with STAC-specific context.
+//
+// Request is an explicit named field rather than an embedded pointer so
+// that code reading req.Context always gets the field (which middleware
+// may have mutated), not the *http.Request.Context() method (which
+// returns the original context untouched). The previous embedded form
+// was a footgun: req.Context() compiled fine and silently bypassed
+// chain mutations.
 type STACRequest struct {
-	*http.Request
+	Request     *http.Request
 	Context     context.Context
 	Collection  string              // Target collection (if applicable)
 	ItemID      string              // Target item ID (if applicable)

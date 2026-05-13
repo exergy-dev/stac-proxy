@@ -51,9 +51,9 @@ func NewMiddleware(cfg Config) *Middleware {
 // ProcessRequest checks for cached responses.
 func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACRequest) (*middleware.STACRequest, error) {
 	cacheReq := CacheableRequest{
-		Method:      req.Method,
-		Path:        req.URL.Path,
-		Query:       req.URL.RawQuery,
+		Method:      req.Request.Method,
+		Path:        req.Request.URL.Path,
+		Query:       req.Request.URL.RawQuery,
 		RequestType: req.RequestType.String(),
 		Collection:  req.Collection,
 	}
