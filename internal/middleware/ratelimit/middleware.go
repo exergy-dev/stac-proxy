@@ -1,25 +1,19 @@
 // Package ratelimit provides rate limiting middleware.
+//
+// Ratelimit is a chi-style http middleware (func(http.Handler) http.Handler)
+// rather than going through the buffered middleware.Middleware contract:
+// it operates only on the inbound *http.Request and writes either the
+// X-RateLimit-* headers + a 200 (allowed) or a 429 response (denied).
 package ratelimit
 
 import (
-	"context"
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
-
-// Middleware implements rate limiting for incoming requests.
-type Middleware struct {
-	middleware.BaseMiddleware
-	limiter     Limiter
-	keyFunc     KeyFunc
-	quotaFunc   QuotaFunc
-	defaultQuota Quota
-}
 
 // Config contains configuration for the rate limit middleware.
 type Config struct {
@@ -29,126 +23,84 @@ type Config struct {
 	DefaultQuota Quota
 }
 
-// NewMiddleware creates a new rate limit middleware.
-func NewMiddleware(cfg Config) *Middleware {
+// NewHTTPMiddleware returns chi-compatible rate-limit middleware.
+//
+//   - Builds the rate-limit key via cfg.KeyFunc (principalID falls back
+//     to client IP). Principal comes from the auth middleware's context
+//     value, so auth MUST be wired before ratelimit at the chi level.
+//   - Looks up the quota via cfg.QuotaFunc (default falls through).
+//   - Sets X-RateLimit-Limit/Remaining/Reset on every response.
+//   - On deny: writes Retry-After and a 429 JSON error; the inner handler
+//     does not run.
+func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	limiter := cfg.Limiter
 	if limiter == nil {
 		limiter = NewSlidingWindowLimiter()
 	}
-
 	keyFunc := cfg.KeyFunc
 	if keyFunc == nil {
 		keyFunc = DefaultKeyFunc
 	}
-
 	quotaFunc := cfg.QuotaFunc
 	if quotaFunc == nil {
 		quotaFunc = DefaultQuotaFunc
 	}
 
-	return &Middleware{
-		BaseMiddleware: middleware.NewBaseMiddleware("ratelimit", middleware.PriorityRateLimit),
-		limiter:        limiter,
-		keyFunc:        keyFunc,
-		quotaFunc:      quotaFunc,
-		defaultQuota:   cfg.DefaultQuota,
-	}
-}
-
-// ProcessRequest checks rate limits for the incoming request.
-func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACRequest) (*middleware.STACRequest, error) {
-	// Get principal for rate limit key
-	principal := auth.PrincipalFromContext(ctx)
-	principalID := ""
-	var roles []string
-	if principal != nil {
-		principalID = principal.ID
-		roles = principal.Roles
-	}
-
-	// Get client IP
-	clientIP := req.RemoteAddr
-
-	// Generate rate limit key
-	key := m.keyFunc(ctx, principalID, clientIP)
-
-	// Get quota for this request
-	quota := m.quotaFunc(roles, m.defaultQuota)
-
-	// Check rate limit
-	allowed, info, err := m.limiter.Allow(ctx, key, quota)
-	if err != nil {
-		// On error, allow the request but log
-		return req, nil
-	}
-
-	// Store rate limit info for response headers
-	ctx = context.WithValue(ctx, rateLimitInfoKey, info)
-	req.Context = ctx
-
-	if !allowed {
-		if mt := observability.Default(); mt != nil {
-			keyType := "principal"
-			if principalID == "" {
-				keyType = "ip"
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			var principalID string
+			var roles []string
+			if p := auth.PrincipalFromContext(ctx); p != nil {
+				principalID = p.ID
+				roles = p.Roles
 			}
-			mt.RateLimitExceeded.WithLabelValues(keyType).Inc()
-		}
-		return nil, &middleware.RateLimitError{
-			RetryAfter: info.RetryAfter,
-		}
-	}
+			key := keyFunc(ctx, principalID, r.RemoteAddr)
+			quota := quotaFunc(roles, cfg.DefaultQuota)
 
-	return req, nil
+			allowed, info, err := limiter.Allow(ctx, key, quota)
+			if err != nil {
+				// Fail open: allow through, no headers added.
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(info.Limit))
+			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(info.Remaining))
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(info.ResetAt, 10))
+
+			if !allowed {
+				if m := observability.Default(); m != nil {
+					keyType := "principal"
+					if principalID == "" {
+						keyType = "ip"
+					}
+					m.RateLimitExceeded.WithLabelValues(keyType).Inc()
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(info.RetryAfter))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"code":        "RateLimitExceeded",
+					"description": "Rate limit exceeded",
+				})
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
-// ProcessResponse adds rate limit headers to the response.
-func (m *Middleware) ProcessResponse(ctx context.Context, req *middleware.STACRequest,
-	resp *middleware.STACResponse) (*middleware.STACResponse, error) {
-
-	info, ok := ctx.Value(rateLimitInfoKey).(Info)
-	if !ok {
-		return resp, nil
-	}
-
-	// Add rate limit headers
-	if resp.Headers == nil {
-		resp.Headers = make(http.Header)
-	}
-
-	resp.Headers.Set("X-RateLimit-Limit", strconv.Itoa(info.Limit))
-	resp.Headers.Set("X-RateLimit-Remaining", strconv.Itoa(info.Remaining))
-	resp.Headers.Set("X-RateLimit-Reset", strconv.FormatInt(info.ResetAt, 10))
-
-	return resp, nil
-}
-
-// Context key for rate limit info
-type contextKeyType string
-
-const rateLimitInfoKey contextKeyType = "ratelimit_info"
-
-// RoleBasedQuotaFunc creates a quota function that uses role-based quotas.
+// RoleBasedQuotaFunc returns a QuotaFunc that picks the first matching
+// per-role quota from quotasByRole, falling back to defaultQuota.
 func RoleBasedQuotaFunc(quotasByRole map[string]Quota, defaultQuota Quota) QuotaFunc {
 	return func(roles []string, _ Quota) Quota {
-		// Check roles in order, return first matching quota
 		for _, role := range roles {
 			if quota, ok := quotasByRole[role]; ok {
 				return quota
 			}
 		}
 		return defaultQuota
-	}
-}
-
-// ErrorResponse creates an HTTP response for rate limit errors.
-func ErrorResponse(err *middleware.RateLimitError) *middleware.STACResponse {
-	return &middleware.STACResponse{
-		StatusCode: http.StatusTooManyRequests,
-		Headers: http.Header{
-			"Content-Type":  []string{"application/json"},
-			"Retry-After":   []string{strconv.Itoa(err.RetryAfter)},
-		},
-		Body: []byte(fmt.Sprintf(`{"code": "RateLimitExceeded", "description": "Rate limit exceeded. Retry after %d seconds"}`, err.RetryAfter)),
 	}
 }

@@ -133,14 +133,19 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 		return fmt.Errorf("failed to build handler: %w", err)
 	}
 
-	// Create router. Stateless middlewares (logging, auth) are wired
-	// at the chi router level rather than inside the buffered Chain so
-	// they sit at the request boundary without per-iteration overhead.
+	// Create router. Stateless middlewares (logging, auth, ratelimit)
+	// are wired at the chi router level rather than inside the buffered
+	// Chain so they sit at the request boundary without per-iteration
+	// overhead. Order matters: logging → auth → ratelimit so that
+	// rate-limit decisions can key off the authenticated principal.
 	httpMiddlewares := []func(http.Handler) http.Handler{
 		logging.NewHTTPMiddleware(logging.Config{Logger: logger}),
 	}
 	if authMW := buildAuthHTTPMiddleware(cfg, logger); authMW != nil {
 		httpMiddlewares = append(httpMiddlewares, authMW)
+	}
+	if rlMW := buildRateLimitHTTPMiddleware(cfg); rlMW != nil {
+		httpMiddlewares = append(httpMiddlewares, rlMW)
 	}
 	router := server.NewRouter(server.RouterConfig{
 		Handler:         handler,
@@ -310,7 +315,8 @@ func createMiddleware(cfg config.MiddlewareConfig, logger *zap.Logger, metrics *
 		return buildCacheMiddleware(cfg.Config)
 
 	case "rate_limit":
-		return buildRateLimitMiddleware(cfg.Config)
+		// Rate limit is wired as chi middleware at the router level.
+		return nil, nil
 
 	case "url_remap":
 		return buildRemapMiddleware(cfg.Config)
@@ -412,32 +418,43 @@ func buildCacheMiddleware(cfg map[string]interface{}) (middleware.Middleware, er
 	}), nil
 }
 
-// buildRateLimitMiddleware creates rate limiting middleware.
-func buildRateLimitMiddleware(cfg map[string]interface{}) (middleware.Middleware, error) {
-	requests := 1000
-	if v, ok := cfg["requests"].(int); ok {
-		requests = v
+// buildRateLimitHTTPMiddleware builds the chi-style rate-limit middleware
+// from the `rate_limit` block of the middleware config list. Returns nil
+// when no `rate_limit` block is configured.
+func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Handler {
+	var rawCfg map[string]interface{}
+	for _, mw := range cfg.Middleware {
+		if mw.Name == "rate_limit" {
+			rawCfg = mw.Config
+			break
+		}
+	}
+	if rawCfg == nil {
+		return nil
 	}
 
+	requests := 1000
+	if v, ok := rawCfg["requests"].(int); ok {
+		requests = v
+	}
 	window := 1 * time.Hour
-	if v, ok := cfg["window"].(string); ok {
+	if v, ok := rawCfg["window"].(string); ok {
 		if d, err := time.ParseDuration(v); err == nil {
 			window = d
 		}
 	}
-
 	burst := 50
-	if v, ok := cfg["burst"].(int); ok {
+	if v, ok := rawCfg["burst"].(int); ok {
 		burst = v
 	}
 
-	return ratelimit.NewMiddleware(ratelimit.Config{
+	return ratelimit.NewHTTPMiddleware(ratelimit.Config{
 		DefaultQuota: ratelimit.Quota{
 			Requests: requests,
 			Window:   window,
 			Burst:    burst,
 		},
-	}), nil
+	})
 }
 
 // buildRemapMiddleware creates URL remapping middleware.
