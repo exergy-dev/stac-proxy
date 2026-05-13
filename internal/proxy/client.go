@@ -2,15 +2,78 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 )
+
+// forwardedFromKey carries the originating request's identity through
+// context so the client can populate X-Forwarded-* on the outbound
+// request — without having to thread a *http.Request through every
+// call site.
+type forwardedFromKeyType struct{}
+
+var forwardedFromKey forwardedFromKeyType
+
+type forwardedFrom struct {
+	remoteAddr string
+	proto      string
+	host       string
+}
+
+// withForwardedFrom attaches the originating request's identity (used
+// for X-Forwarded-*) to ctx.
+func withForwardedFrom(ctx context.Context, req *http.Request) context.Context {
+	scheme := "http"
+	if req.TLS != nil {
+		scheme = "https"
+	}
+	if v := req.Header.Get("X-Forwarded-Proto"); v != "" {
+		// Trusted upstream may have set this — preserve.
+		scheme = v
+	}
+	return context.WithValue(ctx, forwardedFromKey, forwardedFrom{
+		remoteAddr: req.RemoteAddr,
+		proto:      scheme,
+		host:       req.Host,
+	})
+}
+
+// applyForwardedHeaders sets X-Forwarded-{For,Proto,Host} on req based
+// on the identity captured by withForwardedFrom. No-op if ctx carries
+// no identity (e.g. unit tests that call client.Do directly).
+func applyForwardedHeaders(ctx context.Context, req *http.Request) {
+	v, ok := ctx.Value(forwardedFromKey).(forwardedFrom)
+	if !ok {
+		return
+	}
+	if v.remoteAddr != "" {
+		clientIP, _, err := net.SplitHostPort(v.remoteAddr)
+		if err != nil {
+			clientIP = v.remoteAddr
+		}
+		// Append to existing chain if any.
+		if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
+			req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+		} else {
+			req.Header.Set("X-Forwarded-For", clientIP)
+		}
+	}
+	if v.proto != "" {
+		req.Header.Set("X-Forwarded-Proto", v.proto)
+	}
+	if v.host != "" {
+		req.Header.Set("X-Forwarded-Host", v.host)
+	}
+}
 
 // Client is an HTTP client for communicating with an upstream STAC server.
 type Client struct {
@@ -53,6 +116,17 @@ func WithTransport(transport http.RoundTripper) ClientOption {
 	}
 }
 
+// WithMaxIdleConnsPerHost tunes the upstream connection pool. The
+// default (10) is too low for a proxy under load; production
+// deployments should set this to 100+ and tune empirically.
+func WithMaxIdleConnsPerHost(n int) ClientOption {
+	return func(c *Client) {
+		if t, ok := c.httpClient.Transport.(*http.Transport); ok && n > 0 {
+			t.MaxIdleConnsPerHost = n
+		}
+	}
+}
+
 // NewClient creates a new proxy client.
 func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	if baseURL == "" {
@@ -87,6 +161,10 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 // include a query string (e.g. "/items?limit=10"); it's parsed so the
 // query is preserved when resolving against the base URL rather than
 // being escaped into the path component.
+//
+// When a retry policy is configured and a body is supplied, the body is
+// buffered so retries can replay it; http.Client honors req.GetBody for
+// this purpose, so it is wired here.
 func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
 	ref, err := url.Parse(path)
 	if err != nil {
@@ -94,9 +172,24 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*
 	}
 	reqURL := c.baseURL.ResolveReference(ref)
 
+	retryable := c.retry != nil && c.retry.MaxRetries > 0
+	var bodyBuf []byte
+	if retryable && body != nil {
+		bodyBuf, err = io.ReadAll(body)
+		if err != nil {
+			return nil, fmt.Errorf("buffer request body for retry: %w", err)
+		}
+		body = bytes.NewReader(bodyBuf)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, method, reqURL.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	if retryable && bodyBuf != nil {
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyBuf)), nil
+		}
 	}
 
 	req.Header.Set("Accept", "application/geo+json, application/json")
@@ -104,26 +197,39 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*
 		req.Header.Set("Content-Type", "application/json")
 	}
 	middleware.ForwardRequestID(ctx, req)
+	applyForwardedHeaders(ctx, req)
 
-	if c.retry != nil && c.retry.MaxRetries > 0 {
+	if retryable {
 		return c.doWithRetry(ctx, req)
 	}
 
 	return c.httpClient.Do(req)
 }
 
-// doWithRetry executes the request with retry logic.
+// doWithRetry executes the request with retry logic. The request body
+// (if any) is replayed via req.GetBody before each retry, and an
+// upstream-provided Retry-After header is honored in preference to the
+// exponential-backoff schedule for the next iteration.
 func (c *Client) doWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
 	var lastErr error
 	backoff := c.retry.InitialBackoff
+	nextDelay := backoff
 
 	for attempt := 0; attempt <= c.retry.MaxRetries; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(backoff):
+			case <-time.After(nextDelay):
 				backoff = min(backoff*2, c.retry.MaxBackoff)
+				nextDelay = backoff
+			}
+			if req.GetBody != nil {
+				rc, err := req.GetBody()
+				if err != nil {
+					return nil, fmt.Errorf("rewind request body for retry: %w", err)
+				}
+				req.Body = rc
 			}
 		}
 
@@ -135,6 +241,17 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 
 		if !c.shouldRetry(resp.StatusCode) {
 			return resp, nil
+		}
+
+		// Honor upstream Retry-After (delta-seconds form) for the next attempt.
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, perr := strconv.Atoi(ra); perr == nil && secs >= 0 {
+				d := time.Duration(secs) * time.Second
+				if d > c.retry.MaxBackoff {
+					d = c.retry.MaxBackoff
+				}
+				nextDelay = d
+			}
 		}
 
 		resp.Body.Close()

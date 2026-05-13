@@ -553,6 +553,85 @@ func TestClient_DoWithRetry(t *testing.T) {
 	}
 }
 
+func TestClient_RetryReplaysPOSTBody(t *testing.T) {
+	t.Parallel()
+
+	const want = `{"limit":42}`
+	attempt := 0
+	bodies := []string{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		attempt++
+		if attempt == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, WithRetry(&RetryConfig{
+		MaxRetries:     2,
+		InitialBackoff: time.Millisecond,
+		MaxBackoff:     5 * time.Millisecond,
+	}))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	resp, err := client.Do(context.Background(), http.MethodPost, "/search", strings.NewReader(want))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	if attempt != 2 {
+		t.Fatalf("expected 2 upstream attempts, got %d", attempt)
+	}
+	for i, b := range bodies {
+		if b != want {
+			t.Errorf("attempt %d body = %q, want %q (retry sent empty/different body)", i+1, b, want)
+		}
+	}
+}
+
+func TestClient_HonorsUpstreamRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt == 1 {
+			w.Header().Set("Retry-After", "0") // immediate retry
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, WithRetry(&RetryConfig{
+		MaxRetries:     1,
+		InitialBackoff: time.Second, // would dominate without Retry-After override
+		MaxBackoff:     time.Second,
+	}))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	start := time.Now()
+	resp, err := client.Do(context.Background(), http.MethodGet, "/x", nil)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Errorf("retry should have honored Retry-After: 0, but waited %v", elapsed)
+	}
+}
+
 func TestClient_ContextCancellation(t *testing.T) {
 	t.Parallel()
 

@@ -2,6 +2,7 @@
 package stac
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -104,11 +105,14 @@ func (p *Parser) ParseSearchRequestFromHTTP(r *http.Request) (*SearchRequest, er
 		return p.parseSearchFromQuery(r)
 	}
 
-	// POST request - parse body
+	// POST request - parse body, then restore it so downstream
+	// handlers (the proxy/federation) can still forward the original
+	// bytes to upstream.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, err
 	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, req); err != nil {

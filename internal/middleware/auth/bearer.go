@@ -127,25 +127,28 @@ func (p *BearerProvider) Authenticate(ctx context.Context, req *http.Request) (*
 		}
 	}
 
-	// Validate audience
+	// Validate audience. When an audience is configured, the token MUST
+	// carry an aud claim that matches; a missing aud is a hard failure
+	// rather than a silent pass-through.
 	if p.audience != "" {
 		aud, ok := claims["aud"]
-		if ok {
-			valid := false
-			switch v := aud.(type) {
-			case string:
-				valid = v == p.audience
-			case []interface{}:
-				for _, a := range v {
-					if s, ok := a.(string); ok && s == p.audience {
-						valid = true
-						break
-					}
+		if !ok {
+			return nil, fmt.Errorf("missing audience claim")
+		}
+		valid := false
+		switch v := aud.(type) {
+		case string:
+			valid = v == p.audience
+		case []interface{}:
+			for _, a := range v {
+				if s, ok := a.(string); ok && s == p.audience {
+					valid = true
+					break
 				}
 			}
-			if !valid {
-				return nil, fmt.Errorf("invalid audience")
-			}
+		}
+		if !valid {
+			return nil, fmt.Errorf("invalid audience")
 		}
 	}
 

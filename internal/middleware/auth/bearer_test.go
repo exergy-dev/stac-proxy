@@ -367,6 +367,26 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 			errSubstr: "invalid audience",
 		},
 		{
+			name: "missing aud claim when audience configured fails closed",
+			config: BearerConfig{
+				Secret:   testSecret,
+				Audience: "expected-audience",
+			},
+			setupReq: func() *http.Request {
+				claims := jwt.MapClaims{
+					"sub": "user123",
+					"exp": time.Now().Add(time.Hour).Unix(),
+					// no aud claim at all
+				}
+				token := createTestToken(claims, testSecret, false, false)
+				req := httptest.NewRequest("GET", "/test", nil)
+				req.Header.Set("Authorization", "Bearer "+token)
+				return req
+			},
+			wantErr:   true,
+			errSubstr: "missing audience claim",
+		},
+		{
 			name: "expired token",
 			config: BearerConfig{
 				Secret: testSecret,

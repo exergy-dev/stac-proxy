@@ -981,6 +981,26 @@ func TestParseSearchRequestFromHTTP(t *testing.T) {
 			t.Fatal("ParseSearchRequestFromHTTP() expected error for read failure, got nil")
 		}
 	})
+
+	t.Run("POST request body is re-readable after parse", func(t *testing.T) {
+		t.Parallel()
+
+		body := `{"collections": ["landsat-8"], "limit": 30}`
+		req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewBufferString(body))
+
+		if _, err := parser.ParseSearchRequestFromHTTP(req); err != nil {
+			t.Fatalf("ParseSearchRequestFromHTTP() error = %v", err)
+		}
+
+		// Downstream handlers (the proxy) must still be able to read the body.
+		got, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("reading req.Body after parse: %v", err)
+		}
+		if string(got) != body {
+			t.Errorf("req.Body after parse: want %q, got %q", body, string(got))
+		}
+	})
 }
 
 // errorReader always returns an error when read

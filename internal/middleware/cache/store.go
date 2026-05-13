@@ -3,10 +3,13 @@ package cache
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
-// Store defines the interface for cache storage backends.
+// Store defines the interface for cache storage backends. The unit of
+// storage is an opaque []byte (currently a JSON-encoded CacheEntry; see
+// middleware.go) so the same backend can hold any encodable payload.
 type Store interface {
 	// Get retrieves a value from the cache.
 	// Returns the value and true if found, nil and false otherwise.
@@ -59,16 +62,11 @@ type StoreWithStats interface {
 	Stats() Stats
 }
 
-// CacheEntry represents a cached item with metadata.
+// CacheEntry is the faithful representation of a cached upstream
+// response. The middleware JSON-encodes it into the Store's []byte
+// payload so status code and headers are restored on hit.
 type CacheEntry struct {
-	Data      []byte    `json:"data"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
-// CacheStats provides cache statistics.
-type CacheStats struct {
-	Size   int
-	Hits   int64
-	Misses int64
+	Status  int         `json:"s"`
+	Headers http.Header `json:"h"`
+	Body    []byte      `json:"b"`
 }

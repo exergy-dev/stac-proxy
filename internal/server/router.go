@@ -2,7 +2,10 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -80,13 +83,6 @@ func NewRouter(cfg RouterConfig) *Router {
 	r.Get("/queryables", r.handleQueryables)
 	r.Get("/collections/{collectionId}/queryables", r.handleCollectionQueryables)
 
-	// Admin endpoints
-	r.Route("/_admin", func(admin chi.Router) {
-		admin.Get("/config", r.handleAdminConfig)
-		admin.Get("/origins", r.handleAdminOrigins)
-		admin.Post("/cache/clear", r.handleAdminCacheClear)
-	})
-
 	return r
 }
 
@@ -149,24 +145,6 @@ func (r *Router) handleCollectionQueryables(w http.ResponseWriter, req *http.Req
 	r.executeHandler(w, stacReq)
 }
 
-// handleAdminConfig handles GET /_admin/config
-func (r *Router) handleAdminConfig(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status": "ok"}`))
-}
-
-// handleAdminOrigins handles GET /_admin/origins
-func (r *Router) handleAdminOrigins(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"origins": []}`))
-}
-
-// handleAdminCacheClear handles POST /_admin/cache/clear
-func (r *Router) handleAdminCacheClear(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"cleared": true}`))
-}
-
 // buildSTACRequest creates a STACRequest from an HTTP request.
 func (r *Router) buildSTACRequest(req *http.Request, requestType middleware.RequestType) *middleware.STACRequest {
 	return &middleware.STACRequest{
@@ -179,6 +157,7 @@ func (r *Router) buildSTACRequest(req *http.Request, requestType middleware.Requ
 
 // executeHandler runs the request through the middleware chain and handler.
 func (r *Router) executeHandler(w http.ResponseWriter, stacReq *middleware.STACRequest) {
+	start := time.Now()
 	var resp *middleware.STACResponse
 	var err error
 
@@ -192,31 +171,78 @@ func (r *Router) executeHandler(w http.ResponseWriter, stacReq *middleware.STACR
 	}
 
 	if err != nil {
-		r.handleError(w, err)
+		r.observeRequest(stacReq.Request, 0, start)
+		r.handleError(w, stacReq.Request, err)
 		return
 	}
 
+	r.observeRequest(stacReq.Request, resp.StatusCode, start)
 	r.writeResponse(w, resp)
 }
 
-// handleError writes an error response.
-func (r *Router) handleError(w http.ResponseWriter, err error) {
+// observeRequest records end-to-end request duration and a status-coded
+// counter. Status 0 means the handler returned an error before producing
+// a response; the handler's structured error mapping picks the final
+// status code.
+func (r *Router) observeRequest(req *http.Request, status int, start time.Time) {
+	if r.metrics == nil {
+		return
+	}
+	path := req.URL.Path
+	r.metrics.RequestDuration.WithLabelValues(req.Method, path).Observe(time.Since(start).Seconds())
+	if status != 0 {
+		r.metrics.RequestsTotal.WithLabelValues(req.Method, path, strconv.Itoa(status)).Inc()
+	}
+}
+
+// errorBody is the wire shape for STAC-style error responses.
+type errorBody struct {
+	Code        string `json:"code"`
+	Description string `json:"description"`
+	RequestID   string `json:"request_id,omitempty"`
+}
+
+// writeErrorJSON encodes a structured error response via encoding/json so
+// caller-controlled strings cannot break out of the JSON document.
+func writeErrorJSON(w http.ResponseWriter, status int, body errorBody) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// handleError writes a structured error response. Internal error details
+// are never leaked to the client; clients receive a generic message plus
+// the request ID so support can correlate against logs.
+func (r *Router) handleError(w http.ResponseWriter, req *http.Request, err error) {
+	rid := chimiddleware.GetReqID(req.Context())
 
 	switch e := err.(type) {
 	case *middleware.AuthError:
-		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"code": "Unauthorized", "description": "` + e.Message + `"}`))
+		writeErrorJSON(w, http.StatusUnauthorized, errorBody{
+			Code:        "Unauthorized",
+			Description: e.Message,
+			RequestID:   rid,
+		})
 	case *middleware.ForbiddenError:
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"code": "Forbidden", "description": "` + e.Reason + `"}`))
+		writeErrorJSON(w, http.StatusForbidden, errorBody{
+			Code:        "Forbidden",
+			Description: e.Reason,
+			RequestID:   rid,
+		})
 	case *middleware.RateLimitError:
-		w.Header().Set("Retry-After", string(rune(e.RetryAfter)))
-		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`{"code": "RateLimitExceeded", "description": "Rate limit exceeded"}`))
+		w.Header().Set("Retry-After", strconv.Itoa(e.RetryAfter))
+		writeErrorJSON(w, http.StatusTooManyRequests, errorBody{
+			Code:        "RateLimitExceeded",
+			Description: "Rate limit exceeded",
+			RequestID:   rid,
+		})
 	default:
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"code": "InternalError", "description": "` + err.Error() + `"}`))
+		// Never leak internal error text to the client.
+		writeErrorJSON(w, http.StatusInternalServerError, errorBody{
+			Code:        "InternalError",
+			Description: "internal error",
+			RequestID:   rid,
+		})
 	}
 }
 

@@ -5,9 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/observability"
@@ -18,6 +21,7 @@ type Middleware struct {
 	middleware.BaseMiddleware
 	store    Store
 	strategy Strategy
+	sf       singleflight.Group
 }
 
 // Config contains configuration for the cache middleware.
@@ -89,15 +93,20 @@ func (m *Middleware) ProcessResponse(ctx context.Context, req *middleware.STACRe
 
 	// Check for cache hit
 	if cachedData, ok := ctx.Value(cacheHitKey).([]byte); ok {
-		// Return cached response
-		return &middleware.STACResponse{
-			StatusCode: http.StatusOK,
-			Headers: http.Header{
-				"Content-Type":   []string{"application/json"},
-				"X-Cache-Status": []string{"HIT"},
-			},
-			Body: cachedData,
-		}, nil
+		var entry CacheEntry
+		if err := json.Unmarshal(cachedData, &entry); err == nil {
+			headers := entry.Headers.Clone()
+			if headers == nil {
+				headers = make(http.Header)
+			}
+			headers.Set("X-Cache-Status", "HIT")
+			return &middleware.STACResponse{
+				StatusCode: entry.Status,
+				Headers:    headers,
+				Body:       append([]byte(nil), entry.Body...),
+			}, nil
+		}
+		// Corrupt cache entry — fall through to upstream response.
 	}
 
 	// Only cache successful responses
@@ -116,10 +125,19 @@ func (m *Middleware) ProcessResponse(ctx context.Context, req *middleware.STACRe
 	// Calculate TTL
 	ttl := m.strategy.TTL(cacheReq, resp.StatusCode)
 	if ttl > 0 {
-		// Cache the response
-		if err := m.store.Set(ctx, key, resp.Body, ttl); err != nil {
-			// Log error but don't fail the request
-			fmt.Printf("cache set error: %v\n", err)
+		// Body is deep-copied so future in-place rewrites by other
+		// middleware cannot poison the cache.
+		envelope, err := json.Marshal(CacheEntry{
+			Status:  resp.StatusCode,
+			Headers: resp.Headers,
+			Body:    append([]byte(nil), resp.Body...),
+		})
+		if err == nil {
+			// Cache Set failures are transient (full memory, Redis
+			// hiccup) — the upstream response still succeeded, so we
+			// pass it through unchanged. A future iteration could
+			// surface this through observability if it matters.
+			_ = m.store.Set(ctx, key, envelope, ttl)
 		}
 	}
 
@@ -130,6 +148,21 @@ func (m *Middleware) ProcessResponse(ctx context.Context, req *middleware.STACRe
 	resp.Headers.Set("X-Cache-Status", "MISS")
 
 	return resp, nil
+}
+
+// DoSingleflight coalesces concurrent upstream calls for the same cache
+// key, returning the shared response to all callers. Use this at the
+// upstream-call boundary by passing the function that performs the
+// upstream request. Returns the response, a boolean indicating whether
+// the call was shared, and any upstream error.
+//
+// This is exposed (rather than wired into ProcessRequest/ProcessResponse)
+// because the middleware sees request/response separately; the handler
+// must invoke the upstream call inside this helper for coalescing to
+// take effect.
+func (m *Middleware) DoSingleflight(key string, fn func() (any, error)) (any, bool, error) {
+	v, err, shared := m.sf.Do(key, fn)
+	return v, shared, err
 }
 
 // Context keys

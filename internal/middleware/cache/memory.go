@@ -9,12 +9,14 @@ import (
 
 // MemoryStore is an in-memory cache implementation with LRU eviction.
 type MemoryStore struct {
-	items    map[string]*cacheItem
-	order    []string // For LRU tracking
-	maxSize  int
-	mu       sync.RWMutex
-	stats    Stats
-	statsMu  sync.Mutex
+	items   map[string]*cacheItem
+	order   []string // For LRU tracking
+	maxSize int
+	mu      sync.RWMutex
+	stats   Stats
+	statsMu sync.Mutex
+	stop    chan struct{}
+	stopped sync.Once
 }
 
 type cacheItem struct {
@@ -37,9 +39,10 @@ func NewMemoryStore(cfg MemoryConfig) *MemoryStore {
 		items:   make(map[string]*cacheItem),
 		order:   make([]string, 0, cfg.MaxSize),
 		maxSize: cfg.MaxSize,
+		stop:    make(chan struct{}),
 	}
 
-	// Start cleanup goroutine
+	// Start cleanup goroutine; Close() stops it.
 	go store.cleanupLoop()
 
 	return store
@@ -117,8 +120,9 @@ func (s *MemoryStore) Clear(ctx context.Context) error {
 	return nil
 }
 
-// Close releases resources.
+// Close releases resources and stops the cleanup goroutine.
 func (s *MemoryStore) Close() error {
+	s.stopped.Do(func() { close(s.stop) })
 	return s.Clear(context.Background())
 }
 
@@ -161,13 +165,18 @@ func (s *MemoryStore) removeFromOrder(key string) {
 	}
 }
 
-// cleanupLoop periodically removes expired items.
+// cleanupLoop periodically removes expired items until Close() is called.
 func (s *MemoryStore) cleanupLoop() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.cleanupExpired()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-ticker.C:
+			s.cleanupExpired()
+		}
 	}
 }
 

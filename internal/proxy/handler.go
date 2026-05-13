@@ -13,7 +13,6 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/observability"
-	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // Handler handles proxying requests to a single upstream STAC server.
@@ -32,6 +31,10 @@ type Config struct {
 	// SupportsFilterExtension reflects whether the upstream STAC API
 	// supports the Filter Extension. Consumed by SupportsFilterExtension().
 	SupportsFilterExtension bool
+	// MaxIdleConnsPerHost overrides the upstream connection pool cap.
+	// 0 keeps the stdlib default (10), which is too low for a proxy
+	// under load — production deployments should set 100+.
+	MaxIdleConnsPerHost int
 }
 
 // NewHandler creates a new proxy handler.
@@ -44,6 +47,10 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 	if cfg.Retry != nil {
 		opts = append(opts, WithRetry(cfg.Retry))
+	}
+
+	if cfg.MaxIdleConnsPerHost > 0 {
+		opts = append(opts, WithMaxIdleConnsPerHost(cfg.MaxIdleConnsPerHost))
 	}
 
 	client, err := NewClient(cfg.UpstreamURL, opts...)
@@ -64,6 +71,36 @@ func NewHandler(cfg Config) (*Handler, error) {
 // back to response post-filtering.
 func (h *Handler) SupportsFilterExtension() bool {
 	return h.supportsFilterExtension
+}
+
+// hopByHopHeaders are connection-scoped headers that MUST NOT be
+// forwarded across a proxy (RFC 7230 §6.1). Plus a few entries that
+// must not leak from a private upstream out to a public client.
+// Same list net/http/httputil.ReverseProxy enforces internally.
+var hopByHopHeaders = []string{
+	"Connection",
+	"Proxy-Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+// stripHopByHopHeaders mutates h to remove RFC 7230 hop-by-hop headers
+// plus any extra headers named by the upstream in its own Connection
+// header (which is itself hop-by-hop).
+func stripHopByHopHeaders(h http.Header) {
+	if conn := h.Get("Connection"); conn != "" {
+		for _, name := range strings.Split(conn, ",") {
+			h.Del(strings.TrimSpace(name))
+		}
+	}
+	for _, name := range hopByHopHeaders {
+		h.Del(name)
+	}
 }
 
 // Handle processes a STAC request by forwarding to the upstream server.
@@ -92,6 +129,13 @@ func (h *Handler) Handle(ctx context.Context, req *middleware.STACRequest) (*mid
 		method = http.MethodPost
 	}
 
+	// Stuff the originating request's identity in context so the client
+	// can attach X-Forwarded-* (httputil.ReverseProxy.SetXForwarded
+	// equivalent), without having to thread a *http.Request through.
+	if req.Request != nil {
+		ctx = withForwardedFrom(ctx, req.Request)
+	}
+
 	start := time.Now()
 	resp, err := h.client.Do(ctx, method, path, body)
 	if err != nil {
@@ -112,10 +156,14 @@ func (h *Handler) Handle(ctx context.Context, req *middleware.STACRequest) (*mid
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Build STAC response
+	// Clone headers and scrub hop-by-hop ones before exposing them to
+	// downstream middleware / the client.
+	headers := resp.Header.Clone()
+	stripHopByHopHeaders(headers)
+
 	stacResp := &middleware.STACResponse{
 		StatusCode: resp.StatusCode,
-		Headers:    resp.Header.Clone(),
+		Headers:    headers,
 		Body:       respBody,
 	}
 
@@ -203,101 +251,3 @@ func (h *Handler) rewriteURL(href string) string {
 	return href
 }
 
-// HandleSearch handles a STAC API search request.
-func (h *Handler) HandleSearch(ctx context.Context, searchReq *stac.SearchRequest) (*stac.FeatureCollection, error) {
-	body, err := json.Marshal(searchReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal search request: %w", err)
-	}
-
-	resp, err := h.client.Post(ctx, "/search", strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("search failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var fc stac.FeatureCollection
-	if err := json.NewDecoder(resp.Body).Decode(&fc); err != nil {
-		return nil, fmt.Errorf("failed to parse search response: %w", err)
-	}
-
-	return &fc, nil
-}
-
-// HandleGetCollections handles GET /collections.
-func (h *Handler) HandleGetCollections(ctx context.Context) (*stac.CollectionsResponse, error) {
-	resp, err := h.client.Get(ctx, "/collections")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get collections failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result stac.CollectionsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to parse collections response: %w", err)
-	}
-
-	return &result, nil
-}
-
-// HandleGetCollection handles GET /collections/{collectionId}.
-func (h *Handler) HandleGetCollection(ctx context.Context, collectionID string) (*stac.Collection, error) {
-	path := fmt.Sprintf("/collections/%s", collectionID)
-	resp, err := h.client.Get(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get collection failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var collection stac.Collection
-	if err := json.NewDecoder(resp.Body).Decode(&collection); err != nil {
-		return nil, fmt.Errorf("failed to parse collection response: %w", err)
-	}
-
-	return &collection, nil
-}
-
-// HandleGetItem handles GET /collections/{collectionId}/items/{itemId}.
-func (h *Handler) HandleGetItem(ctx context.Context, collectionID, itemID string) (*stac.Item, error) {
-	path := fmt.Sprintf("/collections/%s/items/%s", collectionID, itemID)
-	resp, err := h.client.Get(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get item failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var item stac.Item
-	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
-		return nil, fmt.Errorf("failed to parse item response: %w", err)
-	}
-
-	return &item, nil
-}
