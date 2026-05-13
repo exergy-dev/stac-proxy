@@ -106,6 +106,64 @@ func (h *Handler) Handle(ctx context.Context, req *middleware.STACRequest) (*mid
 	}
 }
 
+// ServeHTTP makes Handler implement http.Handler. It reads STACInfo from
+// the request context (populated by the router), reconstructs a
+// middleware.STACRequest, delegates to Handle, then writes the
+// STACResponse out to w. This is the integration point that lets
+// federation be the inner handler in a chi-style middleware chain.
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	info := middleware.STACInfoFromContext(r.Context())
+	if info == nil {
+		http.Error(w, "missing STAC info", http.StatusInternalServerError)
+		return
+	}
+	sreq := &middleware.STACRequest{
+		Request:     r,
+		Context:     r.Context(),
+		Collection:  info.Collection,
+		ItemID:      info.ItemID,
+		RequestType: info.RequestType,
+		SearchReq:   info.SearchReq,
+	}
+	resp, err := h.Handle(r.Context(), sreq)
+	if err != nil {
+		writeFederationError(w, r, err)
+		return
+	}
+	for k, vs := range resp.Headers {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	if resp.StatusCode == 0 {
+		resp.StatusCode = http.StatusOK
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(resp.Body)
+}
+
+// writeFederationError translates a federation/middleware-tier error
+// into a STAC-shaped JSON response. Mirrors the router's handleError
+// for the cases reachable from federation.Handle.
+func writeFederationError(w http.ResponseWriter, _ *http.Request, err error) {
+	type body struct {
+		Code        string `json:"code"`
+		Description string `json:"description"`
+	}
+	w.Header().Set("Content-Type", "application/json")
+	switch e := err.(type) {
+	case *middleware.InternalError:
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(body{Code: "BadGateway", Description: e.Message})
+	default:
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(body{Code: "InternalError", Description: "internal error"})
+	}
+}
+
 // handleSearch handles federated search requests. When only one origin
 // is routed it bypasses fan-out/merge and delegates to the
 // ReverseProxy-based single-origin pass-through.

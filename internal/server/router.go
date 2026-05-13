@@ -2,7 +2,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -22,16 +21,17 @@ const DefaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
 // Router wraps chi router with STAC-specific functionality.
 type Router struct {
 	*chi.Mux
-	handler       middleware.Handler
-	chain         *middleware.Chain
+	handler       http.Handler
 	healthChecker *observability.HealthChecker
 	metrics       *observability.Metrics
 }
 
 // RouterConfig contains router configuration.
 type RouterConfig struct {
-	Handler       middleware.Handler
-	Chain         *middleware.Chain
+	// Handler is the inner http.Handler (typically *federation.Handler)
+	// that the chi-style middleware chain wraps. It reads STACInfo from
+	// the request context.
+	Handler       http.Handler
 	HealthChecker *observability.HealthChecker
 	Metrics       *observability.Metrics
 	ProxyBaseURL  string
@@ -39,9 +39,7 @@ type RouterConfig struct {
 	// DefaultMaxBodyBytes; negative disables the cap.
 	MaxBodyBytes int64
 	// HTTPMiddlewares are chi-style middlewares registered via r.Use
-	// BEFORE the buffered middleware Chain runs. Used for cross-cutting
-	// concerns that don't need the parsed STACResponse (logging,
-	// request-ID forwarding, etc.).
+	// before the inner handler runs.
 	HTTPMiddlewares []func(http.Handler) http.Handler
 }
 
@@ -50,7 +48,6 @@ func NewRouter(cfg RouterConfig) *Router {
 	r := &Router{
 		Mux:           chi.NewRouter(),
 		handler:       cfg.Handler,
-		chain:         cfg.Chain,
 		healthChecker: cfg.HealthChecker,
 		metrics:       cfg.Metrics,
 	}
@@ -98,88 +95,79 @@ func NewRouter(cfg RouterConfig) *Router {
 
 // handleLanding handles GET /
 func (r *Router) handleLanding(w http.ResponseWriter, req *http.Request) {
-	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeLanding, "", ""))
+	r.dispatch(w, req, middleware.RequestTypeLanding, "", "")
 }
 
 // handleConformance handles GET /conformance
 func (r *Router) handleConformance(w http.ResponseWriter, req *http.Request) {
-	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeConformance, "", ""))
+	r.dispatch(w, req, middleware.RequestTypeConformance, "", "")
 }
 
 // handleCollections handles GET /collections
 func (r *Router) handleCollections(w http.ResponseWriter, req *http.Request) {
-	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeCollections, "", ""))
+	r.dispatch(w, req, middleware.RequestTypeCollections, "", "")
 }
 
 // handleCollection handles GET /collections/{collectionId}
 func (r *Router) handleCollection(w http.ResponseWriter, req *http.Request) {
-	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeCollection, chi.URLParam(req, "collectionId"), ""))
+	r.dispatch(w, req, middleware.RequestTypeCollection, chi.URLParam(req, "collectionId"), "")
 }
 
 // handleItems handles GET /collections/{collectionId}/items
 func (r *Router) handleItems(w http.ResponseWriter, req *http.Request) {
-	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeItems, chi.URLParam(req, "collectionId"), ""))
+	r.dispatch(w, req, middleware.RequestTypeItems, chi.URLParam(req, "collectionId"), "")
 }
 
 // handleItem handles GET /collections/{collectionId}/items/{itemId}
 func (r *Router) handleItem(w http.ResponseWriter, req *http.Request) {
-	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeItem, chi.URLParam(req, "collectionId"), chi.URLParam(req, "itemId")))
+	r.dispatch(w, req, middleware.RequestTypeItem, chi.URLParam(req, "collectionId"), chi.URLParam(req, "itemId"))
 }
 
 // handleSearch handles GET/POST /search
 func (r *Router) handleSearch(w http.ResponseWriter, req *http.Request) {
-	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeSearch, "", ""))
+	r.dispatch(w, req, middleware.RequestTypeSearch, "", "")
 }
 
 // handleQueryables handles GET /queryables
 func (r *Router) handleQueryables(w http.ResponseWriter, req *http.Request) {
-	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeQueryables, "", ""))
+	r.dispatch(w, req, middleware.RequestTypeQueryables, "", "")
 }
 
 // handleCollectionQueryables handles GET /collections/{collectionId}/queryables
 func (r *Router) handleCollectionQueryables(w http.ResponseWriter, req *http.Request) {
-	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeCollectionQueryables, chi.URLParam(req, "collectionId"), ""))
+	r.dispatch(w, req, middleware.RequestTypeCollectionQueryables, chi.URLParam(req, "collectionId"), "")
 }
 
-// buildSTACRequest creates a STACRequest from an HTTP request AND
-// attaches the matching STACInfo to the request's context so chi-style
-// middlewares can read the parsed STAC shape via STACInfoFromContext.
-func (r *Router) buildSTACRequest(req *http.Request, rt middleware.RequestType, collection, itemID string) *middleware.STACRequest {
+// dispatch attaches STACInfo to req.Context() so chi-layer middlewares
+// can read the parsed STAC shape, then delegates to the inner handler.
+// Request-level metrics are recorded after the handler returns.
+func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, rt middleware.RequestType, collection, itemID string) {
+	start := time.Now()
 	info := &middleware.STACInfo{RequestType: rt, Collection: collection, ItemID: itemID}
 	ctx := middleware.WithSTACInfo(req.Context(), info)
 	req = req.WithContext(ctx)
-	return &middleware.STACRequest{
-		Request:     req,
-		Context:     ctx,
-		Collection:  collection,
-		ItemID:      itemID,
-		RequestType: rt,
-	}
+
+	sw := &statusWriter{ResponseWriter: w}
+	r.handler.ServeHTTP(sw, req)
+	r.observeRequest(req, sw.status, start)
 }
 
-// executeHandler runs the request through the middleware chain and handler.
-func (r *Router) executeHandler(w http.ResponseWriter, stacReq *middleware.STACRequest) {
-	start := time.Now()
-	var resp *middleware.STACResponse
-	var err error
+// statusWriter captures the response status code for the metrics path.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
 
-	if r.chain != nil {
-		// Execute through middleware chain
-		wrappedHandler := r.chain.Wrap(r.handler)
-		resp, err = wrappedHandler.Handle(stacReq.Context, stacReq)
-	} else {
-		// Execute handler directly
-		resp, err = r.handler.Handle(stacReq.Context, stacReq)
+func (s *statusWriter) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
 	}
-
-	if err != nil {
-		r.observeRequest(stacReq.Request, 0, start)
-		r.handleError(w, stacReq.Request, err)
-		return
-	}
-
-	r.observeRequest(stacReq.Request, resp.StatusCode, start)
-	r.writeResponse(w, resp)
+	return s.ResponseWriter.Write(b)
 }
 
 // observeRequest records end-to-end request duration and a status-coded
@@ -195,75 +183,6 @@ func (r *Router) observeRequest(req *http.Request, status int, start time.Time) 
 	if status != 0 {
 		r.metrics.RequestsTotal.WithLabelValues(req.Method, path, strconv.Itoa(status)).Inc()
 	}
-}
-
-// errorBody is the wire shape for STAC-style error responses.
-type errorBody struct {
-	Code        string `json:"code"`
-	Description string `json:"description"`
-	RequestID   string `json:"request_id,omitempty"`
-}
-
-// writeErrorJSON encodes a structured error response via encoding/json so
-// caller-controlled strings cannot break out of the JSON document.
-func writeErrorJSON(w http.ResponseWriter, status int, body errorBody) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
-}
-
-// handleError writes a structured error response. Internal error details
-// are never leaked to the client; clients receive a generic message plus
-// the request ID so support can correlate against logs.
-func (r *Router) handleError(w http.ResponseWriter, req *http.Request, err error) {
-	rid := chimiddleware.GetReqID(req.Context())
-
-	switch e := err.(type) {
-	case *middleware.AuthError:
-		writeErrorJSON(w, http.StatusUnauthorized, errorBody{
-			Code:        "Unauthorized",
-			Description: e.Message,
-			RequestID:   rid,
-		})
-	case *middleware.ForbiddenError:
-		writeErrorJSON(w, http.StatusForbidden, errorBody{
-			Code:        "Forbidden",
-			Description: e.Reason,
-			RequestID:   rid,
-		})
-	case *middleware.RateLimitError:
-		w.Header().Set("Retry-After", strconv.Itoa(e.RetryAfter))
-		writeErrorJSON(w, http.StatusTooManyRequests, errorBody{
-			Code:        "RateLimitExceeded",
-			Description: "Rate limit exceeded",
-			RequestID:   rid,
-		})
-	default:
-		// Never leak internal error text to the client.
-		writeErrorJSON(w, http.StatusInternalServerError, errorBody{
-			Code:        "InternalError",
-			Description: "internal error",
-			RequestID:   rid,
-		})
-	}
-}
-
-// writeResponse writes a STAC response.
-func (r *Router) writeResponse(w http.ResponseWriter, resp *middleware.STACResponse) {
-	// Copy headers
-	for key, values := range resp.Headers {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-
-	// Set content type if not set
-	if w.Header().Get("Content-Type") == "" {
-		w.Header().Set("Content-Type", "application/json")
-	}
-
-	w.WriteHeader(resp.StatusCode)
-	w.Write(resp.Body)
 }
 
 // bodyLimitMiddleware wraps every request body in http.MaxBytesReader

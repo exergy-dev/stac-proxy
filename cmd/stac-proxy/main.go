@@ -118,17 +118,10 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 	// Initialize health checker
 	healthChecker := observability.NewHealthChecker()
 
-	// Build middleware chain
-	chain, err := buildMiddlewareChain(cfg, logger, metrics)
-	if err != nil {
-		return fmt.Errorf("failed to build middleware chain: %w", err)
-	}
-
 	// Build the federation handler. Single-origin mode is modeled as a
 	// federation-of-1 — the single-origin code path collapses into
 	// reverseProxyOnce against the synthetic "primary" origin.
-	var handler middleware.Handler
-	handler, err = buildFederationHandler(cfg, logger, healthChecker, metrics)
+	handler, err := buildFederationHandler(cfg, logger, healthChecker, metrics)
 	if err != nil {
 		return fmt.Errorf("failed to build handler: %w", err)
 	}
@@ -164,7 +157,6 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 	}
 	router := server.NewRouter(server.RouterConfig{
 		Handler:         handler,
-		Chain:           chain,
 		HealthChecker:   healthChecker,
 		Metrics:         metrics,
 		MaxBodyBytes:    cfg.Server.MaxBodyBytes,
@@ -471,7 +463,7 @@ func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Ha
 // single-origin mode (cfg.Mode != "federation") it synthesizes a
 // single-element Origins list from cfg.Upstream, so the same code
 // path handles both deployment shapes.
-func buildFederationHandler(cfg *config.Config, logger *zap.Logger, health *observability.HealthChecker, metrics *observability.Metrics) (middleware.Handler, error) {
+func buildFederationHandler(cfg *config.Config, logger *zap.Logger, health *observability.HealthChecker, metrics *observability.Metrics) (*federation.Handler, error) {
 	// Single-origin → federation-of-1 translation.
 	if !cfg.IsFederation() {
 		return buildSingleOriginAsFederation(cfg, logger, health)
@@ -580,7 +572,7 @@ func originAuthConfig(c *config.OriginAuthConfig) federation.AuthConfig {
 // buildSingleOriginAsFederation builds a federation handler from a
 // single-origin cfg.Upstream — i.e. the "single" mode collapses to a
 // federation-of-1 so we only carry one request pipeline.
-func buildSingleOriginAsFederation(cfg *config.Config, logger *zap.Logger, health *observability.HealthChecker) (middleware.Handler, error) {
+func buildSingleOriginAsFederation(cfg *config.Config, logger *zap.Logger, health *observability.HealthChecker) (*federation.Handler, error) {
 	if cfg.Upstream == nil {
 		return nil, fmt.Errorf("single mode requires upstream config")
 	}
