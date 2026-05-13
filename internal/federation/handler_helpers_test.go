@@ -166,7 +166,7 @@ func NewTestServerWithDelay(delay time.Duration, body interface{}) *httptest.Ser
 
 // NewSTACRequest builds a STACRequest with a sensible default Search shape.
 // Used by older test fixtures; the canonical request type tag is overridable.
-func NewSTACRequest(method, path string, body interface{}) *middleware.STACRequest {
+func NewSTACRequest(method, path string, body interface{}) *request {
 	var bodyReader io.Reader
 	if body != nil {
 		data, _ := json.Marshal(body)
@@ -174,7 +174,7 @@ func NewSTACRequest(method, path string, body interface{}) *middleware.STACReque
 	}
 	req := httptest.NewRequest(method, path, bodyReader)
 	req.Header.Set("Content-Type", "application/json")
-	return &middleware.STACRequest{
+	return &request{
 		Request:     req,
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,

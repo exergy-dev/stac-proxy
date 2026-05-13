@@ -280,7 +280,7 @@ func TestHandleSearch(t *testing.T) {
 			}
 
 			// Create request
-			req := &middleware.STACRequest{
+			req := &request{
 				Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 				Context:     context.Background(),
 				RequestType: middleware.RequestTypeSearch,
@@ -353,7 +353,7 @@ func TestHandleSearchWithErrors(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
@@ -422,7 +422,7 @@ func TestHandleSearchTimeout(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
@@ -490,7 +490,7 @@ func TestHandleSearchContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     ctx,
 		RequestType: middleware.RequestTypeSearch,
@@ -589,7 +589,7 @@ func TestHandleGetCollections(t *testing.T) {
 				t.Fatalf("failed to create handler: %v", err)
 			}
 
-			req := &middleware.STACRequest{
+			req := &request{
 				Request:     httptest.NewRequest(http.MethodGet, "/collections", nil),
 				Context:     context.Background(),
 				RequestType: middleware.RequestTypeCollections,
@@ -684,7 +684,7 @@ func TestHandleGetCollection(t *testing.T) {
 				t.Fatalf("failed to create handler: %v", err)
 			}
 
-			req := &middleware.STACRequest{
+			req := &request{
 				Request:     httptest.NewRequest(http.MethodGet, "/collections/"+tt.collectionID, nil),
 				Context:     context.Background(),
 				RequestType: middleware.RequestTypeCollection,
@@ -751,7 +751,7 @@ func TestHandleGetCollectionWithPrefix(t *testing.T) {
 	}
 
 	// Request with prefix
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/collections/prefix_my-collection", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeCollection,
@@ -828,7 +828,7 @@ func TestHandleGetItem(t *testing.T) {
 				t.Fatalf("failed to create handler: %v", err)
 			}
 
-			req := &middleware.STACRequest{
+			req := &request{
 				Request:     httptest.NewRequest(http.MethodGet, "/collections/"+tt.collectionID+"/items/"+tt.itemID, nil),
 				Context:     context.Background(),
 				RequestType: middleware.RequestTypeItem,
@@ -896,7 +896,7 @@ func TestHandleGetItemWithPrefix(t *testing.T) {
 	}
 
 	// Request with prefix
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/collections/prefix_my-collection/items/test-item", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeItem,
@@ -941,7 +941,7 @@ func TestHandleGenericProxy(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/conformance", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeConformance,
@@ -969,7 +969,7 @@ func TestHandleGenericProxyNoOrigins(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/conformance", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeConformance,
@@ -1043,7 +1043,7 @@ func TestParseSearchRequest(t *testing.T) {
 				httpReq.Header.Set("Content-Type", "application/json")
 			}
 
-			req := &middleware.STACRequest{
+			req := &request{
 				Request:     httpReq,
 				Context:     httpReq.Context(),
 				RequestType: middleware.RequestTypeSearch,
@@ -1129,7 +1129,7 @@ func TestBuildSearchResponse(t *testing.T) {
 		},
 	}
 
-	req := &middleware.STACRequest{
+	req := &request{
 		Request: httptest.NewRequest(http.MethodPost, "/search", nil),
 	}
 
@@ -1430,7 +1430,7 @@ func TestHandlerPaginationLimits(t *testing.T) {
 				WithLimit(tt.requestLimit),
 			)
 
-			req := &middleware.STACRequest{
+			req := &request{
 				Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 				Context:     context.Background(),
 				RequestType: middleware.RequestTypeSearch,
@@ -1479,7 +1479,7 @@ func TestHandleWithNoMatchingOrigins(t *testing.T) {
 	}
 
 	// Search for a collection not served by any origin
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
@@ -1546,7 +1546,7 @@ func TestHandleCollectionPriority(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/collections/test-collection", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeCollection,
@@ -1590,7 +1590,7 @@ func TestHandleSearchWithBbox(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
@@ -1635,7 +1635,7 @@ func TestHandleSearchWithDatetime(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 
-	req := &middleware.STACRequest{
+	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,

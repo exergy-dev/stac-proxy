@@ -90,7 +90,7 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 }
 
 // Handle processes a STAC request by routing to appropriate origins.
-func (h *Handler) Handle(ctx context.Context, req *middleware.STACRequest) (*middleware.STACResponse, error) {
+func (h *Handler) Handle(ctx context.Context, req *request) (*response, error) {
 	switch req.RequestType {
 	case middleware.RequestTypeSearch:
 		return h.handleSearch(ctx, req)
@@ -108,7 +108,7 @@ func (h *Handler) Handle(ctx context.Context, req *middleware.STACRequest) (*mid
 
 // ServeHTTP makes Handler implement http.Handler. It reads STACInfo from
 // the request context (populated by the router), reconstructs a
-// middleware.STACRequest, delegates to Handle, then writes the
+// request, delegates to Handle, then writes the
 // STACResponse out to w. This is the integration point that lets
 // federation be the inner handler in a chi-style middleware chain.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +117,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing STAC info", http.StatusInternalServerError)
 		return
 	}
-	sreq := &middleware.STACRequest{
+	sreq := &request{
 		Request:     r,
 		Context:     r.Context(),
 		Collection:  info.Collection,
@@ -167,7 +167,7 @@ func writeFederationError(w http.ResponseWriter, _ *http.Request, err error) {
 // handleSearch handles federated search requests. When only one origin
 // is routed it bypasses fan-out/merge and delegates to the
 // ReverseProxy-based single-origin pass-through.
-func (h *Handler) handleSearch(ctx context.Context, req *middleware.STACRequest) (*middleware.STACResponse, error) {
+func (h *Handler) handleSearch(ctx context.Context, req *request) (*response, error) {
 	searchReq := req.SearchReq
 	if searchReq == nil {
 		// Parse search request from body or query params
@@ -336,7 +336,7 @@ func (h *Handler) adaptRequestForOrigin(req *stac.SearchRequest, origin *Origin)
 // end-to-end via reverseProxyOnce — preserves headers/X-Forwarded,
 // suppresses stac_proxy:origin injection (dynamic-on-routed-count).
 func (h *Handler) handleGetCollections(ctx context.Context,
-	req *middleware.STACRequest) (*middleware.STACResponse, error) {
+	req *request) (*response, error) {
 
 	if len(h.origins) == 1 {
 		return h.reverseProxyOnce(ctx, h.primaryOrigin(), req)
@@ -401,7 +401,7 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 		return nil, err
 	}
 
-	return &middleware.STACResponse{
+	return &response{
 		StatusCode: http.StatusOK,
 		Headers: http.Header{
 			"Content-Type": []string{"application/json"},
@@ -415,7 +415,7 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 // non-404 wins. Origin metadata is only injected when there is more
 // than one registered origin (true federation mode).
 func (h *Handler) handleGetCollection(ctx context.Context,
-	req *middleware.STACRequest) (*middleware.STACResponse, error) {
+	req *request) (*response, error) {
 
 	collectionID := req.Collection
 	origins := h.router.RouteCollection(collectionID)
@@ -456,7 +456,7 @@ func (h *Handler) handleGetCollection(ctx context.Context,
 // handleGetItem handles GET /collections/{collectionId}/items/{itemId}.
 // Same priority-order iteration as handleGetCollection.
 func (h *Handler) handleGetItem(ctx context.Context,
-	req *middleware.STACRequest) (*middleware.STACResponse, error) {
+	req *request) (*response, error) {
 
 	collectionID := req.Collection
 	origins := h.router.RouteCollection(collectionID)
@@ -493,8 +493,8 @@ func (h *Handler) handleGetItem(ctx context.Context,
 }
 
 // notFoundResponse builds a uniform 404 STAC error response.
-func notFoundResponse(description string) *middleware.STACResponse {
-	return &middleware.STACResponse{
+func notFoundResponse(description string) *response {
+	return &response{
 		StatusCode: http.StatusNotFound,
 		Headers:    http.Header{"Content-Type": []string{"application/json"}},
 		Body:       []byte(`{"code": "NotFound", "description": "` + description + `"}`),
@@ -505,11 +505,11 @@ func notFoundResponse(description string) *middleware.STACResponse {
 // via ReverseProxy. Used for STAC endpoints that don't have dedicated
 // federation handling (e.g. /, /conformance).
 func (h *Handler) handleGenericProxy(ctx context.Context,
-	req *middleware.STACRequest) (*middleware.STACResponse, error) {
+	req *request) (*response, error) {
 
 	origin := h.primaryOrigin()
 	if origin == nil {
-		return &middleware.STACResponse{
+		return &response{
 			StatusCode: http.StatusServiceUnavailable,
 			Body:       []byte(`{"code": "NoOrigins", "description": "No origins available"}`),
 		}, nil
@@ -536,7 +536,7 @@ func (h *Handler) primaryOrigin() *Origin {
 }
 
 // parseSearchRequest parses a search request from the STAC request.
-func (h *Handler) parseSearchRequest(req *middleware.STACRequest) (*stac.SearchRequest, error) {
+func (h *Handler) parseSearchRequest(req *request) (*stac.SearchRequest, error) {
 	searchReq := &stac.SearchRequest{}
 
 	if req.Request.Method == http.MethodPost && req.Request.Body != nil {
@@ -561,7 +561,7 @@ func (h *Handler) parseSearchRequest(req *middleware.STACRequest) (*stac.SearchR
 }
 
 // emptySearchResponse returns an empty feature collection.
-func (h *Handler) emptySearchResponse(req *stac.SearchRequest) (*middleware.STACResponse, error) {
+func (h *Handler) emptySearchResponse(req *stac.SearchRequest) (*response, error) {
 	fc := &stac.FeatureCollection{
 		Type:     "FeatureCollection",
 		Features: []stac.Item{},
@@ -576,7 +576,7 @@ func (h *Handler) emptySearchResponse(req *stac.SearchRequest) (*middleware.STAC
 		return nil, err
 	}
 
-	return &middleware.STACResponse{
+	return &response{
 		StatusCode: http.StatusOK,
 		Headers: http.Header{
 			"Content-Type": []string{"application/geo+json"},
@@ -587,14 +587,14 @@ func (h *Handler) emptySearchResponse(req *stac.SearchRequest) (*middleware.STAC
 
 // buildSearchResponse builds the HTTP response for search results.
 func (h *Handler) buildSearchResponse(fc *stac.FeatureCollection,
-	req *middleware.STACRequest) (*middleware.STACResponse, error) {
+	req *request) (*response, error) {
 
 	body, err := json.Marshal(fc)
 	if err != nil {
 		return nil, err
 	}
 
-	return &middleware.STACResponse{
+	return &response{
 		StatusCode: http.StatusOK,
 		Headers: http.Header{
 			"Content-Type": []string{"application/geo+json"},
@@ -620,12 +620,12 @@ func (h *Handler) OriginIDs() []string {
 // reverseProxyOnce forwards req to a single origin via
 // httputil.ReverseProxy. Auth + retry are applied transparently via
 // the origin's RoundTripper chain; the captured response is returned
-// as a middleware.STACResponse.
+// as a response.
 //
 // When proxyBaseURL is configured and the upstream returns 2xx with a
 // JSON body, links are rewritten to point at the proxy.
 func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
-	req *middleware.STACRequest) (*middleware.STACResponse, error) {
+	req *request) (*response, error) {
 
 	client := h.origins[origin.ID]
 	if client == nil {
@@ -677,7 +677,7 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 	headers := cap.HeadersOut()
 	httpx.StripHopByHopHeaders(headers)
 
-	resp := &middleware.STACResponse{
+	resp := &response{
 		StatusCode: cap.Status(),
 		Headers:    headers,
 		Body:       cap.BodyBytes(),
@@ -698,7 +698,7 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 // The returned request's URL is left as the inbound path/query;
 // ReverseProxy.Rewrite.SetURL composes the upstream URL at dispatch.
 func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient,
-	req *middleware.STACRequest) (*http.Request, error) {
+	req *request) (*http.Request, error) {
 
 	method := req.Request.Method
 	var body io.Reader
@@ -759,7 +759,7 @@ func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient
 
 // transformResponse rewrites links pointing to the upstream origin so
 // downstream clients follow links back through this proxy.
-func (h *Handler) transformResponse(client *OriginClient, resp *middleware.STACResponse) *middleware.STACResponse {
+func (h *Handler) transformResponse(client *OriginClient, resp *response) *response {
 	if h.proxyBaseURL == "" {
 		return resp
 	}
@@ -843,7 +843,7 @@ func isHopByHop(name string) bool {
 // injectOriginMetadata adds stac_proxy:origin to a JSON STAC document's
 // properties (Collection.properties or Item.properties). No-op on
 // parse errors — best-effort metadata.
-func injectOriginMetadata(resp *middleware.STACResponse, propertiesKey, originID string) {
+func injectOriginMetadata(resp *response, propertiesKey, originID string) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(resp.Body, &obj); err != nil {
 		return
@@ -862,7 +862,7 @@ func injectOriginMetadata(resp *middleware.STACResponse, propertiesKey, originID
 // adaptRequestStripCollectionPrefix returns a shallow copy of req with
 // the URL path and Collection field rewritten to strip the origin's
 // configured collection prefix.
-func adaptRequestStripCollectionPrefix(req *middleware.STACRequest, prefix string) *middleware.STACRequest {
+func adaptRequestStripCollectionPrefix(req *request, prefix string) *request {
 	if req.Request == nil || prefix == "" {
 		return req
 	}

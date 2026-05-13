@@ -50,30 +50,6 @@ func (rt RequestType) String() string {
 	}
 }
 
-// STACRequest carries the parsed STAC shape alongside the underlying
-// http.Request through federation's internal dispatch. Chi-style
-// middleware reads the same data from r.Context() via STACInfo; the
-// STACRequest form survives because federation's per-route handlers
-// (handleSearch, handleGetCollection, etc.) and the buildOutboundRequest
-// path consume it directly.
-type STACRequest struct {
-	Request     *http.Request
-	Context     context.Context
-	Collection  string              // Target collection (if applicable)
-	ItemID      string              // Target item ID (if applicable)
-	RequestType RequestType         // Type of STAC request
-	SearchReq   *stac.SearchRequest // Parsed search request (if applicable)
-}
-
-// STACResponse is federation's internal response value. ServeHTTP
-// translates it to the wire ResponseWriter; the chi-style middleware
-// chain only sees http.ResponseWriter/Request.
-type STACResponse struct {
-	StatusCode int
-	Headers    http.Header
-	Body       []byte
-}
-
 // MiddlewarePriorities defines standard priority levels for middleware.
 //
 // Ordering rationale: Auth runs first so we have a Principal. Cache runs

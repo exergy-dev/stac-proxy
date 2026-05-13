@@ -47,7 +47,7 @@ func TestHandle_StripsHopByHopHeadersFromUpstream(t *testing.T) {
 	handler := newFederationOfOne(t, upstream.URL)
 
 	httpReq := httptest.NewRequest("GET", "/collections", nil)
-	stacReq := &middleware.STACRequest{
+	stacReq := &request{
 		Request:     httpReq,
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeCollections,
@@ -78,7 +78,7 @@ func TestHandle_StripsConnectionListedHeaders(t *testing.T) {
 	defer upstream.Close()
 
 	handler := newFederationOfOne(t, upstream.URL)
-	resp, err := handler.Handle(context.Background(), &middleware.STACRequest{
+	resp, err := handler.Handle(context.Background(), &request{
 		Request:     httptest.NewRequest("GET", "/", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeLanding,
@@ -104,7 +104,7 @@ func TestHandle_ETagPassesThrough(t *testing.T) {
 	defer upstream.Close()
 
 	handler := newFederationOfOne(t, upstream.URL)
-	resp, err := handler.Handle(context.Background(), &middleware.STACRequest{
+	resp, err := handler.Handle(context.Background(), &request{
 		Request:     httptest.NewRequest("GET", "/", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeLanding,
@@ -139,7 +139,7 @@ func TestHandle_SetsXForwardedHeaders(t *testing.T) {
 	httpReq.RemoteAddr = "203.0.113.10:54321"
 	httpReq.Host = "edge.example.com"
 
-	_, err := handler.Handle(context.Background(), &middleware.STACRequest{
+	_, err := handler.Handle(context.Background(), &request{
 		Request:     httpReq,
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeCollections,

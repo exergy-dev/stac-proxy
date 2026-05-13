@@ -21,54 +21,16 @@ import (
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
-// federationInner is an http.Handler that reads STACInfo from the
-// request context (populated upstream by middleware/router shim),
-// builds a STACRequest, and delegates to federation.Handler.Handle —
-// mirroring what the production router does after the chi-style
-// middleware chain runs.
-func federationInner(h *federation.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		info := middleware.STACInfoFromContext(r.Context())
-		if info == nil {
-			http.Error(w, "no STACInfo", http.StatusInternalServerError)
-			return
-		}
-		sreq := &middleware.STACRequest{
-			Request:     r,
-			Context:     r.Context(),
-			RequestType: info.RequestType,
-			Collection:  info.Collection,
-			ItemID:      info.ItemID,
-			SearchReq:   info.SearchReq,
-		}
-		resp, err := h.Handle(r.Context(), sreq)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		for k, vs := range resp.Headers {
-			for _, v := range vs {
-				w.Header().Add(k, v)
-			}
-		}
-		if resp.StatusCode == 0 {
-			resp.StatusCode = http.StatusOK
-		}
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(resp.Body)
-	})
-}
-
 // withChain wires the chi-style authz middleware around the federation
-// inner handler, populates STACInfo + an anonymous principal in the
-// request context, and serves a single request.
+// handler, populates STACInfo + an anonymous principal in the request
+// context, and serves a single request.
 func withChain(t *testing.T, mw func(http.Handler) http.Handler, h *federation.Handler, req *http.Request, info *middleware.STACInfo) *httptest.ResponseRecorder {
 	t.Helper()
 	ctx := middleware.WithSTACInfo(req.Context(), info)
 	ctx = context.WithValue(ctx, middleware.PrincipalKey, &auth.Principal{ID: "anon", Type: "anonymous"})
 	req = req.WithContext(ctx)
 	rr := httptest.NewRecorder()
-	mw(federationInner(h)).ServeHTTP(rr, req)
+	mw(h).ServeHTTP(rr, req)
 	return rr
 }
 

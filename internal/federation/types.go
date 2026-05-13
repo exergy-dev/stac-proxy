@@ -2,10 +2,36 @@
 package federation
 
 import (
+	"context"
+	"net/http"
 	"time"
 
+	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
+
+// request is federation's internal carrier for the parsed STAC shape
+// alongside the inbound *http.Request. The per-route handlers
+// (handleSearch, handleGetItem, etc.) and reverseProxyOnce read from it
+// directly. Chi-style middleware uses middleware.STACInfo on the
+// request context; ServeHTTP translates STACInfo → *request.
+type request struct {
+	Request     *http.Request
+	Context     context.Context
+	Collection  string
+	ItemID      string
+	RequestType middleware.RequestType
+	SearchReq   *stac.SearchRequest
+}
+
+// response is federation's internal buffered response. ServeHTTP and
+// the per-route handlers compose one of these, then the outermost
+// caller writes it to the wire ResponseWriter.
+type response struct {
+	StatusCode int
+	Headers    http.Header
+	Body       []byte
+}
 
 // Origin represents configuration for a single upstream STAC server.
 type Origin struct {
