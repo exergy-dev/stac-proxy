@@ -181,7 +181,36 @@ const (
 
 	// OriginIDKey is the context key for the upstream origin ID.
 	OriginIDKey contextKey = "origin_id"
+
+	// stacInfoKey carries the parsed STAC request shape (collection,
+	// item ID, request type, search request) through the chi middleware
+	// chain. Set by the router before any middleware runs.
+	stacInfoKey contextKey = "stac_info"
 )
+
+// STACInfo is the parsed STAC shape attached to every request's context
+// by the router. Chi middlewares read it to specialize cache keys,
+// authorize collection access, and inject filters.
+type STACInfo struct {
+	Collection  string
+	ItemID      string
+	RequestType RequestType
+	SearchReq   *stac.SearchRequest
+}
+
+// WithSTACInfo attaches info to ctx. Returns the new context.
+func WithSTACInfo(ctx context.Context, info *STACInfo) context.Context {
+	return context.WithValue(ctx, stacInfoKey, info)
+}
+
+// STACInfoFromContext returns the STACInfo attached to ctx, or nil.
+// Middleware that needs the parsed STAC shape pulls it via this helper.
+func STACInfoFromContext(ctx context.Context) *STACInfo {
+	if v, ok := ctx.Value(stacInfoKey).(*STACInfo); ok {
+		return v
+	}
+	return nil
+}
 
 // ForwardRequestID copies the inbound request ID (if any) from ctx
 // onto an outbound HTTP request as the standard X-Request-ID header.

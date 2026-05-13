@@ -147,6 +147,11 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 	if rlMW := buildRateLimitHTTPMiddleware(cfg); rlMW != nil {
 		httpMiddlewares = append(httpMiddlewares, rlMW)
 	}
+	if rmMW, err := buildRemapHTTPMiddleware(cfg); err != nil {
+		return fmt.Errorf("failed to build remap middleware: %w", err)
+	} else if rmMW != nil {
+		httpMiddlewares = append(httpMiddlewares, rmMW)
+	}
 	router := server.NewRouter(server.RouterConfig{
 		Handler:         handler,
 		Chain:           chain,
@@ -319,7 +324,8 @@ func createMiddleware(cfg config.MiddlewareConfig, logger *zap.Logger, metrics *
 		return nil, nil
 
 	case "url_remap":
-		return remap.NewFromConfig(cfg.Config)
+		// Remap is wired as chi middleware at the router level.
+		return nil, nil
 
 	default:
 		logger.Warn("Unknown middleware, skipping", zap.String("name", cfg.Name))
@@ -390,6 +396,23 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *zap.Logger) func(http.H
 		Providers:      providers,
 		AllowAnonymous: allowAnonymous,
 	})
+}
+
+// buildRemapHTTPMiddleware builds the chi-style URL-remap middleware
+// from the `url_remap` block of the middleware config list. Returns
+// (nil, nil) when no block is configured.
+func buildRemapHTTPMiddleware(cfg *config.Config) (func(http.Handler) http.Handler, error) {
+	var rawCfg map[string]interface{}
+	for _, mw := range cfg.Middleware {
+		if mw.Name == "url_remap" {
+			rawCfg = mw.Config
+			break
+		}
+	}
+	if rawCfg == nil {
+		return nil, nil
+	}
+	return remap.NewFromConfig(rawCfg)
 }
 
 // buildRateLimitHTTPMiddleware builds the chi-style rate-limit middleware

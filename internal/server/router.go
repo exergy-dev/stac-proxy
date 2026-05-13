@@ -98,69 +98,62 @@ func NewRouter(cfg RouterConfig) *Router {
 
 // handleLanding handles GET /
 func (r *Router) handleLanding(w http.ResponseWriter, req *http.Request) {
-	stacReq := r.buildSTACRequest(req, middleware.RequestTypeLanding)
-	r.executeHandler(w, stacReq)
+	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeLanding, "", ""))
 }
 
 // handleConformance handles GET /conformance
 func (r *Router) handleConformance(w http.ResponseWriter, req *http.Request) {
-	stacReq := r.buildSTACRequest(req, middleware.RequestTypeConformance)
-	r.executeHandler(w, stacReq)
+	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeConformance, "", ""))
 }
 
 // handleCollections handles GET /collections
 func (r *Router) handleCollections(w http.ResponseWriter, req *http.Request) {
-	stacReq := r.buildSTACRequest(req, middleware.RequestTypeCollections)
-	r.executeHandler(w, stacReq)
+	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeCollections, "", ""))
 }
 
 // handleCollection handles GET /collections/{collectionId}
 func (r *Router) handleCollection(w http.ResponseWriter, req *http.Request) {
-	stacReq := r.buildSTACRequest(req, middleware.RequestTypeCollection)
-	stacReq.Collection = chi.URLParam(req, "collectionId")
-	r.executeHandler(w, stacReq)
+	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeCollection, chi.URLParam(req, "collectionId"), ""))
 }
 
 // handleItems handles GET /collections/{collectionId}/items
 func (r *Router) handleItems(w http.ResponseWriter, req *http.Request) {
-	stacReq := r.buildSTACRequest(req, middleware.RequestTypeItems)
-	stacReq.Collection = chi.URLParam(req, "collectionId")
-	r.executeHandler(w, stacReq)
+	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeItems, chi.URLParam(req, "collectionId"), ""))
 }
 
 // handleItem handles GET /collections/{collectionId}/items/{itemId}
 func (r *Router) handleItem(w http.ResponseWriter, req *http.Request) {
-	stacReq := r.buildSTACRequest(req, middleware.RequestTypeItem)
-	stacReq.Collection = chi.URLParam(req, "collectionId")
-	stacReq.ItemID = chi.URLParam(req, "itemId")
-	r.executeHandler(w, stacReq)
+	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeItem, chi.URLParam(req, "collectionId"), chi.URLParam(req, "itemId")))
 }
 
 // handleSearch handles GET/POST /search
 func (r *Router) handleSearch(w http.ResponseWriter, req *http.Request) {
-	stacReq := r.buildSTACRequest(req, middleware.RequestTypeSearch)
-	r.executeHandler(w, stacReq)
+	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeSearch, "", ""))
 }
 
 // handleQueryables handles GET /queryables
 func (r *Router) handleQueryables(w http.ResponseWriter, req *http.Request) {
-	stacReq := r.buildSTACRequest(req, middleware.RequestTypeQueryables)
-	r.executeHandler(w, stacReq)
+	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeQueryables, "", ""))
 }
 
 // handleCollectionQueryables handles GET /collections/{collectionId}/queryables
 func (r *Router) handleCollectionQueryables(w http.ResponseWriter, req *http.Request) {
-	stacReq := r.buildSTACRequest(req, middleware.RequestTypeCollectionQueryables)
-	stacReq.Collection = chi.URLParam(req, "collectionId")
-	r.executeHandler(w, stacReq)
+	r.executeHandler(w, r.buildSTACRequest(req, middleware.RequestTypeCollectionQueryables, chi.URLParam(req, "collectionId"), ""))
 }
 
-// buildSTACRequest creates a STACRequest from an HTTP request.
-func (r *Router) buildSTACRequest(req *http.Request, requestType middleware.RequestType) *middleware.STACRequest {
+// buildSTACRequest creates a STACRequest from an HTTP request AND
+// attaches the matching STACInfo to the request's context so chi-style
+// middlewares can read the parsed STAC shape via STACInfoFromContext.
+func (r *Router) buildSTACRequest(req *http.Request, rt middleware.RequestType, collection, itemID string) *middleware.STACRequest {
+	info := &middleware.STACInfo{RequestType: rt, Collection: collection, ItemID: itemID}
+	ctx := middleware.WithSTACInfo(req.Context(), info)
+	req = req.WithContext(ctx)
 	return &middleware.STACRequest{
 		Request:     req,
-		Context:     req.Context(),
-		RequestType: requestType,
+		Context:     ctx,
+		Collection:  collection,
+		ItemID:      itemID,
+		RequestType: rt,
 	}
 }
 
