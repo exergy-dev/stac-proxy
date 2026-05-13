@@ -25,7 +25,6 @@ func newReq(method, path string, sr *stac.SearchRequest) *middleware.STACRequest
 	return &middleware.STACRequest{
 		Request:     httpReq,
 		Context:     httpReq.Context(),
-		Params:      map[string]interface{}{},
 		RequestType: middleware.RequestTypeSearch,
 		SearchReq:   sr,
 	}
@@ -413,7 +412,6 @@ func TestProcessRequest_NonSearchRequest_NoInject(t *testing.T) {
 	req := &middleware.STACRequest{
 		Request:     httpReq,
 		Context:     httpReq.Context(),
-		Params:      map[string]interface{}{},
 		RequestType: middleware.RequestTypeCollection,
 		// SearchReq deliberately nil
 	}

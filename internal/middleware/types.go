@@ -54,22 +54,15 @@ func (rt RequestType) String() string {
 type STACRequest struct {
 	*http.Request
 	Context     context.Context
-	Params      map[string]interface{} // Parsed STAC query parameters
-	Collection  string                 // Target collection (if applicable)
-	ItemID      string                 // Target item ID (if applicable)
-	RequestType RequestType            // Type of STAC request
-	SearchReq   *stac.SearchRequest    // Parsed search request (if applicable)
+	Collection  string              // Target collection (if applicable)
+	ItemID      string              // Target item ID (if applicable)
+	RequestType RequestType         // Type of STAC request
+	SearchReq   *stac.SearchRequest // Parsed search request (if applicable)
 }
 
 // Clone creates a shallow copy of the STACRequest.
 func (r *STACRequest) Clone() *STACRequest {
 	clone := *r
-	if r.Params != nil {
-		clone.Params = make(map[string]interface{}, len(r.Params))
-		for k, v := range r.Params {
-			clone.Params[k] = v
-		}
-	}
 	return &clone
 }
 

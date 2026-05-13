@@ -3,6 +3,7 @@ package authz
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/yourorg/stac-proxy/internal/geo"
@@ -175,27 +176,34 @@ func (g *Geofencer) FilterResults(items []interface{}, principal *auth.Principal
 }
 
 // extractRequestGeometry extracts geometry from a STAC request.
-// Malformed bbox/intersects values yield (nil, nil) rather than an
-// error: the caller treats nil as "no spatial constraint" and lets
-// validation proceed without it, which is safer than failing the
-// whole request on shape-detection problems.
+// Reads from req.SearchReq, the typed parsed-request representation;
+// the legacy Params-map plumbing was never populated in production and
+// the geofence's request check was therefore a no-op. Malformed shape
+// data yields (nil, nil) rather than an error so validation can proceed
+// without imposing a spatial constraint (safer than failing the whole
+// request on shape-detection problems).
 func extractRequestGeometry(req *middleware.STACRequest) (*geo.Geometry, error) {
-	if bbox, ok := req.Params["bbox"]; ok {
-		g, err := geo.BboxToGeometry(bbox)
+	if req == nil || req.SearchReq == nil {
+		return nil, nil
+	}
+	if len(req.SearchReq.BBox) > 0 {
+		g, err := geo.BboxToGeometry(req.SearchReq.BBox)
 		if err != nil {
 			return nil, nil
 		}
 		return g, nil
 	}
-
-	if intersects, ok := req.Params["intersects"]; ok {
-		g, err := geo.ParseGeoJSON(intersects)
+	if req.SearchReq.Intersects != nil {
+		raw, err := json.Marshal(req.SearchReq.Intersects)
+		if err != nil {
+			return nil, nil
+		}
+		g, err := geo.ParseGeoJSON(raw)
 		if err != nil {
 			return nil, nil
 		}
 		return g, nil
 	}
-
 	return nil, nil
 }
 

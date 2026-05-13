@@ -23,7 +23,6 @@ func newSTACRequest(method, path string) *middleware.STACRequest {
 		Request:     req,
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeSearch,
-		Params:      make(map[string]interface{}),
 	}
 }
 

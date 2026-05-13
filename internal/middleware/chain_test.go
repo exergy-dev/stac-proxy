@@ -613,20 +613,22 @@ func TestChain_Execute_UpstreamError(t *testing.T) {
 func TestChain_Execute_RequestModification(t *testing.T) {
 	t.Parallel()
 
+	// Use Collection as the modification target now that STACRequest.Params
+	// has been removed; the contract under test is that each middleware's
+	// ProcessRequest mutation reaches the upstream handler.
 	mw1 := newTestMiddlewareWithReqFunc("mw1", 100, func(ctx context.Context, req *STACRequest) (*STACRequest, error) {
-		req.Params["mw1"] = "modified"
+		req.Collection = "mw1"
 		return req, nil
 	})
 
 	mw2 := newTestMiddlewareWithReqFunc("mw2", 200, func(ctx context.Context, req *STACRequest) (*STACRequest, error) {
-		req.Params["mw2"] = "modified"
+		req.ItemID = "mw2"
 		return req, nil
 	})
 
 	chain := NewChain(mw1, mw2)
 	ctx := context.Background()
 	req := newTestRequest()
-	req.Params = make(map[string]interface{})
 
 	var receivedReq *STACRequest
 	upstream := func(r *STACRequest) (*STACResponse, error) {
@@ -643,12 +645,12 @@ func TestChain_Execute_RequestModification(t *testing.T) {
 		t.Fatal("upstream did not receive request")
 	}
 
-	if receivedReq.Params["mw1"] != "modified" {
-		t.Error("mw1 modification not present")
+	if receivedReq.Collection != "mw1" {
+		t.Errorf("mw1 modification not present: Collection=%q", receivedReq.Collection)
 	}
 
-	if receivedReq.Params["mw2"] != "modified" {
-		t.Error("mw2 modification not present")
+	if receivedReq.ItemID != "mw2" {
+		t.Errorf("mw2 modification not present: ItemID=%q", receivedReq.ItemID)
 	}
 }
 
@@ -1152,6 +1154,5 @@ func newTestRequest() *STACRequest {
 		Request:     httpReq,
 		Context:     context.Background(),
 		RequestType: RequestTypeSearch,
-		Params:      make(map[string]interface{}),
 	}
 }

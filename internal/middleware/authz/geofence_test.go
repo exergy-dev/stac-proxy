@@ -2,12 +2,26 @@ package authz
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/yourorg/stac-proxy/internal/geo"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
+	"github.com/yourorg/stac-proxy/internal/stac"
 )
+
+// rawGeom builds a *stac.Geometry from a type + raw-JSON coordinates.
+// Used in test fixtures that previously passed an `intersects` map via
+// the deprecated STACRequest.Params channel.
+func rawGeom(t *testing.T, typ string, coords interface{}) *stac.Geometry {
+	t.Helper()
+	b, err := json.Marshal(coords)
+	if err != nil {
+		t.Fatalf("rawGeom: marshal coords: %v", err)
+	}
+	return &stac.Geometry{Type: typ, Coordinates: b}
+}
 
 func TestNewGeofencer(t *testing.T) {
 	t.Parallel()
@@ -434,109 +448,73 @@ func TestValidateRequest(t *testing.T) {
 		errMsg    string
 	}{
 		{
-			name: "no geofence constraint allows any request",
-			req: &middleware.STACRequest{
-				Params: map[string]interface{}{},
-			},
+			name:      "no geofence constraint allows any request",
+			req:       &middleware.STACRequest{SearchReq: &stac.SearchRequest{}},
 			principal: nil, // Will get default region in this case
 			wantErr:   false,
 		},
 		{
 			name: "request with no spatial constraint is allowed",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"collections": []string{"test"},
-				},
+				SearchReq: &stac.SearchRequest{Collections: []string{"test"}},
 			},
-			principal: &auth.Principal{
-				ID:    "user1",
-				Roles: []string{},
-			},
-			wantErr: false,
+			principal: &auth.Principal{ID: "user1"},
+			wantErr:   false,
 		},
 		{
 			name: "bbox within allowed region",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"bbox": []float64{-5, -5, 5, 5},
-				},
+				SearchReq: &stac.SearchRequest{BBox: []float64{-5, -5, 5, 5}},
 			},
-			principal: &auth.Principal{
-				ID:    "user1",
-				Roles: []string{},
-			},
-			wantErr: false,
+			principal: &auth.Principal{ID: "user1"},
+			wantErr:   false,
 		},
 		{
 			name: "bbox partially outside allowed region",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"bbox": []float64{-15, -15, 15, 15},
-				},
+				SearchReq: &stac.SearchRequest{BBox: []float64{-15, -15, 15, 15}},
 			},
-			principal: &auth.Principal{
-				ID:    "user1",
-				Roles: []string{},
-			},
-			wantErr: true, // request escapes the allowed region → rejected
+			principal: &auth.Principal{ID: "user1"},
+			wantErr:   true, // request escapes the allowed region → rejected
 		},
 		{
 			name: "bbox completely outside allowed region",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"bbox": []float64{50, 50, 60, 60},
-				},
+				SearchReq: &stac.SearchRequest{BBox: []float64{50, 50, 60, 60}},
 			},
-			principal: &auth.Principal{
-				ID:    "user1",
-				Roles: []string{},
-			},
-			wantErr: true,
-			errMsg:  "request area is outside allowed region",
+			principal: &auth.Principal{ID: "user1"},
+			wantErr:   true,
+			errMsg:    "request area is outside allowed region",
 		},
 		{
 			name: "intersects geometry within allowed region",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"intersects": map[string]interface{}{
-						"type":        "Polygon",
-						"coordinates": [][][]float64{{{-3, -3}, {3, -3}, {3, 3}, {-3, 3}, {-3, -3}}},
-					},
+				SearchReq: &stac.SearchRequest{
+					Intersects: rawGeom(t, "Polygon", [][][]float64{{{-3, -3}, {3, -3}, {3, 3}, {-3, 3}, {-3, -3}}}),
 				},
 			},
-			principal: &auth.Principal{
-				ID:    "user1",
-				Roles: []string{},
-			},
-			wantErr: false,
+			principal: &auth.Principal{ID: "user1"},
+			wantErr:   false,
 		},
 		{
 			name: "intersects geometry outside allowed region",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"intersects": map[string]interface{}{
-						"type":        "Polygon",
-						"coordinates": [][][]float64{{{50, 50}, {60, 50}, {60, 60}, {50, 60}, {50, 50}}},
-					},
+				SearchReq: &stac.SearchRequest{
+					Intersects: rawGeom(t, "Polygon", [][][]float64{{{50, 50}, {60, 50}, {60, 60}, {50, 60}, {50, 50}}}),
 				},
 			},
-			principal: &auth.Principal{
-				ID:    "user1",
-				Roles: []string{},
-			},
-			wantErr: true,
-			errMsg:  "request area is outside allowed region",
+			principal: &auth.Principal{ID: "user1"},
+			wantErr:   true,
+			errMsg:    "request area is outside allowed region",
 		},
 		{
 			name: "request intersects denied region",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"bbox": []float64{100, 100, 110, 110},
-				},
+				SearchReq: &stac.SearchRequest{BBox: []float64{100, 100, 110, 110}},
 			},
 			principal: nil, // Will try to use default region
 			wantErr:   true,
-			errMsg:    "request area is outside allowed region", // First fails the allowed region check
+			errMsg:    "request area is outside allowed region",
 		},
 	}
 
@@ -570,9 +548,7 @@ func TestValidateRequest_NilAllowedRegion(t *testing.T) {
 	}
 
 	req := &middleware.STACRequest{
-		Params: map[string]interface{}{
-			"bbox": []float64{-180, -90, 180, 90},
-		},
+		SearchReq: &stac.SearchRequest{BBox: []float64{-180, -90, 180, 90}},
 	}
 
 	err = g.ValidateRequest(context.Background(), req, nil)
@@ -753,9 +729,7 @@ func TestExtractRequestGeometry(t *testing.T) {
 		{
 			name: "bbox parameter",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"bbox": []float64{-10, -10, 10, 10},
-				},
+				SearchReq: &stac.SearchRequest{BBox: []float64{-10, -10, 10, 10}},
 			},
 			wantNil: false,
 			wantErr: false,
@@ -763,11 +737,8 @@ func TestExtractRequestGeometry(t *testing.T) {
 		{
 			name: "intersects parameter",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"intersects": map[string]interface{}{
-						"type":        "Polygon",
-						"coordinates": [][][]float64{{{0, 0}, {10, 0}, {10, 10}, {0, 10}, {0, 0}}},
-					},
+				SearchReq: &stac.SearchRequest{
+					Intersects: rawGeom(t, "Polygon", [][][]float64{{{0, 0}, {10, 0}, {10, 10}, {0, 10}, {0, 0}}}),
 				},
 			},
 			wantNil: false,
@@ -776,12 +747,9 @@ func TestExtractRequestGeometry(t *testing.T) {
 		{
 			name: "both bbox and intersects - bbox takes precedence",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"bbox": []float64{-5, -5, 5, 5},
-					"intersects": map[string]interface{}{
-						"type":        "Polygon",
-						"coordinates": [][][]float64{{{0, 0}, {10, 0}, {10, 10}, {0, 10}, {0, 0}}},
-					},
+				SearchReq: &stac.SearchRequest{
+					BBox:       []float64{-5, -5, 5, 5},
+					Intersects: rawGeom(t, "Polygon", [][][]float64{{{0, 0}, {10, 0}, {10, 10}, {0, 10}, {0, 0}}}),
 				},
 			},
 			wantNil: false,
@@ -790,29 +758,15 @@ func TestExtractRequestGeometry(t *testing.T) {
 		{
 			name: "no spatial parameters",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"collections": []string{"test"},
-				},
+				SearchReq: &stac.SearchRequest{Collections: []string{"test"}},
 			},
 			wantNil: true,
 			wantErr: false,
 		},
 		{
-			name: "empty params",
-			req: &middleware.STACRequest{
-				Params: map[string]interface{}{},
-			},
+			name:    "empty params",
+			req:     &middleware.STACRequest{SearchReq: &stac.SearchRequest{}},
 			wantNil: true,
-			wantErr: false,
-		},
-		{
-			name: "invalid bbox format",
-			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"bbox": "invalid",
-				},
-			},
-			wantNil: true, // Returns nil when conversion fails
 			wantErr: false,
 		},
 	}
@@ -1213,19 +1167,15 @@ func TestValidateRequest_EdgeCases(t *testing.T) {
 		wantErr   bool
 	}{
 		{
-			name: "nil params map",
-			req: &middleware.STACRequest{
-				Params: nil,
-			},
+			name:      "nil search request",
+			req:       &middleware.STACRequest{},
 			principal: &auth.Principal{ID: "user1"},
 			wantErr:   false,
 		},
 		{
 			name: "bbox with 6 values (3D)",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"bbox": []float64{-5, -5, 0, 5, 5, 100},
-				},
+				SearchReq: &stac.SearchRequest{BBox: []float64{-5, -5, 0, 5, 5, 100}},
 			},
 			principal: &auth.Principal{ID: "user1"},
 			wantErr:   false,
@@ -1233,13 +1183,10 @@ func TestValidateRequest_EdgeCases(t *testing.T) {
 		{
 			name: "intersects with multipolygon",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"intersects": map[string]interface{}{
-						"type": "MultiPolygon",
-						"coordinates": [][][][]float64{
-							{{{0, 0}, {5, 0}, {5, 5}, {0, 5}, {0, 0}}},
-						},
-					},
+				SearchReq: &stac.SearchRequest{
+					Intersects: rawGeom(t, "MultiPolygon", [][][][]float64{
+						{{{0, 0}, {5, 0}, {5, 5}, {0, 5}, {0, 0}}},
+					}),
 				},
 			},
 			principal: &auth.Principal{ID: "user1"},
@@ -1248,11 +1195,8 @@ func TestValidateRequest_EdgeCases(t *testing.T) {
 		{
 			name: "intersects with point geometry",
 			req: &middleware.STACRequest{
-				Params: map[string]interface{}{
-					"intersects": map[string]interface{}{
-						"type":        "Point",
-						"coordinates": []float64{0, 0},
-					},
+				SearchReq: &stac.SearchRequest{
+					Intersects: rawGeom(t, "Point", []float64{0, 0}),
 				},
 			},
 			principal: &auth.Principal{ID: "user1"},
@@ -1488,9 +1432,7 @@ func TestConcurrency(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			go func(id int) {
 				req := &middleware.STACRequest{
-					Params: map[string]interface{}{
-						"bbox": []float64{-5, -5, 5, 5},
-					},
+					SearchReq: &stac.SearchRequest{BBox: []float64{-5, -5, 5, 5}},
 				}
 				principal := &auth.Principal{
 					ID: "user" + string(rune(id)),
@@ -1633,9 +1575,7 @@ func TestComplexScenarios(t *testing.T) {
 
 		// Admin should have global access
 		globalReq := &middleware.STACRequest{
-			Params: map[string]interface{}{
-				"bbox": []float64{-180, -90, 180, 90},
-			},
+			SearchReq: &stac.SearchRequest{BBox: []float64{-180, -90, 180, 90}},
 		}
 
 		if err := g.ValidateRequest(context.Background(), globalReq, adminPrincipal); err != nil {

@@ -151,7 +151,6 @@ func (r *Router) buildSTACRequest(req *http.Request, requestType middleware.Requ
 		Request:     req,
 		Context:     req.Context(),
 		RequestType: requestType,
-		Params:      make(map[string]interface{}),
 	}
 }
 

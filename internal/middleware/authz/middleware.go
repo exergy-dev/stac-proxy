@@ -156,25 +156,16 @@ func (m *AuthzMiddleware) ProcessResponse(ctx context.Context, req *middleware.S
 	return resp, nil
 }
 
-// applyConstraints applies authorization constraints to the request.
+// applyConstraints clamps the parsed SearchRequest's Limit to the
+// authz-decided MaxResults (when smaller). The legacy writes of
+// _allowed_collections/_denied_collections into Params had no
+// downstream readers and were removed along with the Params field.
 func applyConstraints(req *middleware.STACRequest, constraints *AuthzConstraints) {
-	// Apply max results constraint
-	if constraints.MaxResults > 0 {
-		if currentLimit, ok := req.Params["limit"].(int); ok {
-			if currentLimit > constraints.MaxResults {
-				req.Params["limit"] = constraints.MaxResults
-			}
-		} else {
-			req.Params["limit"] = constraints.MaxResults
-		}
+	if constraints.MaxResults <= 0 || req.SearchReq == nil {
+		return
 	}
-
-	// Store constraints in request params for downstream use
-	if len(constraints.AllowedCollections) > 0 {
-		req.Params["_allowed_collections"] = constraints.AllowedCollections
-	}
-	if len(constraints.DeniedCollections) > 0 {
-		req.Params["_denied_collections"] = constraints.DeniedCollections
+	if req.SearchReq.Limit <= 0 || req.SearchReq.Limit > constraints.MaxResults {
+		req.SearchReq.Limit = constraints.MaxResults
 	}
 }
 

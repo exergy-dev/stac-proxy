@@ -160,64 +160,6 @@ func normalizeQuery(q url.Values) string {
 	return strings.Join(parts, "&")
 }
 
-// OriginAwareStrategy considers origin in cache keys for federation.
-type OriginAwareStrategy struct {
-	*DefaultStrategy
-}
-
-// NewOriginAwareStrategy creates an origin-aware cache strategy.
-func NewOriginAwareStrategy() *OriginAwareStrategy {
-	return &OriginAwareStrategy{
-		DefaultStrategy: NewDefaultStrategy(),
-	}
-}
-
-// GenerateKey includes origin information in the cache key.
-func (s *OriginAwareStrategy) GenerateKey(req *middleware.STACRequest) string {
-	baseKey := s.DefaultStrategy.GenerateKey(req)
-
-	// Add origin if present
-	if origins, ok := req.Params["_origins"].([]string); ok && len(origins) > 0 {
-		sort.Strings(origins)
-		originKey := strings.Join(origins, ",")
-		hash := sha256.Sum256([]byte(baseKey + "|o:" + originKey))
-		return hex.EncodeToString(hash[:16])
-	}
-
-	return baseKey
-}
-
-// UserAwareStrategy includes user identity in cache keys.
-type UserAwareStrategy struct {
-	*DefaultStrategy
-	PerUser bool
-}
-
-// NewUserAwareStrategy creates a user-aware cache strategy.
-func NewUserAwareStrategy(perUser bool) *UserAwareStrategy {
-	return &UserAwareStrategy{
-		DefaultStrategy: NewDefaultStrategy(),
-		PerUser:         perUser,
-	}
-}
-
-// GenerateKey includes user identity in the cache key if configured.
-func (s *UserAwareStrategy) GenerateKey(req *middleware.STACRequest) string {
-	baseKey := s.DefaultStrategy.GenerateKey(req)
-
-	if !s.PerUser {
-		return baseKey
-	}
-
-	// Add user ID from context if present
-	if userID, ok := req.Params["_user_id"].(string); ok && userID != "" {
-		hash := sha256.Sum256([]byte(baseKey + "|u:" + userID))
-		return hex.EncodeToString(hash[:16])
-	}
-
-	return baseKey
-}
-
 // NoCacheStrategy disables caching.
 type NoCacheStrategy struct{}
 
