@@ -312,14 +312,14 @@ func createMiddleware(cfg config.MiddlewareConfig, logger *zap.Logger, metrics *
 		return nil, nil
 
 	case "cache":
-		return buildCacheMiddleware(cfg.Config)
+		return cache.NewFromConfig(cfg.Config)
 
 	case "rate_limit":
 		// Rate limit is wired as chi middleware at the router level.
 		return nil, nil
 
 	case "url_remap":
-		return buildRemapMiddleware(cfg.Config)
+		return remap.NewFromConfig(cfg.Config)
 
 	default:
 		logger.Warn("Unknown middleware, skipping", zap.String("name", cfg.Name))
@@ -392,32 +392,6 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *zap.Logger) func(http.H
 	})
 }
 
-// buildCacheMiddleware creates caching middleware.
-func buildCacheMiddleware(cfg map[string]interface{}) (middleware.Middleware, error) {
-	storeType := "memory"
-	if v, ok := cfg["store"].(string); ok {
-		storeType = v
-	}
-
-	var store cache.Store
-	switch storeType {
-	case "memory":
-		maxSize := 10000
-		if v, ok := cfg["max_size"].(int); ok {
-			maxSize = v
-		}
-		store = cache.NewMemoryStore(cache.MemoryConfig{MaxSize: maxSize})
-
-	default:
-		return nil, fmt.Errorf("unknown cache store type: %s", storeType)
-	}
-
-	return cache.NewMiddleware(cache.Config{
-		Store:    store,
-		Strategy: nil, // use BasicStrategy default
-	}), nil
-}
-
 // buildRateLimitHTTPMiddleware builds the chi-style rate-limit middleware
 // from the `rate_limit` block of the middleware config list. Returns nil
 // when no `rate_limit` block is configured.
@@ -455,26 +429,6 @@ func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Ha
 			Burst:    burst,
 		},
 	})
-}
-
-// buildRemapMiddleware creates URL remapping middleware.
-func buildRemapMiddleware(cfg map[string]interface{}) (middleware.Middleware, error) {
-	var rules []remap.RuleConfig
-
-	if rulesCfg, ok := cfg["rules"].([]interface{}); ok {
-		for _, rCfg := range rulesCfg {
-			rMap, ok := rCfg.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			rules = append(rules, remap.RuleConfig{
-				Match:   getStringConfig(rMap, "match"),
-				Replace: getStringConfig(rMap, "replace"),
-			})
-		}
-	}
-
-	return remap.NewMiddleware(remap.Config{Rules: rules})
 }
 
 // buildFederationHandler creates the federation handler. In

@@ -63,6 +63,35 @@ func NewMiddleware(cfg Config) (*Middleware, error) {
 	return m, nil
 }
 
+// NewFromConfig constructs a remap middleware from a raw YAML config
+// block (the shape carried by config.MiddlewareConfig.Config). Only
+// the `rules` array (with match/replace string pairs) is read today;
+// signed-URL support is wired separately by callers that supply a
+// remap.Signer through the typed Config struct.
+func NewFromConfig(cfg map[string]interface{}) (middleware.Middleware, error) {
+	var rules []RuleConfig
+	if rulesCfg, ok := cfg["rules"].([]interface{}); ok {
+		for _, rCfg := range rulesCfg {
+			rMap, ok := rCfg.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			rules = append(rules, RuleConfig{
+				Match:   strFromMap(rMap, "match"),
+				Replace: strFromMap(rMap, "replace"),
+			})
+		}
+	}
+	return NewMiddleware(Config{Rules: rules})
+}
+
+func strFromMap(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
 // ProcessResponse remaps URLs in the response.
 func (m *Middleware) ProcessResponse(ctx context.Context, req *middleware.STACRequest,
 	resp *middleware.STACResponse) (*middleware.STACResponse, error) {

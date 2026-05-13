@@ -48,6 +48,29 @@ func NewMiddleware(cfg Config) *Middleware {
 	}
 }
 
+// NewFromConfig constructs a cache middleware from a raw YAML config
+// block (the shape carried by config.MiddlewareConfig.Config). Currently
+// only the in-memory store is wired; an unrecognized store type yields
+// an error rather than silently falling back so misconfiguration is loud.
+func NewFromConfig(cfg map[string]interface{}) (middleware.Middleware, error) {
+	storeType := "memory"
+	if v, ok := cfg["store"].(string); ok {
+		storeType = v
+	}
+	var store Store
+	switch storeType {
+	case "memory":
+		maxSize := 10000
+		if v, ok := cfg["max_size"].(int); ok {
+			maxSize = v
+		}
+		store = NewMemoryStore(MemoryConfig{MaxSize: maxSize})
+	default:
+		return nil, fmt.Errorf("unknown cache store type: %s", storeType)
+	}
+	return NewMiddleware(Config{Store: store}), nil
+}
+
 // ProcessRequest checks for cached responses.
 func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACRequest) (*middleware.STACRequest, error) {
 	cacheReq := CacheableRequest{
