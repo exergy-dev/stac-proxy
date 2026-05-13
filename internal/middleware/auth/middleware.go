@@ -1,78 +1,24 @@
 // Package auth provides authentication middleware.
+//
+// Auth is a chi-style http middleware (func(http.Handler) http.Handler)
+// rather than going through the buffered middleware.Middleware contract:
+// it operates only on the inbound *http.Request and writes either a
+// Principal into context or a 401 response — no parsed STAC body needed.
 package auth
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
-// Middleware handles authentication for incoming requests.
-type Middleware struct {
-	middleware.BaseMiddleware
-	providers      []Provider
-	allowAnonymous bool
-	anonPrincipal  *Principal
-}
-
 // Config contains configuration for the auth middleware.
 type Config struct {
 	AllowAnonymous bool
 	Providers      []Provider
-}
-
-// NewMiddleware creates a new authentication middleware.
-func NewMiddleware(cfg Config) *Middleware {
-	return &Middleware{
-		BaseMiddleware: middleware.NewBaseMiddleware("auth", middleware.PriorityAuth),
-		providers:      cfg.Providers,
-		allowAnonymous: cfg.AllowAnonymous,
-		anonPrincipal:  AnonymousPrincipal(),
-	}
-}
-
-// ProcessRequest attempts to authenticate the request using configured providers.
-func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACRequest) (*middleware.STACRequest, error) {
-	// Try each provider in order
-	for _, provider := range m.providers {
-		principal, err := provider.Authenticate(ctx, req.Request)
-		if err != nil {
-			if mt := observability.Default(); mt != nil {
-				mt.AuthFailures.WithLabelValues(provider.Name(), "error").Inc()
-			}
-			// Authentication failed with this provider
-			continue
-		}
-		if principal != nil {
-			if mt := observability.Default(); mt != nil {
-				mt.AuthSuccesses.WithLabelValues(provider.Name(), principal.Type).Inc()
-			}
-			// Successfully authenticated
-			ctx = context.WithValue(ctx, middleware.PrincipalKey, principal)
-			req.Context = ctx
-			return req, nil
-		}
-		// Provider doesn't apply to this request, try next
-	}
-
-	// No provider authenticated the request
-	if m.allowAnonymous {
-		if mt := observability.Default(); mt != nil {
-			mt.AuthSuccesses.WithLabelValues("anonymous", "anonymous").Inc()
-		}
-		ctx = context.WithValue(ctx, middleware.PrincipalKey, m.anonPrincipal)
-		req.Context = ctx
-		return req, nil
-	}
-
-	if mt := observability.Default(); mt != nil {
-		mt.AuthFailures.WithLabelValues("none", "missing_credentials").Inc()
-	}
-	return nil, &middleware.AuthError{
-		Message: "authentication required",
-		Code:    "missing_credentials",
-	}
 }
 
 // PrincipalFromContext retrieves the authenticated principal from context.
@@ -83,12 +29,61 @@ func PrincipalFromContext(ctx context.Context) *Principal {
 	return nil
 }
 
-// AddProvider adds a new authentication provider.
-func (m *Middleware) AddProvider(provider Provider) {
-	m.providers = append(m.providers, provider)
+// NewHTTPMiddleware returns chi-compatible middleware that walks the
+// configured providers, stores the Principal in context, and either
+// proceeds to the next handler or writes a 401 when no provider
+// authenticated and AllowAnonymous is false.
+//
+// Provider semantics:
+//   - (Principal, nil): authenticated — next handler runs with Principal in context.
+//   - (nil, nil): provider doesn't apply to this request — try the next one.
+//   - (nil, err): provider errored — try the next one (errored providers don't deny).
+func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
+	anonPrincipal := AnonymousPrincipal()
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			var authed *Principal
+			for _, provider := range cfg.Providers {
+				p, err := provider.Authenticate(ctx, r)
+				if err != nil {
+					if m := observability.Default(); m != nil {
+						m.AuthFailures.WithLabelValues(provider.Name(), "error").Inc()
+					}
+					continue
+				}
+				if p != nil {
+					authed = p
+					if m := observability.Default(); m != nil {
+						m.AuthSuccesses.WithLabelValues(provider.Name(), p.Type).Inc()
+					}
+					break
+				}
+			}
+			if authed == nil {
+				if !cfg.AllowAnonymous {
+					if m := observability.Default(); m != nil {
+						m.AuthFailures.WithLabelValues("none", "missing_credentials").Inc()
+					}
+					writeAuthError(w, "authentication required")
+					return
+				}
+				authed = anonPrincipal
+				if m := observability.Default(); m != nil {
+					m.AuthSuccesses.WithLabelValues("anonymous", "anonymous").Inc()
+				}
+			}
+			ctx = context.WithValue(ctx, middleware.PrincipalKey, authed)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
-// Providers returns the configured providers.
-func (m *Middleware) Providers() []Provider {
-	return m.providers
+func writeAuthError(w http.ResponseWriter, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"code":        "Unauthorized",
+		"description": msg,
+	})
 }

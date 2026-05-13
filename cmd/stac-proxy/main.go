@@ -133,18 +133,22 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 		return fmt.Errorf("failed to build handler: %w", err)
 	}
 
-	// Create router. Logging is registered as chi-style middleware here
-	// rather than inside the buffered Chain so it sits at the request
-	// boundary and doesn't pay chain-iteration overhead.
+	// Create router. Stateless middlewares (logging, auth) are wired
+	// at the chi router level rather than inside the buffered Chain so
+	// they sit at the request boundary without per-iteration overhead.
+	httpMiddlewares := []func(http.Handler) http.Handler{
+		logging.NewHTTPMiddleware(logging.Config{Logger: logger}),
+	}
+	if authMW := buildAuthHTTPMiddleware(cfg, logger); authMW != nil {
+		httpMiddlewares = append(httpMiddlewares, authMW)
+	}
 	router := server.NewRouter(server.RouterConfig{
-		Handler:       handler,
-		Chain:         chain,
-		HealthChecker: healthChecker,
-		Metrics:       metrics,
-		MaxBodyBytes:  cfg.Server.MaxBodyBytes,
-		HTTPMiddlewares: []func(http.Handler) http.Handler{
-			logging.NewHTTPMiddleware(logging.Config{Logger: logger}),
-		},
+		Handler:         handler,
+		Chain:           chain,
+		HealthChecker:   healthChecker,
+		Metrics:         metrics,
+		MaxBodyBytes:    cfg.Server.MaxBodyBytes,
+		HTTPMiddlewares: httpMiddlewares,
 	})
 
 	// Create and start HTTP server
@@ -298,7 +302,9 @@ func createMiddleware(cfg config.MiddlewareConfig, logger *zap.Logger, metrics *
 		return nil, nil
 
 	case "auth":
-		return buildAuthMiddleware(cfg.Config, logger)
+		// Auth is wired as chi middleware at the router level (see
+		// buildAuthHTTPMiddleware). Silently skip the legacy chain entry.
+		return nil, nil
 
 	case "cache":
 		return buildCacheMiddleware(cfg.Config)
@@ -315,26 +321,35 @@ func createMiddleware(cfg config.MiddlewareConfig, logger *zap.Logger, metrics *
 	}
 }
 
-// buildAuthMiddleware creates authentication middleware.
-func buildAuthMiddleware(cfg map[string]interface{}, logger *zap.Logger) (middleware.Middleware, error) {
+// buildAuthHTTPMiddleware builds the chi-style auth middleware from the
+// `auth` block of the middleware config list. Returns nil when no
+// `auth` block is configured — the router skips a nil entry.
+func buildAuthHTTPMiddleware(cfg *config.Config, logger *zap.Logger) func(http.Handler) http.Handler {
+	var rawCfg map[string]interface{}
+	for _, mw := range cfg.Middleware {
+		if mw.Name == "auth" {
+			rawCfg = mw.Config
+			break
+		}
+	}
+	if rawCfg == nil {
+		return nil
+	}
+
 	allowAnonymous := true
-	if v, ok := cfg["allow_anonymous"].(bool); ok {
+	if v, ok := rawCfg["allow_anonymous"].(bool); ok {
 		allowAnonymous = v
 	}
 
 	var providers []auth.Provider
-
-	if providersCfg, ok := cfg["providers"].([]interface{}); ok {
+	if providersCfg, ok := rawCfg["providers"].([]interface{}); ok {
 		for _, pCfg := range providersCfg {
 			pMap, ok := pCfg.(map[string]interface{})
 			if !ok {
 				continue
 			}
-
-			providerType, _ := pMap["type"].(string)
-			switch providerType {
+			switch pMap["type"] {
 			case "bearer", "jwt":
-				// Configure JWT/Bearer provider
 				bearerCfg := auth.BearerConfig{
 					Name:     "bearer",
 					Issuer:   getStringConfig(pMap, "issuer"),
@@ -350,7 +365,6 @@ func buildAuthMiddleware(cfg map[string]interface{}, logger *zap.Logger) (middle
 					continue
 				}
 				providers = append(providers, provider)
-
 			case "api_key":
 				provider, err := auth.NewAPIKeyProvider(auth.APIKeyConfig{
 					Name:       "api_key",
@@ -366,10 +380,10 @@ func buildAuthMiddleware(cfg map[string]interface{}, logger *zap.Logger) (middle
 		}
 	}
 
-	return auth.NewMiddleware(auth.Config{
+	return auth.NewHTTPMiddleware(auth.Config{
 		Providers:      providers,
 		AllowAnonymous: allowAnonymous,
-	}), nil
+	})
 }
 
 // buildCacheMiddleware creates caching middleware.
