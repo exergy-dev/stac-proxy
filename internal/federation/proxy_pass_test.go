@@ -1,4 +1,4 @@
-package proxy
+package federation
 
 import (
 	"context"
@@ -9,6 +9,27 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 )
+
+// newFederationOfOne wires a single-origin federation handler for
+// pass-through tests. Mirrors how cmd/stac-proxy builds single-origin
+// mode: one synthetic "primary" origin, ReverseProxy path only.
+func newFederationOfOne(t *testing.T, upstreamURL string) *Handler {
+	t.Helper()
+	h, err := NewHandler(HandlerConfig{
+		Origins: []*Origin{{
+			ID:         "primary",
+			BaseURL:    upstreamURL,
+			Enabled:    true,
+			Priority:   100,
+			Searchable: true,
+		}},
+		ConflictStrategy: ConflictPriorityWins,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	return h
+}
 
 // TestHandle_StripsHopByHopHeadersFromUpstream verifies H-1: hop-by-hop
 // headers from the upstream MUST NOT be forwarded to the client.
@@ -23,10 +44,7 @@ func TestHandle_StripsHopByHopHeadersFromUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler, err := NewHandler(Config{UpstreamURL: upstream.URL})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	handler := newFederationOfOne(t, upstream.URL)
 
 	httpReq := httptest.NewRequest("GET", "/collections", nil)
 	stacReq := &middleware.STACRequest{
@@ -59,7 +77,7 @@ func TestHandle_StripsConnectionListedHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler, _ := NewHandler(Config{UpstreamURL: upstream.URL})
+	handler := newFederationOfOne(t, upstream.URL)
 	resp, err := handler.Handle(context.Background(), &middleware.STACRequest{
 		Request:     httptest.NewRequest("GET", "/", nil),
 		Context:     context.Background(),
@@ -85,7 +103,7 @@ func TestHandle_ETagPassesThrough(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler, _ := NewHandler(Config{UpstreamURL: upstream.URL})
+	handler := newFederationOfOne(t, upstream.URL)
 	resp, err := handler.Handle(context.Background(), &middleware.STACRequest{
 		Request:     httptest.NewRequest("GET", "/", nil),
 		Context:     context.Background(),
@@ -115,7 +133,7 @@ func TestHandle_SetsXForwardedHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler, _ := NewHandler(Config{UpstreamURL: upstream.URL})
+	handler := newFederationOfOne(t, upstream.URL)
 
 	httpReq := httptest.NewRequest("GET", "/collections", nil)
 	httpReq.RemoteAddr = "203.0.113.10:54321"

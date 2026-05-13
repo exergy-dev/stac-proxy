@@ -16,6 +16,22 @@ import (
 	"time"
 )
 
+// authRoundTripper applies an AuthProvider to every outbound request
+// before delegating to the wrapped RoundTripper. OAuth2 token refresh
+// happens inside ApplyAuth as before.
+type authRoundTripper struct {
+	auth AuthProvider
+	next http.RoundTripper
+}
+
+// RoundTrip implements http.RoundTripper.
+func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := a.auth.ApplyAuth(req.Context(), req); err != nil {
+		return nil, err
+	}
+	return a.next.RoundTrip(req)
+}
+
 // OAuth2AuthProvider handles OAuth2 client credentials flow.
 type OAuth2AuthProvider struct {
 	config      *OAuth2Config

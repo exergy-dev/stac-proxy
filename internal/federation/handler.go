@@ -2,17 +2,21 @@
 package federation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httputil"
 	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/observability"
 	"github.com/yourorg/stac-proxy/internal/stac"
@@ -102,7 +106,9 @@ func (h *Handler) Handle(ctx context.Context, req *middleware.STACRequest) (*mid
 	}
 }
 
-// handleSearch handles federated search requests.
+// handleSearch handles federated search requests. When only one origin
+// is routed it bypasses fan-out/merge and delegates to the
+// ReverseProxy-based single-origin pass-through.
 func (h *Handler) handleSearch(ctx context.Context, req *middleware.STACRequest) (*middleware.STACResponse, error) {
 	searchReq := req.SearchReq
 	if searchReq == nil {
@@ -112,6 +118,7 @@ func (h *Handler) handleSearch(ctx context.Context, req *middleware.STACRequest)
 		if err != nil {
 			return nil, fmt.Errorf("invalid search request: %w", err)
 		}
+		req.SearchReq = searchReq
 	}
 
 	// Apply pagination limits
@@ -126,6 +133,13 @@ func (h *Handler) handleSearch(ctx context.Context, req *middleware.STACRequest)
 	origins := h.router.Route(searchReq.Collections)
 	if len(origins) == 0 {
 		return h.emptySearchResponse(searchReq)
+	}
+
+	// Single routed origin: ReverseProxy pass-through preserves headers,
+	// streaming semantics, and hop-by-hop hygiene without the fan-out
+	// path's marshal/unmarshal cycle.
+	if len(origins) == 1 {
+		return h.reverseProxyOnce(ctx, origins[0], req)
 	}
 
 	// Create context with aggregate timeout
@@ -229,7 +243,6 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 	return result
 }
 
-
 // adaptRequestForOrigin modifies the search request for a specific origin.
 func (h *Handler) adaptRequestForOrigin(req *stac.SearchRequest, origin *Origin) *stac.SearchRequest {
 	adapted := *req // Shallow copy
@@ -260,8 +273,16 @@ func (h *Handler) adaptRequestForOrigin(req *stac.SearchRequest, origin *Origin)
 }
 
 // handleGetCollections handles GET /collections.
+//
+// Single-origin fast path: when only one origin is registered, forward
+// end-to-end via reverseProxyOnce — preserves headers/X-Forwarded,
+// suppresses stac_proxy:origin injection (dynamic-on-routed-count).
 func (h *Handler) handleGetCollections(ctx context.Context,
 	req *middleware.STACRequest) (*middleware.STACResponse, error) {
+
+	if len(h.origins) == 1 {
+		return h.reverseProxyOnce(ctx, h.primaryOrigin(), req)
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, h.aggregateTimeout)
 	defer cancel()
@@ -331,7 +352,10 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 	}, nil
 }
 
-// handleGetCollection handles GET /collections/{collectionId}.
+// handleGetCollection handles GET /collections/{collectionId}. Iterates
+// candidate origins in priority order via reverseProxyOnce; first
+// non-404 wins. Origin metadata is only injected when there is more
+// than one registered origin (true federation mode).
 func (h *Handler) handleGetCollection(ctx context.Context,
 	req *middleware.STACRequest) (*middleware.STACResponse, error) {
 
@@ -342,97 +366,72 @@ func (h *Handler) handleGetCollection(ctx context.Context,
 		return notFoundResponse("Collection not found"), nil
 	}
 
-	// Try origins in priority order
+	annotate := len(h.origins) > 1
+
 	for _, origin := range origins {
-		client := h.origins[origin.ID]
+		// Optionally strip a configured collection prefix before
+		// forwarding upstream.
+		reqOut := req
+		if origin.CollectionPrefix != "" && strings.HasPrefix(collectionID, origin.CollectionPrefix) {
+			reqOut = adaptRequestStripCollectionPrefix(req, origin.CollectionPrefix)
+		}
 
-		lookupID := strings.TrimPrefix(collectionID, origin.CollectionPrefix)
-
-		collection, err := client.GetCollection(ctx, lookupID)
+		resp, err := h.reverseProxyOnce(ctx, origin, reqOut)
 		if err != nil {
 			continue
 		}
-		if collection == nil {
+		if resp.StatusCode == http.StatusNotFound {
 			continue
 		}
-
-		// Add origin metadata
-		if collection.Properties == nil {
-			collection.Properties = make(map[string]interface{})
+		if resp.StatusCode != http.StatusOK {
+			return resp, nil
 		}
-		collection.Properties["stac_proxy:origin"] = origin.ID
-
-		body, err := json.Marshal(collection)
-		if err != nil {
-			return nil, err
+		if annotate {
+			injectOriginMetadata(resp, "properties", origin.ID)
 		}
-
-		return &middleware.STACResponse{
-			StatusCode: http.StatusOK,
-			Headers: http.Header{
-				"Content-Type": []string{"application/json"},
-			},
-			Body: body,
-		}, nil
+		return resp, nil
 	}
 
-	return &middleware.STACResponse{
-		StatusCode: http.StatusNotFound,
-		Body:       []byte(`{"code": "NotFound", "description": "Collection not found"}`),
-	}, nil
+	return notFoundResponse("Collection not found"), nil
 }
 
 // handleGetItem handles GET /collections/{collectionId}/items/{itemId}.
+// Same priority-order iteration as handleGetCollection.
 func (h *Handler) handleGetItem(ctx context.Context,
 	req *middleware.STACRequest) (*middleware.STACResponse, error) {
 
 	collectionID := req.Collection
-	itemID := req.ItemID
-
 	origins := h.router.RouteCollection(collectionID)
 
 	if len(origins) == 0 {
 		return notFoundResponse("Item not found"), nil
 	}
 
-	// Try origins in priority order
+	annotate := len(h.origins) > 1
+
 	for _, origin := range origins {
-		client := h.origins[origin.ID]
+		reqOut := req
+		if origin.CollectionPrefix != "" && strings.HasPrefix(collectionID, origin.CollectionPrefix) {
+			reqOut = adaptRequestStripCollectionPrefix(req, origin.CollectionPrefix)
+		}
 
-		lookupCollID := strings.TrimPrefix(collectionID, origin.CollectionPrefix)
-
-		item, err := client.GetItem(ctx, lookupCollID, itemID)
+		resp, err := h.reverseProxyOnce(ctx, origin, reqOut)
 		if err != nil {
 			continue
 		}
-		if item == nil {
+		if resp.StatusCode == http.StatusNotFound {
 			continue
 		}
-
-		// Add origin metadata
-		if item.Properties.Extra == nil {
-			item.Properties.Extra = make(map[string]interface{})
+		if resp.StatusCode != http.StatusOK {
+			return resp, nil
 		}
-		item.Properties.Extra["stac_proxy:origin"] = origin.ID
-
-		body, err := json.Marshal(item)
-		if err != nil {
-			return nil, err
+		if annotate {
+			injectOriginMetadata(resp, "properties", origin.ID)
 		}
-
-		return &middleware.STACResponse{
-			StatusCode: http.StatusOK,
-			Headers: http.Header{
-				"Content-Type": []string{"application/geo+json"},
-			},
-			Body: body,
-		}, nil
+		return resp, nil
 	}
 
-	return &middleware.STACResponse{
-		StatusCode: http.StatusNotFound,
-		Body:       []byte(`{"code": "NotFound", "description": "Item not found"}`),
-	}, nil
+	return notFoundResponse("Item not found"), nil
 }
 
 // notFoundResponse builds a uniform 404 STAC error response.
@@ -444,37 +443,38 @@ func notFoundResponse(description string) *middleware.STACResponse {
 	}
 }
 
-// handleGenericProxy proxies requests to the highest priority origin.
+// handleGenericProxy proxies requests to the highest priority origin
+// via ReverseProxy. Used for STAC endpoints that don't have dedicated
+// federation handling (e.g. /, /conformance).
 func (h *Handler) handleGenericProxy(ctx context.Context,
 	req *middleware.STACRequest) (*middleware.STACResponse, error) {
 
-	origins := h.router.EnabledOrigins()
-	if len(origins) == 0 {
+	origin := h.primaryOrigin()
+	if origin == nil {
 		return &middleware.STACResponse{
 			StatusCode: http.StatusServiceUnavailable,
 			Body:       []byte(`{"code": "NoOrigins", "description": "No origins available"}`),
 		}, nil
 	}
 
-	// Use the highest priority origin
-	client := h.origins[origins[0].ID]
+	return h.reverseProxyOnce(ctx, origin, req)
+}
 
-	resp, err := client.DoRequest(ctx, req.Method, req.URL.Path, req.Body)
-	if err != nil {
-		return nil, err
+// primaryOrigin returns the highest-priority enabled origin (or nil
+// when no enabled origins are configured). Used by handleGenericProxy
+// and the federation-of-1 translation in cmd/stac-proxy.
+func (h *Handler) primaryOrigin() *Origin {
+	origins := h.router.EnabledOrigins()
+	if len(origins) == 0 {
+		return nil
 	}
-	defer resp.Body.Close()
-
-	body := make([]byte, 0)
-	if resp.Body != nil {
-		body, _ = json.Marshal(resp.Body)
+	best := origins[0]
+	for _, o := range origins[1:] {
+		if o.Priority > best.Priority {
+			best = o
+		}
 	}
-
-	return &middleware.STACResponse{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Header.Clone(),
-		Body:       body,
-	}, nil
+	return best
 }
 
 // parseSearchRequest parses a search request from the STAC request.
@@ -557,4 +557,265 @@ func (h *Handler) OriginIDs() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// reverseProxyOnce forwards req to a single origin via
+// httputil.ReverseProxy. Auth + retry are applied transparently via
+// the origin's RoundTripper chain; the captured response is returned
+// as a middleware.STACResponse.
+//
+// When proxyBaseURL is configured and the upstream returns 2xx with a
+// JSON body, links are rewritten to point at the proxy.
+func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
+	req *middleware.STACRequest) (*middleware.STACResponse, error) {
+
+	client := h.origins[origin.ID]
+	if client == nil {
+		return nil, &middleware.InternalError{Message: "unknown origin: " + origin.ID}
+	}
+
+	outReq, err := h.buildOutboundRequest(ctx, client, req)
+	if err != nil {
+		return nil, err
+	}
+
+	cap := httpx.NewResponseCapture()
+	var upstreamErr error
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(client.BaseURLParsed())
+			r.SetXForwarded()
+			r.Out.Header.Set("Accept", "application/geo+json, application/json")
+		},
+		Transport: client.Transport(),
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			upstreamErr = err
+		},
+	}
+
+	start := time.Now()
+	rp.ServeHTTP(cap, outReq)
+	if m := observability.Default(); m != nil {
+		m.UpstreamRequestDuration.WithLabelValues(origin.ID).Observe(time.Since(start).Seconds())
+		if upstreamErr != nil {
+			class := observability.ErrClassNetwork
+			switch {
+			case errors.Is(upstreamErr, context.Canceled):
+				class = observability.ErrClassCanceled
+			case errors.Is(upstreamErr, context.DeadlineExceeded):
+				class = observability.ErrClassTimeout
+			}
+			m.UpstreamErrors.WithLabelValues(origin.ID, class).Inc()
+			m.UpstreamRequestsTotal.WithLabelValues(origin.ID, observability.UpstreamStatusError).Inc()
+		} else {
+			m.UpstreamRequestsTotal.WithLabelValues(origin.ID, fmt.Sprintf("%d", cap.Status())).Inc()
+		}
+	}
+
+	if upstreamErr != nil {
+		return nil, &middleware.InternalError{Message: "upstream request failed: " + upstreamErr.Error(), Cause: upstreamErr}
+	}
+
+	headers := cap.HeadersOut()
+	httpx.StripHopByHopHeaders(headers)
+
+	resp := &middleware.STACResponse{
+		StatusCode: cap.Status(),
+		Headers:    headers,
+		Body:       cap.BodyBytes(),
+	}
+
+	if h.proxyBaseURL != "" && cap.Status() == http.StatusOK {
+		resp = h.transformResponse(client, resp)
+	}
+	return resp, nil
+}
+
+// buildOutboundRequest constructs the *http.Request that ReverseProxy
+// will dispatch. It:
+//   - Re-serializes req.SearchReq as POST body for search-like routes,
+//     so middleware mutations (CQL2 injection, etc.) reach upstream.
+//   - Forwards the inbound request ID via the standard helper.
+//
+// The returned request's URL is left as the inbound path/query;
+// ReverseProxy.Rewrite.SetURL composes the upstream URL at dispatch.
+func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient,
+	req *middleware.STACRequest) (*http.Request, error) {
+
+	method := req.Method
+	var body io.Reader
+	if req.Body != nil {
+		body = req.Body
+	}
+
+	if req.SearchReq != nil && isSearchLike(req.RequestType) {
+		marshaled, err := json.Marshal(req.SearchReq)
+		if err != nil {
+			return nil, fmt.Errorf("re-serialize SearchReq: %w", err)
+		}
+		body = bytes.NewReader(marshaled)
+		method = http.MethodPost
+	}
+
+	// Path+query — ReverseProxy.SetURL will rebase onto the origin.
+	pathQuery := req.URL.RequestURI()
+
+	outReq, err := http.NewRequestWithContext(ctx, method, pathQuery, body)
+	if err != nil {
+		return nil, fmt.Errorf("build outbound request: %w", err)
+	}
+
+	if body != nil {
+		if err := httpx.BufferAndSetGetBody(outReq); err != nil {
+			return nil, fmt.Errorf("buffer outbound body: %w", err)
+		}
+		outReq.Header.Set("Content-Type", "application/json")
+	}
+
+	// Inherit safe headers from the inbound request so things like
+	// Accept-Encoding, conditional GET headers (If-None-Match), and
+	// downstream-meaningful trace headers propagate.
+	if req.Request != nil {
+		for k, vs := range req.Header {
+			// Skip hop-by-hop; ReverseProxy strips them again at
+			// dispatch, but starting clean keeps the trace simple.
+			if isHopByHop(k) {
+				continue
+			}
+			for _, v := range vs {
+				outReq.Header.Add(k, v)
+			}
+		}
+		// Carry the inbound identity onto the outbound request so
+		// ReverseProxy.Rewrite.SetXForwarded has values to read.
+		// SetXForwarded uses RemoteAddr/Host/TLS off the inbound *req*
+		// that was passed to ServeHTTP; in our flow that's outReq.
+		outReq.Host = req.Host
+		outReq.RemoteAddr = req.Request.RemoteAddr
+		outReq.TLS = req.Request.TLS
+	}
+
+	middleware.ForwardRequestID(ctx, outReq)
+	return outReq, nil
+}
+
+// transformResponse rewrites links pointing to the upstream origin so
+// downstream clients follow links back through this proxy.
+func (h *Handler) transformResponse(client *OriginClient, resp *middleware.STACResponse) *middleware.STACResponse {
+	if h.proxyBaseURL == "" {
+		return resp
+	}
+
+	contentType := resp.Headers.Get("Content-Type")
+	if !strings.Contains(contentType, "json") {
+		return resp
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Body, &data); err != nil {
+		return resp // not JSON — leave as-is
+	}
+
+	h.rewriteLinks(client, data)
+
+	newBody, err := json.Marshal(data)
+	if err != nil {
+		return resp
+	}
+	resp.Body = newBody
+	return resp
+}
+
+// rewriteLinks recursively rewrites href values in the data structure.
+func (h *Handler) rewriteLinks(client *OriginClient, data interface{}) {
+	switch v := data.(type) {
+	case map[string]interface{}:
+		if links, ok := v["links"].([]interface{}); ok {
+			for _, link := range links {
+				if linkMap, ok := link.(map[string]interface{}); ok {
+					if href, ok := linkMap["href"].(string); ok {
+						linkMap["href"] = h.rewriteURL(client, href)
+					}
+				}
+			}
+		}
+		for _, val := range v {
+			h.rewriteLinks(client, val)
+		}
+	case []interface{}:
+		for _, val := range v {
+			h.rewriteLinks(client, val)
+		}
+	}
+}
+
+// rewriteURL replaces the upstream base URL prefix with the proxy
+// base URL.
+func (h *Handler) rewriteURL(client *OriginClient, href string) string {
+	upstreamBase := client.BaseURL()
+	if strings.HasPrefix(href, upstreamBase) {
+		return h.proxyBaseURL + strings.TrimPrefix(href, upstreamBase)
+	}
+	return href
+}
+
+// isSearchLike reports whether the request type uses the SearchRequest
+// body shape (i.e. /search or /collections/{id}/items).
+func isSearchLike(rt middleware.RequestType) bool {
+	switch rt {
+	case middleware.RequestTypeSearch, middleware.RequestTypeItems:
+		return true
+	}
+	return false
+}
+
+// isHopByHop reports whether a header name is one of the RFC 7230
+// hop-by-hop headers (a small set; ReverseProxy strips Connection-listed
+// names itself at dispatch).
+func isHopByHop(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Connection", "Proxy-Connection", "Keep-Alive",
+		"Proxy-Authenticate", "Proxy-Authorization", "Te",
+		"Trailer", "Transfer-Encoding", "Upgrade":
+		return true
+	}
+	return false
+}
+
+// injectOriginMetadata adds stac_proxy:origin to a JSON STAC document's
+// properties (Collection.properties or Item.properties). No-op on
+// parse errors — best-effort metadata.
+func injectOriginMetadata(resp *middleware.STACResponse, propertiesKey, originID string) {
+	var obj map[string]interface{}
+	if err := json.Unmarshal(resp.Body, &obj); err != nil {
+		return
+	}
+	props, _ := obj[propertiesKey].(map[string]interface{})
+	if props == nil {
+		props = make(map[string]interface{})
+		obj[propertiesKey] = props
+	}
+	props["stac_proxy:origin"] = originID
+	if b, err := json.Marshal(obj); err == nil {
+		resp.Body = b
+	}
+}
+
+// adaptRequestStripCollectionPrefix returns a shallow copy of req with
+// the URL path and Collection field rewritten to strip the origin's
+// configured collection prefix.
+func adaptRequestStripCollectionPrefix(req *middleware.STACRequest, prefix string) *middleware.STACRequest {
+	if req.Request == nil || prefix == "" {
+		return req
+	}
+	stripped := strings.Replace(req.URL.Path, "/collections/"+req.Collection, "/collections/"+strings.TrimPrefix(req.Collection, prefix), 1)
+	cloned := req.Clone()
+	// Clone the URL so we don't mutate the inbound one.
+	newURL := *cloned.URL
+	newURL.Path = stripped
+	newReq := cloned.Request.Clone(cloned.Context)
+	newReq.URL = &newURL
+	cloned.Request = newReq
+	cloned.Collection = strings.TrimPrefix(req.Collection, prefix)
+	return cloned
 }

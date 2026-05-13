@@ -12,12 +12,38 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
-	"github.com/yourorg/stac-proxy/internal/proxy"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
+
+// newSingleOriginFederation wires a federation-of-1 against srv.URL for
+// integration tests that previously used proxy.NewHandler. The fast-path
+// in federation.Handler.Handle forwards every request to the synthetic
+// "primary" origin via ReverseProxy — the same wire-level pass-through
+// the old single-origin handler provided.
+func newSingleOriginFederation(t *testing.T, upstreamURL string) *federation.Handler {
+	t.Helper()
+	h, err := federation.NewHandler(federation.HandlerConfig{
+		Origins: []*federation.Origin{{
+			ID:                      "primary",
+			BaseURL:                 upstreamURL,
+			Enabled:                 true,
+			Priority:                100,
+			Searchable:              true,
+			SupportsFilterExtension: true,
+			Timeout:                 5 * time.Second,
+		}},
+		ConflictStrategy: federation.ConflictPriorityWins,
+	})
+	if err != nil {
+		t.Fatalf("federation.NewHandler: %v", err)
+	}
+	return h
+}
 
 type capturedUpstream struct {
 	method string
@@ -65,14 +91,8 @@ func TestIntegration_PolicyCQL2FlowsToUpstreamSingleOrigin(t *testing.T) {
 		CQL2InjectionEnabled: true,
 	})
 
-	// Build the single-origin proxy handler.
-	handler, err := proxy.NewHandler(proxy.Config{
-		UpstreamURL: srv.URL,
-		Timeout:     5,
-	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	// Build the single-origin federation handler (federation-of-1).
+	handler := newSingleOriginFederation(t, srv.URL)
 
 	// Simulate an incoming GET /search with a client-supplied filter,
 	// after the server router has parsed it into SearchReq.
@@ -155,10 +175,7 @@ func TestIntegration_GeofencePushdownThroughProxy(t *testing.T) {
 		CQL2InjectionEnabled: true,
 	})
 
-	handler, err := proxy.NewHandler(proxy.Config{UpstreamURL: srv.URL, Timeout: 5})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	handler := newSingleOriginFederation(t, srv.URL)
 
 	httpReq := httptest.NewRequest("GET", "/search", nil)
 	req := &middleware.STACRequest{
@@ -199,10 +216,7 @@ func TestIntegration_DisabledByDefault(t *testing.T) {
 		AllowAnonymous: true,
 	})
 
-	handler, err := proxy.NewHandler(proxy.Config{UpstreamURL: srv.URL, Timeout: 5})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	handler := newSingleOriginFederation(t, srv.URL)
 
 	httpReq := httptest.NewRequest("GET", "/search", nil)
 	req := &middleware.STACRequest{

@@ -226,7 +226,7 @@ func TestHandleSearch(t *testing.T) {
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name: "search with limit applied",
+			name: "search with limit applied (single origin pass-through)",
 			searchReq: testutil.SampleSearchRequest(
 				testutil.WithCollections("collection1"),
 				testutil.WithLimit(2),
@@ -238,7 +238,11 @@ func TestHandleSearch(t *testing.T) {
 					testutil.SampleItem("item3", testutil.WithCollection("collection1")),
 				),
 			},
-			expectedItems:  2,
+			// In single-origin mode the proxy is a transparent
+			// ReverseProxy pass-through; limit enforcement is the
+			// upstream's responsibility (the test mock ignores it
+			// and returns all 3 items).
+			expectedItems:  3,
 			expectedStatus: http.StatusOK,
 		},
 	}
@@ -383,11 +387,27 @@ func TestHandleSearchTimeout(t *testing.T) {
 	))
 	defer slowServer.Close()
 
+	slowServer2 := testutil.NewTestServerWithDelay(2*time.Second, testutil.SampleFeatureCollection(
+		testutil.SampleItem("item2"),
+	))
+	defer slowServer2.Close()
+
+	// Two-origin handler so aggregate-timeout / fan-out semantics apply
+	// (the single-origin path is a transparent ReverseProxy pass-through
+	// and does NOT honor aggregateTimeout — that's tied to fan-out).
 	handler, err := NewHandler(HandlerConfig{
 		Origins: []*Origin{
 			{
 				ID:          "slow",
 				BaseURL:     slowServer.URL,
+				Enabled:     true,
+				Searchable:  true,
+				Collections: []string{"collection1"},
+				Timeout:     5 * time.Second,
+			},
+			{
+				ID:          "slow2",
+				BaseURL:     slowServer2.URL,
 				Enabled:     true,
 				Searchable:  true,
 				Collections: []string{"collection1"},
@@ -435,11 +455,24 @@ func TestHandleSearchContextCancellation(t *testing.T) {
 	))
 	defer slowServer.Close()
 
+	slowServer2 := testutil.NewTestServerWithDelay(2*time.Second, testutil.SampleFeatureCollection(
+		testutil.SampleItem("item2"),
+	))
+	defer slowServer2.Close()
+
 	handler, err := NewHandler(HandlerConfig{
 		Origins: []*Origin{
 			{
 				ID:          "slow",
 				BaseURL:     slowServer.URL,
+				Enabled:     true,
+				Searchable:  true,
+				Collections: []string{"collection1"},
+				Timeout:     5 * time.Second,
+			},
+			{
+				ID:          "slow2",
+				BaseURL:     slowServer2.URL,
 				Enabled:     true,
 				Searchable:  true,
 				Collections: []string{"collection1"},
@@ -677,11 +710,14 @@ func TestHandleGetCollection(t *testing.T) {
 					t.Errorf("collection ID = %s, want %s", coll.ID, tt.collectionID)
 				}
 
-				// Verify origin metadata
-				if coll.Properties == nil {
-					t.Error("collection properties is nil")
-				} else if _, ok := coll.Properties["stac_proxy:origin"]; !ok {
-					t.Error("missing stac_proxy:origin metadata")
+				// stac_proxy:origin is only injected when there is
+				// more than one registered origin (true federation
+				// mode). This test uses a single origin so the
+				// proxied payload passes through unannotated.
+				if coll.Properties != nil {
+					if _, ok := coll.Properties["stac_proxy:origin"]; ok {
+						t.Error("unexpected stac_proxy:origin metadata in single-origin response")
+					}
 				}
 			}
 		})
@@ -819,11 +855,14 @@ func TestHandleGetItem(t *testing.T) {
 					t.Errorf("item ID = %s, want %s", item.ID, tt.itemID)
 				}
 
-				// Verify origin metadata
-				if item.Properties.Extra == nil {
-					t.Error("item properties.Extra is nil")
-				} else if _, ok := item.Properties.Extra["stac_proxy:origin"]; !ok {
-					t.Error("missing stac_proxy:origin metadata")
+				// stac_proxy:origin is only injected when there is
+				// more than one registered origin (true federation
+				// mode). This test uses a single origin so the
+				// proxied payload passes through unannotated.
+				if item.Properties.Extra != nil {
+					if _, ok := item.Properties.Extra["stac_proxy:origin"]; ok {
+						t.Error("unexpected stac_proxy:origin metadata in single-origin response")
+					}
 				}
 			}
 		})

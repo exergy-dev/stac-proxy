@@ -24,7 +24,6 @@ import (
 	"github.com/yourorg/stac-proxy/internal/middleware/ratelimit"
 	"github.com/yourorg/stac-proxy/internal/middleware/remap"
 	"github.com/yourorg/stac-proxy/internal/observability"
-	"github.com/yourorg/stac-proxy/internal/proxy"
 	"github.com/yourorg/stac-proxy/internal/server"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
@@ -125,13 +124,11 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 		return fmt.Errorf("failed to build middleware chain: %w", err)
 	}
 
-	// Create handler based on mode
+	// Build the federation handler. Single-origin mode is modeled as a
+	// federation-of-1 — the single-origin code path collapses into
+	// reverseProxyOnce against the synthetic "primary" origin.
 	var handler middleware.Handler
-	if cfg.IsFederation() {
-		handler, err = buildFederationHandler(cfg, logger, healthChecker, metrics)
-	} else {
-		handler, err = buildProxyHandler(cfg, logger, healthChecker)
-	}
+	handler, err = buildFederationHandler(cfg, logger, healthChecker, metrics)
 	if err != nil {
 		return fmt.Errorf("failed to build handler: %w", err)
 	}
@@ -448,8 +445,16 @@ func buildRemapMiddleware(cfg map[string]interface{}) (middleware.Middleware, er
 	return remap.NewMiddleware(remap.Config{Rules: rules})
 }
 
-// buildFederationHandler creates the federation handler.
+// buildFederationHandler creates the federation handler. In
+// single-origin mode (cfg.Mode != "federation") it synthesizes a
+// single-element Origins list from cfg.Upstream, so the same code
+// path handles both deployment shapes.
 func buildFederationHandler(cfg *config.Config, logger *zap.Logger, health *observability.HealthChecker, metrics *observability.Metrics) (middleware.Handler, error) {
+	// Single-origin → federation-of-1 translation.
+	if !cfg.IsFederation() {
+		return buildSingleOriginAsFederation(cfg, logger, health)
+	}
+
 	var origins []*federation.Origin
 
 	for _, originCfg := range cfg.Federation.Origins {
@@ -550,9 +555,14 @@ func originAuthConfig(c *config.OriginAuthConfig) federation.AuthConfig {
 	return auth
 }
 
+// buildSingleOriginAsFederation builds a federation handler from a
+// single-origin cfg.Upstream — i.e. the "single" mode collapses to a
+// federation-of-1 so we only carry one request pipeline.
+func buildSingleOriginAsFederation(cfg *config.Config, logger *zap.Logger, health *observability.HealthChecker) (middleware.Handler, error) {
+	if cfg.Upstream == nil {
+		return nil, fmt.Errorf("single mode requires upstream config")
+	}
 
-// buildProxyHandler creates the single-origin proxy handler.
-func buildProxyHandler(cfg *config.Config, logger *zap.Logger, health *observability.HealthChecker) (middleware.Handler, error) {
 	timeout := cfg.Upstream.Timeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -566,10 +576,27 @@ func buildProxyHandler(cfg *config.Config, logger *zap.Logger, health *observabi
 		supportsFilter = probeFilterExtension(logger, "upstream", cfg.Upstream.URL)
 	}
 
-	return proxy.NewHandler(proxy.Config{
-		UpstreamURL:             cfg.Upstream.URL,
-		Timeout:                 int(timeout.Seconds()),
+	origin := &federation.Origin{
+		ID:                      "primary",
+		BaseURL:                 cfg.Upstream.URL,
+		Enabled:                 true,
+		Timeout:                 timeout,
+		Priority:                100,
+		Searchable:              true,
 		SupportsFilterExtension: supportsFilter,
+		// No auth, no collection prefix, no collection list — the
+		// router treats this as the catch-all origin for everything.
+	}
+
+	logger.Info("Configured single-origin upstream as federation-of-1",
+		zap.String("url", cfg.Upstream.URL),
+		zap.Bool("filter_extension", supportsFilter),
+	)
+
+	return federation.NewHandler(federation.HandlerConfig{
+		Origins:          []*federation.Origin{origin},
+		ConflictStrategy: federation.ConflictPriorityWins,
+		ProxyBaseURL:     "",
 	})
 }
 

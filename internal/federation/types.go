@@ -15,10 +15,11 @@ type Origin struct {
 	Description string
 
 	// Connection
-	BaseURL string
-	Enabled bool
-	Timeout time.Duration
-	Retry   *RetryPolicy
+	BaseURL             string
+	Enabled             bool
+	Timeout             time.Duration
+	Retry               *RetryPolicy
+	MaxIdleConnsPerHost int
 
 	// Authentication for this downstream server
 	Auth AuthConfig

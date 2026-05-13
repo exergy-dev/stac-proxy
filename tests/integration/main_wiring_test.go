@@ -10,10 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
-	"github.com/yourorg/stac-proxy/internal/proxy"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -70,10 +71,17 @@ result := {
 		FilterExtensionCheck: func(_ *middleware.STACRequest) bool { return true },
 	})
 
-	handler, err := proxy.NewHandler(proxy.Config{
-		UpstreamURL:             srv.URL,
-		Timeout:                 5,
-		SupportsFilterExtension: true,
+	handler, err := federation.NewHandler(federation.HandlerConfig{
+		Origins: []*federation.Origin{{
+			ID:                      "primary",
+			BaseURL:                 srv.URL,
+			Enabled:                 true,
+			Priority:                100,
+			Searchable:              true,
+			SupportsFilterExtension: true,
+			Timeout:                 5 * time.Second,
+		}},
+		ConflictStrategy: federation.ConflictPriorityWins,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
@@ -20,6 +21,7 @@ import (
 type OriginClient struct {
 	origin       *Origin
 	httpClient   *http.Client
+	transport    http.RoundTripper
 	authProvider AuthProvider
 	baseURL      *url.URL
 
@@ -29,36 +31,63 @@ type OriginClient struct {
 	lastDiscovery   time.Time
 }
 
-// NewOriginClient creates a new client for an origin.
+// NewOriginClient creates a new client for an origin. Retry and auth
+// are layered into the transport so that ReverseProxy, raw
+// DoRequest calls, and Search/GetCollection/GetItem helpers all share
+// the same per-origin behavior automatically.
 func NewOriginClient(origin *Origin) (*OriginClient, error) {
 	baseURL, err := url.Parse(origin.BaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	// Build HTTP client
-	transport := &http.Transport{
+	maxIdle := origin.MaxIdleConnsPerHost
+	if maxIdle <= 0 {
+		maxIdle = 100
+	}
+
+	base := &http.Transport{
 		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
+		MaxIdleConnsPerHost: maxIdle,
 		IdleConnTimeout:     90 * time.Second,
 	}
 
-	// TODO: Add mTLS support if ClientCert is configured
-
-	httpClient := &http.Client{
-		Transport: transport,
-		Timeout:   origin.Timeout,
+	// Wire retry transport using locked httpx contract. When Retry is
+	// nil we still wrap with a zero-MaxRetries config — httpx treats
+	// that as a single-attempt passthrough.
+	var retryCfg httpx.RetryConfig
+	if origin.Retry != nil {
+		retryCfg = httpx.RetryConfig{
+			MaxRetries:     origin.Retry.MaxRetries,
+			InitialBackoff: origin.Retry.InitialBackoff,
+			MaxBackoff:     origin.Retry.MaxBackoff,
+			RetryOn:        origin.Retry.RetryOn,
+		}
 	}
+	retry := httpx.NewRetryTransport(base, retryCfg)
 
-	// Build auth provider
+	// Build auth provider.
 	authProvider, err := BuildAuthProvider(origin.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("auth provider error: %w", err)
 	}
 
+	var rt http.RoundTripper = retry
+	if authProvider != nil {
+		if _, isNoop := authProvider.(*NoOpAuthProvider); !isNoop {
+			rt = &authRoundTripper{auth: authProvider, next: retry}
+		}
+	}
+
+	httpClient := &http.Client{
+		Transport: rt,
+		Timeout:   origin.Timeout,
+	}
+
 	client := &OriginClient{
 		origin:       origin,
 		httpClient:   httpClient,
+		transport:    rt,
 		authProvider: authProvider,
 		baseURL:      baseURL,
 		collections:  make(map[string]*stac.Collection),
@@ -79,15 +108,28 @@ func NewOriginClient(origin *Origin) (*OriginClient, error) {
 	return client, nil
 }
 
-// DoRequest executes an HTTP request to the origin with authentication.
+// DoRequest executes an HTTP request to the origin. Authentication and
+// retry are applied transparently by the client's RoundTripper chain
+// — see NewOriginClient.
 func (c *OriginClient) DoRequest(ctx context.Context, method, path string,
 	body io.Reader) (*http.Response, error) {
 
-	reqURL := c.baseURL.ResolveReference(&url.URL{Path: path})
+	ref, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path %q: %w", path, err)
+	}
+	reqURL := c.baseURL.ResolveReference(ref)
 
 	req, err := http.NewRequestWithContext(ctx, method, reqURL.String(), body)
 	if err != nil {
 		return nil, err
+	}
+
+	// Buffer + GetBody for retry replay safety on bodied requests.
+	if body != nil {
+		if err := httpx.BufferAndSetGetBody(req); err != nil {
+			return nil, fmt.Errorf("buffer request body: %w", err)
+		}
 	}
 
 	req.Header.Set("Accept", "application/geo+json, application/json")
@@ -96,66 +138,7 @@ func (c *OriginClient) DoRequest(ctx context.Context, method, path string,
 	}
 	middleware.ForwardRequestID(ctx, req)
 
-	// Apply origin-specific authentication
-	if c.authProvider != nil {
-		if err := c.authProvider.ApplyAuth(ctx, req); err != nil {
-			return nil, fmt.Errorf("auth failed for origin %s: %w", c.origin.ID, err)
-		}
-	}
-
-	// Execute with retry if configured
-	if c.origin.Retry != nil && c.origin.Retry.MaxRetries > 0 {
-		return c.doWithRetry(ctx, req)
-	}
-
 	return c.httpClient.Do(req)
-}
-
-// doWithRetry executes the request with retry logic.
-func (c *OriginClient) doWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
-	policy := c.origin.Retry
-	var lastErr error
-	backoff := policy.InitialBackoff
-
-	for attempt := 0; attempt <= policy.MaxRetries; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-				backoff = minDuration(backoff*2, policy.MaxBackoff)
-			}
-		}
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		if !c.shouldRetry(resp.StatusCode) {
-			return resp, nil
-		}
-
-		resp.Body.Close()
-		lastErr = fmt.Errorf("received status %d", resp.StatusCode)
-	}
-
-	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
-}
-
-// shouldRetry checks if the status code should trigger a retry.
-func (c *OriginClient) shouldRetry(statusCode int) bool {
-	policy := c.origin.Retry
-	if policy == nil || len(policy.RetryOn) == 0 {
-		return statusCode >= 500
-	}
-	for _, code := range policy.RetryOn {
-		if statusCode == code {
-			return true
-		}
-	}
-	return false
 }
 
 // Search executes a search request against this origin.
@@ -324,9 +307,14 @@ func (c *OriginClient) BaseURL() string {
 	return c.baseURL.String()
 }
 
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
+// BaseURLParsed returns the origin's base URL as *url.URL (used by
+// ReverseProxy.SetURL).
+func (c *OriginClient) BaseURLParsed() *url.URL {
+	return c.baseURL
+}
+
+// Transport returns the origin's RoundTripper (used by ReverseProxy so
+// auth + retry are applied to proxied requests).
+func (c *OriginClient) Transport() http.RoundTripper {
+	return c.transport
 }

@@ -9,3 +9,4 @@ stac-proxy
 
 # Worktrees created by parallel agents
 .worktrees/
+.claude/
