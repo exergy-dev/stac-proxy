@@ -5,11 +5,11 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
-
-	"go.uber.org/zap"
 
 	"github.com/yourorg/stac-proxy/internal/config"
 )
@@ -18,7 +18,7 @@ import (
 type Server struct {
 	httpServer *http.Server
 	listener   net.Listener
-	logger     *zap.Logger
+	logger     *slog.Logger
 	cfg        *config.ServerConfig
 }
 
@@ -26,7 +26,7 @@ type Server struct {
 type Config struct {
 	ServerConfig *config.ServerConfig
 	Handler      http.Handler
-	Logger       *zap.Logger
+	Logger       *slog.Logger
 }
 
 // New creates a new HTTP server.
@@ -40,7 +40,7 @@ func New(cfg Config) (*Server, error) {
 
 	logger := cfg.Logger
 	if logger == nil {
-		logger, _ = zap.NewProduction()
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.ServerConfig.Host, cfg.ServerConfig.Port)
@@ -91,8 +91,8 @@ func (s *Server) Start() error {
 	}
 
 	s.logger.Info("Server starting",
-		zap.String("addr", addr),
-		zap.Bool("tls", s.cfg.TLS.Enabled),
+		"addr", addr,
+		"tls", s.cfg.TLS.Enabled,
 	)
 
 	if s.cfg.TLS.Enabled {

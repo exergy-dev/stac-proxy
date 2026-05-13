@@ -11,10 +11,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"log/slog"
 	"sync"
 	"time"
-
-	"go.uber.org/zap"
 
 	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
@@ -287,10 +286,10 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 	}
 	if err != nil {
 		result.Error = err
-		zap.L().Error("federation origin search failed",
-			zap.String("origin", origin.ID),
-			zap.Duration("duration", time.Since(start)),
-			zap.Error(err))
+		slog.Error("federation origin search failed",
+			"origin", origin.ID,
+			"duration", time.Since(start),
+			"error", err)
 		return result
 	}
 

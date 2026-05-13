@@ -6,13 +6,14 @@ package logging
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/felixge/httpsnoop"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 )
@@ -28,7 +29,7 @@ var defaultRedactedQueryParams = []string{
 
 // Config contains configuration for the logging middleware.
 type Config struct {
-	Logger *zap.Logger
+	Logger *slog.Logger
 	// RedactedQueryParams, when set, replaces the default set of
 	// query-parameter names whose values are redacted in logs.
 	// Nil/empty falls back to defaultRedactedQueryParams.
@@ -43,7 +44,7 @@ type Config struct {
 func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	logger := cfg.Logger
 	if logger == nil {
-		logger, _ = zap.NewProduction()
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
 	redacted := cfg.RedactedQueryParams
 	if len(redacted) == 0 {
@@ -58,32 +59,32 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			ctx := context.WithValue(r.Context(), middleware.RequestIDKey, requestID)
 
 			logger.Info("request_started",
-				zap.String("request_id", requestID),
-				zap.String("method", r.Method),
-				zap.String("path", r.URL.Path),
-				zap.String("query", redactQuery(r.URL.RawQuery, redacted)),
-				zap.String("remote_addr", r.RemoteAddr),
-				zap.String("user_agent", r.UserAgent()),
+				"request_id", requestID,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"query", redactQuery(r.URL.RawQuery, redacted),
+				"remote_addr", r.RemoteAddr,
+				"user_agent", r.UserAgent(),
 			)
 
 			w.Header().Set("X-Request-ID", requestID)
 			m := httpsnoop.CaptureMetrics(next, w, r.WithContext(ctx))
 
-			fields := []zap.Field{
-				zap.String("request_id", requestID),
-				zap.String("method", r.Method),
-				zap.String("path", r.URL.Path),
-				zap.Int("status", m.Code),
-				zap.Duration("duration", m.Duration),
-				zap.Int64("response_size", m.Written),
+			attrs := []any{
+				"request_id", requestID,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", m.Code,
+				"duration", m.Duration,
+				"response_size", m.Written,
 			}
 			switch {
 			case m.Code >= 500:
-				logger.Error("request_completed", fields...)
+				logger.Error("request_completed", attrs...)
 			case m.Code >= 400:
-				logger.Warn("request_completed", fields...)
+				logger.Warn("request_completed", attrs...)
 			default:
-				logger.Info("request_completed", fields...)
+				logger.Info("request_completed", attrs...)
 			}
 		})
 	}

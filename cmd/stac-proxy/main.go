@@ -5,14 +5,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 
 	"github.com/yourorg/stac-proxy/internal/config"
 	"github.com/yourorg/stac-proxy/internal/federation"
@@ -73,22 +71,17 @@ func main() {
 	}
 
 	// Initialize logger based on config
-	logger, err := initLogger(cfg.Logging)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
-		os.Exit(1)
-	}
-	defer logger.Sync()
+	logger := initLogger(cfg.Logging)
 
-	// Publish the configured logger globally so package-level code
-	// (federation per-origin loggers, etc.) can call zap.L() without
-	// requiring DI.
-	zap.ReplaceGlobals(logger)
+	// Publish the configured logger as the slog default so package-level
+	// code (federation per-origin loggers, etc.) can call slog.Info /
+	// slog.Error without requiring DI.
+	slog.SetDefault(logger)
 
 	logger.Info("Starting stac-proxy",
-		zap.String("version", version),
-		zap.String("commit", commit),
-		zap.String("mode", cfg.Mode),
+		"version", version,
+		"commit", commit,
+		"mode", cfg.Mode,
 	)
 
 	// Parent context, cancelled by SIGINT/SIGTERM. run() observes
@@ -98,7 +91,8 @@ func main() {
 	defer cancel()
 
 	if err := run(ctx, cfg, logger); err != nil && err != http.ErrServerClosed {
-		logger.Fatal("Server error", zap.Error(err))
+		logger.Error("Server error", "error", err)
+		os.Exit(1)
 	}
 	logger.Info("Shutdown complete")
 }
@@ -108,7 +102,7 @@ func main() {
 const shutdownTimeout = 30 * time.Second
 
 // run starts the proxy server.
-func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
+func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// Initialize metrics and publish them as the process-wide
 	// default so middleware/handlers can emit without us threading
 	// the Metrics pointer through every constructor.
@@ -183,8 +177,8 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 	defer healthChecker.Stop()
 
 	logger.Info("Server starting",
-		zap.String("address", fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)),
-		zap.Bool("tls", cfg.Server.TLS.Enabled),
+		"address", fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
+		"tls", cfg.Server.TLS.Enabled,
 	)
 
 	// Watch for parent-context cancellation (signal received) and
@@ -193,11 +187,11 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 	go func() {
 		<-ctx.Done()
 		logger.Info("Shutdown signal received; draining",
-			zap.Duration("timeout", shutdownTimeout))
+			"timeout", shutdownTimeout)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("Server shutdown error", zap.Error(err))
+			logger.Error("Server shutdown error", "error", err)
 		}
 	}()
 
@@ -208,7 +202,7 @@ func run(ctx context.Context, cfg *config.Config, logger *zap.Logger) error {
 // buildAuthzMiddleware wires the authz middleware (including CQL2
 // injection) from the top-level authz config. Returns (nil, nil) when
 // authz is not configured.
-func buildAuthzHTTPMiddleware(cfg *config.Config, logger *zap.Logger) (func(http.Handler) http.Handler, error) {
+func buildAuthzHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
 	az := cfg.Authz
 	if az == nil || az.OPA == nil {
 		return nil, nil
@@ -257,8 +251,8 @@ func buildAuthzHTTPMiddleware(cfg *config.Config, logger *zap.Logger) (func(http
 	}
 
 	logger.Info("authz middleware configured",
-		zap.Bool("cql2_injection", cql2Enabled),
-		zap.Bool("filter_extension_check", filterCheck != nil),
+		"cql2_injection", cql2Enabled,
+		"filter_extension_check", filterCheck != nil,
 	)
 
 	return authz.NewHTTPMiddleware(authz.HTTPConfig{
@@ -272,7 +266,7 @@ func buildAuthzHTTPMiddleware(cfg *config.Config, logger *zap.Logger) (func(http
 // buildAuthHTTPMiddleware builds the chi-style auth middleware from the
 // `auth` block of the middleware config list. Returns nil when no
 // `auth` block is configured — the router skips a nil entry.
-func buildAuthHTTPMiddleware(cfg *config.Config, logger *zap.Logger) func(http.Handler) http.Handler {
+func buildAuthHTTPMiddleware(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	var rawCfg map[string]interface{}
 	for _, mw := range cfg.Middleware {
 		if mw.Name == "auth" {
@@ -309,7 +303,7 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *zap.Logger) func(http.H
 				}
 				provider, err := auth.NewBearerProvider(bearerCfg)
 				if err != nil {
-					logger.Warn("Failed to create bearer provider", zap.Error(err))
+					logger.Warn("Failed to create bearer provider", "error", err)
 					continue
 				}
 				providers = append(providers, provider)
@@ -320,7 +314,7 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *zap.Logger) func(http.H
 					QueryParam: getStringConfig(pMap, "query_param"),
 				})
 				if err != nil {
-					logger.Warn("Failed to create API key provider", zap.Error(err))
+					logger.Warn("Failed to create API key provider", "error", err)
 					continue
 				}
 				providers = append(providers, provider)
@@ -411,7 +405,7 @@ func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Ha
 // single-origin mode (cfg.Mode != "federation") it synthesizes a
 // single-element Origins list from cfg.Upstream, so the same code
 // path handles both deployment shapes.
-func buildFederationHandler(cfg *config.Config, logger *zap.Logger, health *observability.HealthChecker, metrics *observability.Metrics) (*federation.Handler, error) {
+func buildFederationHandler(cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker, metrics *observability.Metrics) (*federation.Handler, error) {
 	// Single-origin → federation-of-1 translation.
 	if !cfg.IsFederation() {
 		return buildSingleOriginAsFederation(cfg, logger, health)
@@ -462,10 +456,10 @@ func buildFederationHandler(cfg *config.Config, logger *zap.Logger, health *obse
 		health.AddCheck(observability.NewOriginCheck(originCfg.ID, baseURL))
 
 		logger.Info("Configured origin",
-			zap.String("id", originCfg.ID),
-			zap.String("url", originCfg.BaseURL),
-			zap.Int("priority", originCfg.Priority),
-			zap.Bool("filter_extension", supportsFilter),
+			"id", originCfg.ID,
+			"url", originCfg.BaseURL,
+			"priority", originCfg.Priority,
+			"filter_extension", supportsFilter,
 		)
 	}
 
@@ -520,7 +514,7 @@ func originAuthConfig(c *config.OriginAuthConfig) federation.AuthConfig {
 // buildSingleOriginAsFederation builds a federation handler from a
 // single-origin cfg.Upstream — i.e. the "single" mode collapses to a
 // federation-of-1 so we only carry one request pipeline.
-func buildSingleOriginAsFederation(cfg *config.Config, logger *zap.Logger, health *observability.HealthChecker) (*federation.Handler, error) {
+func buildSingleOriginAsFederation(cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker) (*federation.Handler, error) {
 	if cfg.Upstream == nil {
 		return nil, fmt.Errorf("single mode requires upstream config")
 	}
@@ -551,8 +545,8 @@ func buildSingleOriginAsFederation(cfg *config.Config, logger *zap.Logger, healt
 	}
 
 	logger.Info("Configured single-origin upstream as federation-of-1",
-		zap.String("url", cfg.Upstream.URL),
-		zap.Bool("filter_extension", supportsFilter),
+		"url", cfg.Upstream.URL,
+		"filter_extension", supportsFilter,
 	)
 
 	return federation.NewHandler(federation.HandlerConfig{
@@ -563,9 +557,9 @@ func buildSingleOriginAsFederation(cfg *config.Config, logger *zap.Logger, healt
 }
 
 // startMetricsServer starts the Prometheus metrics server.
-func startMetricsServer(cfg config.MetricsConfig, metrics *observability.Metrics, logger *zap.Logger) {
+func startMetricsServer(cfg config.MetricsConfig, metrics *observability.Metrics, logger *slog.Logger) {
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	logger.Info("Starting metrics server", zap.String("address", addr))
+	logger.Info("Starting metrics server", "address", addr)
 
 	mux := http.NewServeMux()
 	mux.Handle(cfg.Path, metrics.Handler())
@@ -576,45 +570,31 @@ func startMetricsServer(cfg config.MetricsConfig, metrics *observability.Metrics
 	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("Metrics server error", zap.Error(err))
+		logger.Error("Metrics server error", "error", err)
 	}
 }
 
-// initLogger creates a configured zap logger.
-func initLogger(cfg config.LoggingConfig) (*zap.Logger, error) {
-	level := zapcore.InfoLevel
+// initLogger builds a structured slog.Logger from config. Format
+// selects JSON (default) or text output; Level maps debug/info/warn/error.
+func initLogger(cfg config.LoggingConfig) *slog.Logger {
+	level := slog.LevelInfo
 	switch cfg.Level {
 	case "debug":
-		level = zapcore.DebugLevel
-	case "info":
-		level = zapcore.InfoLevel
+		level = slog.LevelDebug
 	case "warn":
-		level = zapcore.WarnLevel
+		level = slog.LevelWarn
 	case "error":
-		level = zapcore.ErrorLevel
+		level = slog.LevelError
 	}
-
-	var encoder zapcore.Encoder
-	encoderConfig := zap.NewProductionEncoderConfig()
-	encoderConfig.TimeKey = "timestamp"
-	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
 	switch cfg.Format {
-	case "json":
-		encoder = zapcore.NewJSONEncoder(encoderConfig)
 	case "console", "text":
-		encoder = zapcore.NewConsoleEncoder(encoderConfig)
+		handler = slog.NewTextHandler(os.Stdout, opts)
 	default:
-		encoder = zapcore.NewJSONEncoder(encoderConfig)
+		handler = slog.NewJSONHandler(os.Stdout, opts)
 	}
-
-	core := zapcore.NewCore(
-		encoder,
-		zapcore.AddSync(os.Stdout),
-		level,
-	)
-
-	return zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel)), nil
+	return slog.New(handler)
 }
 
 // Helper functions for config extraction
@@ -643,22 +623,22 @@ func getStringSliceConfig(m map[string]interface{}, key string) []string {
 // Logs the result against the supplied id (origin ID, or "upstream"
 // for single-origin mode). Network failures yield false so the
 // post-filter path remains responsible for enforcement.
-func probeFilterExtension(logger *zap.Logger, id, baseURL string) bool {
+func probeFilterExtension(logger *slog.Logger, id, baseURL string) bool {
 	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ok, err := stac.ProbeFilterExtension(probeCtx, nil, baseURL)
 	switch {
 	case err != nil:
 		logger.Warn("conformance probe failed; assuming no Filter Extension",
-			zap.String("origin", id), zap.Error(err))
+			"origin", id, "error", err)
 		return false
 	case ok:
 		logger.Info("conformance probe: Filter Extension supported",
-			zap.String("origin", id))
+			"origin", id)
 		return true
 	default:
 		logger.Info("conformance probe: Filter Extension not advertised",
-			zap.String("origin", id))
+			"origin", id)
 		return false
 	}
 }
