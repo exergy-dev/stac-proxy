@@ -1049,8 +1049,11 @@ func TestChain_PriorityConstants(t *testing.T) {
 	// Create chain in random order
 	chain := NewChain(mwTransform, mwAuth, mwCache, mwLogging, mwAuthz)
 
-	// Expected order based on priority values
-	expectedOrder := []string{"logging", "auth", "authz", "cache", "transform"}
+	// Expected order based on priority values (cache is intentionally
+	// scheduled between auth and authz so cache hits don't consume
+	// rate-limit tokens but unauthenticated callers still can't fish
+	// for cached content).
+	expectedOrder := []string{"logging", "auth", "cache", "authz", "transform"}
 	names := chain.Names()
 
 	if len(names) != len(expectedOrder) {

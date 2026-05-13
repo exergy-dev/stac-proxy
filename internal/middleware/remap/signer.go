@@ -30,6 +30,17 @@ func NewHMACSigner(secret string) *HMACSigner {
 	}
 }
 
+// signingMessage builds the canonical bytes the HMAC covers. Host, path
+// and query (sorted, exp included) are all bound so an attacker cannot
+// swap query parameters or hostnames while keeping the signature.
+func signingMessage(host, path string, q url.Values, expiry int64) string {
+	// Remove the signature itself before canonicalizing; everything
+	// else, including the expiry, is part of the signed input.
+	q.Del("sig")
+	q.Set("exp", fmt.Sprintf("%d", expiry))
+	return strings.ToLower(host) + "\n" + path + "\n" + q.Encode()
+}
+
 // Sign adds an HMAC signature and expiry to the URL.
 func (s *HMACSigner) Sign(ctx context.Context, rawURL string, ttl time.Duration) string {
 	parsed, err := url.Parse(rawURL)
@@ -37,17 +48,14 @@ func (s *HMACSigner) Sign(ctx context.Context, rawURL string, ttl time.Duration)
 		return rawURL
 	}
 
-	// Calculate expiry
 	expiry := time.Now().Add(ttl).Unix()
 
-	// Create signature
-	message := fmt.Sprintf("%s:%d", parsed.Path, expiry)
+	q := parsed.Query()
+	message := signingMessage(parsed.Host, parsed.Path, q, expiry)
 	mac := hmac.New(sha256.New, s.secret)
 	mac.Write([]byte(message))
 	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 
-	// Add to query string
-	q := parsed.Query()
 	q.Set("exp", fmt.Sprintf("%d", expiry))
 	q.Set("sig", signature)
 	parsed.RawQuery = q.Encode()
@@ -75,13 +83,11 @@ func (s *HMACSigner) Verify(rawURL string) (bool, error) {
 		return false, fmt.Errorf("invalid expiry format")
 	}
 
-	// Check expiry
 	if time.Now().Unix() > expiry {
 		return false, fmt.Errorf("signature expired")
 	}
 
-	// Verify signature
-	message := fmt.Sprintf("%s:%s", parsed.Path, expStr)
+	message := signingMessage(parsed.Host, parsed.Path, q, expiry)
 	mac := hmac.New(sha256.New, s.secret)
 	mac.Write([]byte(message))
 	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))

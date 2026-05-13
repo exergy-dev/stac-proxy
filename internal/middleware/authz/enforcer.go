@@ -4,6 +4,7 @@ package authz
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // CompositeEnforcer combines multiple enforcers.
@@ -76,7 +77,10 @@ func (e *CompositeEnforcer) authorizeAll(ctx context.Context, input *AuthzInput)
 		}
 
 		allReasons = append(allReasons, decision.Reasons...)
-		mergedConstraints = mergeConstraints(mergedConstraints, decision.Constraints)
+		mergedConstraints, err = mergeConstraints(mergedConstraints, decision.Constraints)
+		if err != nil {
+			return nil, fmt.Errorf("merge constraints from %s: %w", enforcer.Name(), err)
+		}
 	}
 
 	return &AuthzDecision{
@@ -86,14 +90,20 @@ func (e *CompositeEnforcer) authorizeAll(ctx context.Context, input *AuthzInput)
 	}, nil
 }
 
-// authorizeAny requires any enforcer to allow.
+// authorizeAny requires any enforcer to allow. Per-enforcer errors do
+// not short-circuit (so a transient OPA outage doesn't deny everything
+// when another enforcer would have allowed), but they ARE surfaced in
+// the final Reasons so operators can diagnose silent fall-throughs.
 func (e *CompositeEnforcer) authorizeAny(ctx context.Context, input *AuthzInput) (*AuthzDecision, error) {
 	var allReasons []string
+	var errs []error
 
 	for _, enforcer := range e.enforcers {
 		decision, err := enforcer.Authorize(ctx, input)
 		if err != nil {
-			continue // Try next enforcer
+			errs = append(errs, fmt.Errorf("%s: %w", enforcer.Name(), err))
+			allReasons = append(allReasons, fmt.Sprintf("enforcer %s errored: %v", enforcer.Name(), err))
+			continue
 		}
 
 		if decision.Allowed {
@@ -106,15 +116,19 @@ func (e *CompositeEnforcer) authorizeAny(ctx context.Context, input *AuthzInput)
 	return &AuthzDecision{
 		Allowed: false,
 		Reasons: allReasons,
-	}, nil
+	}, errors.Join(errs...)
 }
 
 // authorizeFirst uses the first enforcer that provides a decision.
+// Errors are surfaced (joined) so a misconfigured front enforcer does
+// not silently mask the result.
 func (e *CompositeEnforcer) authorizeFirst(ctx context.Context, input *AuthzInput) (*AuthzDecision, error) {
+	var errs []error
 	for _, enforcer := range e.enforcers {
 		decision, err := enforcer.Authorize(ctx, input)
 		if err != nil {
-			continue // Try next enforcer
+			errs = append(errs, fmt.Errorf("%s: %w", enforcer.Name(), err))
+			continue
 		}
 		return decision, nil
 	}
@@ -122,16 +136,18 @@ func (e *CompositeEnforcer) authorizeFirst(ctx context.Context, input *AuthzInpu
 	return &AuthzDecision{
 		Allowed: false,
 		Reasons: []string{"no enforcer could make a decision"},
-	}, nil
+	}, errors.Join(errs...)
 }
 
-// mergeConstraints merges two sets of constraints (intersection).
-func mergeConstraints(a, b *AuthzConstraints) *AuthzConstraints {
+// mergeConstraints merges two sets of constraints (intersection). It
+// can fail when merging geofences with overlapping AllowedAreas (see
+// mergeGeofences); the caller surfaces the error as a 500.
+func mergeConstraints(a, b *AuthzConstraints) (*AuthzConstraints, error) {
 	if a == nil {
-		return b
+		return b, nil
 	}
 	if b == nil {
-		return a
+		return a, nil
 	}
 
 	merged := &AuthzConstraints{}
@@ -161,12 +177,15 @@ func mergeConstraints(a, b *AuthzConstraints) *AuthzConstraints {
 		merged.MaxResults = b.MaxResults
 	}
 
-	// Merge geofences (intersection of areas)
 	if a.Geofence != nil || b.Geofence != nil {
-		merged.Geofence = mergeGeofences(a.Geofence, b.Geofence)
+		gf, err := mergeGeofences(a.Geofence, b.Geofence)
+		if err != nil {
+			return nil, err
+		}
+		merged.Geofence = gf
 	}
 
-	return merged
+	return merged, nil
 }
 
 // intersectStrings returns the intersection of two string slices.
@@ -202,30 +221,36 @@ func unionStrings(a, b []string) []string {
 	return result
 }
 
-// mergeGeofences merges two geofence constraints.
-func mergeGeofences(a, b *GeofenceConstraint) *GeofenceConstraint {
+// ErrGeofenceMergeUnsupported is returned when two enforcers each
+// contribute a geofence AllowedArea — merging would require geometric
+// intersection, which isn't implemented. Operators must restrict
+// configuration to a single geofence-bearing enforcer until that lands.
+var ErrGeofenceMergeUnsupported = errors.New("authz: cannot merge multiple enforcers each contributing an AllowedArea geofence (geometric intersection not implemented)")
+
+// mergeGeofences merges two geofence constraints. Returns
+// ErrGeofenceMergeUnsupported rather than silently dropping a
+// restriction when both sides contribute an AllowedArea — callers
+// surface this as a 500 so misconfiguration is loud, not fail-open.
+func mergeGeofences(a, b *GeofenceConstraint) (*GeofenceConstraint, error) {
 	if a == nil {
-		return b
+		return b, nil
 	}
 	if b == nil {
-		return a
+		return a, nil
+	}
+	if a.AllowedArea != nil && b.AllowedArea != nil {
+		return nil, ErrGeofenceMergeUnsupported
 	}
 
-	// In a real implementation, this would compute the geometric
-	// intersection of allowed areas and union of denied areas
 	merged := &GeofenceConstraint{
 		FilterMode: a.FilterMode || b.FilterMode,
 	}
-
-	// For now, prefer the more restrictive constraint
 	if a.AllowedArea != nil {
 		merged.AllowedArea = a.AllowedArea
-	}
-	if b.AllowedArea != nil && merged.AllowedArea == nil {
+	} else if b.AllowedArea != nil {
 		merged.AllowedArea = b.AllowedArea
 	}
-
-	return merged
+	return merged, nil
 }
 
 // AlwaysAllowEnforcer always allows requests.

@@ -141,8 +141,28 @@ Configure your orchestrator's probes:
 | `readinessProbe` | `/health/ready` | Pull from LB rotation on failure |
 | `startupProbe` (K8s 1.18+) | `/health/ready` | Allow slow first boot |
 
+## Trust boundary: deploy behind an L7 proxy
+
+`stac-proxy` uses chi's `RealIP` middleware to populate
+`http.Request.RemoteAddr` from `X-Forwarded-For` / `X-Real-IP`. That
+middleware **does not** validate the source — any unauthenticated client
+can spoof its IP simply by adding the header.
+
+You MUST deploy this service behind a TLS-terminating L7 reverse proxy
+(nginx, Envoy, ALB, Cloud Run, etc.) that:
+
+1. Sets `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`
+   itself based on the real connecting socket.
+2. **Strips or overwrites** any inbound `X-Forwarded-*` headers the
+   client supplies so they cannot leak through.
+
+If you expose `stac-proxy` directly to untrusted clients, every log
+entry's `remote_addr`, every IP-based rate-limit decision, and every
+audit field that quotes the request's client IP is forgeable.
+
 ## Migration / upgrades
 
 Stateless; rolling upgrade is the default. To rotate configs, push a
 new ConfigMap or rebuild the image and `docker compose up -d --force-recreate`.
-Hot reload (`server.hot_reload: true`) is currently a no-op — coming in v0.2.
+Hot reload is not implemented; the `server.hot_reload` config key has
+been removed.

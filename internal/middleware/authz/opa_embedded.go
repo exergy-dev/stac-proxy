@@ -69,7 +69,9 @@ func NewEmbeddedOPAEnforcer(cfg EmbeddedOPAConfig) (*EmbeddedOPAEnforcer, error)
 	}
 
 	if len(modules) == 0 {
-		// Use default allow-all policy
+		// No operator policy supplied: install a fail-closed default
+		// that denies every request. Operators must explicitly opt in
+		// to permissive behavior by supplying their own policy.
 		modules["default.rego"] = defaultPolicy
 	}
 
@@ -81,11 +83,13 @@ func NewEmbeddedOPAEnforcer(cfg EmbeddedOPAConfig) (*EmbeddedOPAEnforcer, error)
 	return e, nil
 }
 
-// Default policy that allows everything
+// defaultPolicy is the fail-closed fallback used when the operator
+// supplies no policy. It denies every request; operators who want
+// allow-all behavior must opt in explicitly.
 const defaultPolicy = `
 package stac.authz
 
-default allow = true
+default allow = false
 
 result = {
     "allow": allow,
@@ -95,12 +99,12 @@ result = {
 
 reasons[msg] {
     allow
-    msg := "allowed by default policy"
+    msg := "allowed by operator policy"
 }
 
 reasons[msg] {
     not allow
-    msg := "denied by default policy"
+    msg := "denied by default fail-closed policy (no operator policy supplied)"
 }
 
 constraints = {}

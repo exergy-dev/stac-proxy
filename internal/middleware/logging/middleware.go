@@ -3,6 +3,8 @@ package logging
 
 import (
 	"context"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,17 +13,54 @@ import (
 	"github.com/yourorg/stac-proxy/internal/middleware"
 )
 
+// defaultRedactedQueryParams lists the case-insensitive names of query
+// parameters whose values must be replaced with "***" before logging.
+// Covers the common credential-in-URL idioms (signed URLs, API keys,
+// OAuth implicit-flow tokens). Operators can extend via Config.
+var defaultRedactedQueryParams = []string{
+	"token", "access_token", "refresh_token", "id_token",
+	"signature", "sig", "api_key", "apikey", "key", "password",
+}
+
+// redactQuery returns a copy of rawQuery with values for any key in
+// names (case-insensitive) replaced by "***". When parsing fails the
+// input is treated as opaque and "[unparseable]" is returned so we
+// don't leak the unparsed bytes by accident.
+func redactQuery(rawQuery string, names []string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "[unparseable]"
+	}
+	for k := range values {
+		for _, n := range names {
+			if strings.EqualFold(k, n) {
+				values[k] = []string{"***"}
+				break
+			}
+		}
+	}
+	return values.Encode()
+}
+
 // Middleware logs requests and responses.
 type Middleware struct {
 	middleware.BaseMiddleware
-	logger      *zap.Logger
-	includeBody bool
+	logger          *zap.Logger
+	includeBody     bool
+	redactedParams  []string
 }
 
 // Config contains configuration for the logging middleware.
 type Config struct {
 	Logger      *zap.Logger
 	IncludeBody bool
+	// RedactedQueryParams, when set, replaces the default set of
+	// query-parameter names whose values are redacted in logs.
+	// Nil/empty falls back to defaultRedactedQueryParams.
+	RedactedQueryParams []string
 }
 
 // NewMiddleware creates a new logging middleware.
@@ -31,34 +70,39 @@ func NewMiddleware(cfg Config) *Middleware {
 		logger, _ = zap.NewProduction()
 	}
 
+	redacted := cfg.RedactedQueryParams
+	if len(redacted) == 0 {
+		redacted = defaultRedactedQueryParams
+	}
+
 	return &Middleware{
 		BaseMiddleware: middleware.NewBaseMiddleware("logging", middleware.PriorityLogging),
 		logger:         logger,
 		includeBody:    cfg.IncludeBody,
+		redactedParams: redacted,
 	}
 }
 
-// ProcessRequest logs the incoming request.
+// ProcessRequest logs the incoming request. Context values are added
+// onto the existing request context — never replacing it wholesale —
+// so values set by earlier middleware are preserved.
 func (m *Middleware) ProcessRequest(ctx context.Context, req *middleware.STACRequest) (*middleware.STACRequest, error) {
 	start := time.Now()
 
-	// Store start time in context for response logging
 	ctx = context.WithValue(ctx, startTimeKey, start)
-	req.Context = ctx
 
-	// Generate request ID if not present
 	requestID, ok := ctx.Value(middleware.RequestIDKey).(string)
 	if !ok || requestID == "" {
 		requestID = generateRequestID()
 		ctx = context.WithValue(ctx, middleware.RequestIDKey, requestID)
-		req.Context = ctx
 	}
+	req.Context = ctx
 
 	m.logger.Info("request_started",
 		zap.String("request_id", requestID),
 		zap.String("method", req.Method),
 		zap.String("path", req.URL.Path),
-		zap.String("query", req.URL.RawQuery),
+		zap.String("query", redactQuery(req.URL.RawQuery, m.redactedParams)),
 		zap.String("remote_addr", req.RemoteAddr),
 		zap.String("user_agent", req.UserAgent()),
 		zap.String("request_type", req.RequestType.String()),
@@ -129,5 +173,6 @@ func (m *Middleware) WithLogger(logger *zap.Logger) *Middleware {
 		BaseMiddleware: m.BaseMiddleware,
 		logger:         logger,
 		includeBody:    m.includeBody,
+		redactedParams: m.redactedParams,
 	}
 }

@@ -552,6 +552,32 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 	}
 }
 
+// TestEmbeddedOPAEnforcer_NoBundleDeniesByDefault is C-3: the synthesized
+// default policy used when no operator bundle is supplied must fail closed.
+func TestEmbeddedOPAEnforcer_NoBundleDeniesByDefault(t *testing.T) {
+	t.Parallel()
+
+	enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+		Name: "no-bundle",
+		// No PolicyPath, no PolicyPaths, no Modules.
+	})
+	if err != nil {
+		t.Fatalf("NewEmbeddedOPAEnforcer: %v", err)
+	}
+
+	decision, err := enforcer.Authorize(context.Background(), &AuthzInput{
+		Principal: &PrincipalInfo{ID: "anyone"},
+		Request:   &RequestInfo{Method: "GET", Path: "/collections/x"},
+		Resource:  &ResourceInfo{Type: "collection", Collection: "x"},
+	})
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatalf("default policy must deny when no operator bundle is supplied; got allowed=true reasons=%v", decision.Reasons)
+	}
+}
+
 func TestEmbeddedOPAEnforcer_Name(t *testing.T) {
 	t.Parallel()
 

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -430,21 +431,22 @@ func hasAnyRole(a, b []string) bool {
 	return false
 }
 
-// matchGlob performs simple glob matching (* wildcard).
+// matchGlob performs shell-style glob matching using path.Match
+// semantics ('*' matches a run of non-separator characters, '?' a
+// single char, '[range]' a class). Patterns containing the literal
+// separator '/' are still supported.
 func matchGlob(pattern, s string) bool {
 	if pattern == "*" {
 		return true
 	}
-	if !strings.Contains(pattern, "*") {
+	if !strings.ContainsAny(pattern, "*?[") {
 		return pattern == s
 	}
-
-	parts := strings.Split(pattern, "*")
-	if len(parts) == 2 {
-		return strings.HasPrefix(s, parts[0]) && strings.HasSuffix(s, parts[1])
+	ok, err := path.Match(pattern, s)
+	if err != nil {
+		return false
 	}
-
-	return false
+	return ok
 }
 
 // ValidatePolicies validates a set of policies.
