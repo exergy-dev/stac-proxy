@@ -4,6 +4,7 @@ package federation
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -255,38 +256,9 @@ func sha256Hash(data []byte) string {
 }
 
 func hmacSHA256(key, data []byte) []byte {
-	// Simple HMAC-SHA256 implementation
-	// In production, use crypto/hmac
-	h := sha256.New()
-
-	// Pad key
-	if len(key) > 64 {
-		h.Write(key)
-		key = h.Sum(nil)
-		h.Reset()
-	}
-	if len(key) < 64 {
-		padded := make([]byte, 64)
-		copy(padded, key)
-		key = padded
-	}
-
-	// Inner hash
-	ipad := make([]byte, 64)
-	opad := make([]byte, 64)
-	for i := 0; i < 64; i++ {
-		ipad[i] = key[i] ^ 0x36
-		opad[i] = key[i] ^ 0x5c
-	}
-
-	h.Write(ipad)
-	h.Write(data)
-	inner := h.Sum(nil)
-
-	h.Reset()
-	h.Write(opad)
-	h.Write(inner)
-	return h.Sum(nil)
+	m := hmac.New(sha256.New, key)
+	m.Write(data)
+	return m.Sum(nil)
 }
 
 func getSignatureKey(secretKey, dateStamp, region, service string) []byte {

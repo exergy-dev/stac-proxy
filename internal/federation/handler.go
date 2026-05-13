@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -338,23 +339,14 @@ func (h *Handler) handleGetCollection(ctx context.Context,
 	origins := h.router.RouteCollection(collectionID)
 
 	if len(origins) == 0 {
-		return &middleware.STACResponse{
-			StatusCode: http.StatusNotFound,
-			Body:       []byte(`{"code": "NotFound", "description": "Collection not found"}`),
-		}, nil
+		return notFoundResponse("Collection not found"), nil
 	}
 
 	// Try origins in priority order
 	for _, origin := range origins {
 		client := h.origins[origin.ID]
 
-		// Remove prefix if present
-		lookupID := collectionID
-		if origin.CollectionPrefix != "" {
-			if len(collectionID) > len(origin.CollectionPrefix) {
-				lookupID = collectionID[len(origin.CollectionPrefix):]
-			}
-		}
+		lookupID := strings.TrimPrefix(collectionID, origin.CollectionPrefix)
 
 		collection, err := client.GetCollection(ctx, lookupID)
 		if err != nil {
@@ -400,23 +392,14 @@ func (h *Handler) handleGetItem(ctx context.Context,
 	origins := h.router.RouteCollection(collectionID)
 
 	if len(origins) == 0 {
-		return &middleware.STACResponse{
-			StatusCode: http.StatusNotFound,
-			Body:       []byte(`{"code": "NotFound", "description": "Item not found"}`),
-		}, nil
+		return notFoundResponse("Item not found"), nil
 	}
 
 	// Try origins in priority order
 	for _, origin := range origins {
 		client := h.origins[origin.ID]
 
-		// Remove prefix if present
-		lookupCollID := collectionID
-		if origin.CollectionPrefix != "" {
-			if len(collectionID) > len(origin.CollectionPrefix) {
-				lookupCollID = collectionID[len(origin.CollectionPrefix):]
-			}
-		}
+		lookupCollID := strings.TrimPrefix(collectionID, origin.CollectionPrefix)
 
 		item, err := client.GetItem(ctx, lookupCollID, itemID)
 		if err != nil {
@@ -450,6 +433,15 @@ func (h *Handler) handleGetItem(ctx context.Context,
 		StatusCode: http.StatusNotFound,
 		Body:       []byte(`{"code": "NotFound", "description": "Item not found"}`),
 	}, nil
+}
+
+// notFoundResponse builds a uniform 404 STAC error response.
+func notFoundResponse(description string) *middleware.STACResponse {
+	return &middleware.STACResponse{
+		StatusCode: http.StatusNotFound,
+		Headers:    http.Header{"Content-Type": []string{"application/json"}},
+		Body:       []byte(`{"code": "NotFound", "description": "` + description + `"}`),
+	}
 }
 
 // handleGenericProxy proxies requests to the highest priority origin.

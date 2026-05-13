@@ -5,11 +5,9 @@ import (
 	"context"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
-	"github.com/yourorg/stac-proxy/internal/middleware/cache"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -38,80 +36,6 @@ func (m *MockAuthProvider) Authenticate(ctx context.Context, req *http.Request) 
 		return m.AuthFunc(ctx, req)
 	}
 	return nil, nil
-}
-
-// MockCacheStore is a mock cache store.
-type MockCacheStore struct {
-	Data      map[string]*cache.CacheEntry
-	GetCount  int
-	SetCount  int
-	DelCount  int
-	mu        sync.RWMutex
-	GetErr    error
-	SetErr    error
-}
-
-// NewMockCacheStore creates a new mock cache store.
-func NewMockCacheStore() *MockCacheStore {
-	return &MockCacheStore{
-		Data: make(map[string]*cache.CacheEntry),
-	}
-}
-
-// Get retrieves a cached entry.
-func (m *MockCacheStore) Get(ctx context.Context, key string) (*cache.CacheEntry, error) {
-	m.mu.Lock()
-	m.GetCount++
-	m.mu.Unlock()
-
-	if m.GetErr != nil {
-		return nil, m.GetErr
-	}
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.Data[key], nil
-}
-
-// Set stores a cache entry.
-func (m *MockCacheStore) Set(ctx context.Context, key string, entry *cache.CacheEntry, ttl time.Duration) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.SetCount++
-
-	if m.SetErr != nil {
-		return m.SetErr
-	}
-
-	m.Data[key] = entry
-	return nil
-}
-
-// Delete removes a cache entry.
-func (m *MockCacheStore) Delete(ctx context.Context, key string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.DelCount++
-	delete(m.Data, key)
-	return nil
-}
-
-// Clear removes all entries.
-func (m *MockCacheStore) Clear(ctx context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.Data = make(map[string]*cache.CacheEntry)
-	return nil
-}
-
-// Stats returns cache statistics.
-func (m *MockCacheStore) Stats() cache.CacheStats {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return cache.CacheStats{
-		Size: len(m.Data),
-		Hits: int64(m.GetCount),
-	}
 }
 
 // MockMiddleware is a mock middleware for testing chains.
@@ -220,50 +144,6 @@ func (m *MockHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	return nil, nil
 }
 
-// MockPageFetcher is a mock page fetcher for pagination tests.
-type MockPageFetcher struct {
-	Pages     map[string][][]*stac.Item // originID -> pages
-	PageIndex map[string]int            // current page index per origin
-	mu        sync.Mutex
-}
-
-// NewMockPageFetcher creates a new mock page fetcher.
-func NewMockPageFetcher() *MockPageFetcher {
-	return &MockPageFetcher{
-		Pages:     make(map[string][][]*stac.Item),
-		PageIndex: make(map[string]int),
-	}
-}
-
-// AddPages adds pages for an origin.
-func (m *MockPageFetcher) AddPages(originID string, pages ...[]*stac.Item) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.Pages[originID] = pages
-	m.PageIndex[originID] = 0
-}
-
-// FetchNextPage fetches the next page for an origin.
-func (m *MockPageFetcher) FetchNextPage(originID string) ([]*stac.Item, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	pages, ok := m.Pages[originID]
-	if !ok || len(pages) == 0 {
-		return nil, false, nil
-	}
-
-	idx := m.PageIndex[originID]
-	if idx >= len(pages) {
-		return nil, false, nil
-	}
-
-	page := pages[idx]
-	m.PageIndex[originID] = idx + 1
-	hasMore := idx+1 < len(pages)
-
-	return page, hasMore, nil
-}
 
 // OriginSearchResult for testing merger.
 type OriginSearchResult struct {

@@ -24,11 +24,10 @@ type Config struct {
 
 // ServerConfig contains HTTP server settings.
 type ServerConfig struct {
-	Host      string        `yaml:"host"`
-	Port      int           `yaml:"port"`
-	TLS       TLSConfig     `yaml:"tls"`
-	Timeouts  TimeoutConfig `yaml:"timeouts"`
-	HotReload bool          `yaml:"hot_reload"`
+	Host     string        `yaml:"host"`
+	Port     int           `yaml:"port"`
+	TLS      TLSConfig     `yaml:"tls"`
+	Timeouts TimeoutConfig `yaml:"timeouts"`
 	// MaxBodyBytes caps inbound request body size. 0 → default
 	// (1 MiB); negative disables the cap. Set higher when expecting
 	// large GeoJSON intersects polygons on /search.
