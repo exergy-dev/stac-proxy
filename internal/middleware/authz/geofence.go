@@ -11,13 +11,14 @@ import (
 )
 
 // Geofencer provides geospatial authorization.
+// Note: a *geo.SpatialIndex hook used to live here but was never queried;
+// it was removed as dead code. Re-introduce only if a real consumer appears.
 type Geofencer struct {
-	userRegions     map[string]*geo.Geometry // userID -> allowed region
-	roleRegions     map[string]*geo.Geometry // role -> allowed region
-	defaultRegion   *geo.Geometry
-	deniedRegions   []*geo.Geometry
-	filterMode      bool
-	spatialIndex    *geo.SpatialIndex
+	userRegions   map[string]*geo.Geometry // userID -> allowed region
+	roleRegions   map[string]*geo.Geometry // role -> allowed region
+	defaultRegion *geo.Geometry
+	deniedRegions []*geo.Geometry
+	filterMode    bool
 }
 
 // GeofencerConfig configures the geofencer.
@@ -33,10 +34,9 @@ type GeofencerConfig struct {
 // NewGeofencer creates a new geofencer.
 func NewGeofencer(cfg GeofencerConfig) (*Geofencer, error) {
 	g := &Geofencer{
-		userRegions:   make(map[string]*geo.Geometry),
-		roleRegions:   make(map[string]*geo.Geometry),
-		filterMode:    cfg.FilterMode,
-		spatialIndex:  geo.NewSpatialIndex(),
+		userRegions: make(map[string]*geo.Geometry),
+		roleRegions: make(map[string]*geo.Geometry),
+		filterMode:  cfg.FilterMode,
 	}
 
 	// Parse user regions

@@ -3,8 +3,6 @@ module github.com/yourorg/stac-proxy
 go 1.23
 
 require (
-	// Configuration
-	github.com/fsnotify/fsnotify v1.8.0
 	// Web framework
 	github.com/go-chi/chi/v5 v5.1.0
 
@@ -17,9 +15,6 @@ require (
 	// Observability
 	github.com/prometheus/client_golang v1.20.5
 
-	// Storage
-	github.com/redis/go-redis/v9 v9.7.0
-
 	// Utilities
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.25.0
@@ -30,6 +25,7 @@ require (
 require github.com/exergy-dev/go-cql2 v0.0.0-20260504204024-796456d5f243
 
 require (
+	github.com/exergy-dev/go-topology-suite v0.1.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/sync v0.10.0
 )
@@ -39,7 +35,6 @@ require (
 	github.com/agnivade/levenshtein v1.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

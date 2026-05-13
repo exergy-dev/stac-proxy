@@ -1649,30 +1649,8 @@ func TestComplexScenarios(t *testing.T) {
 	})
 }
 
-func TestGeofencerWithSpatialIndex(t *testing.T) {
-	t.Parallel()
-
-	config := GeofencerConfig{
-		DefaultRegion: map[string]interface{}{
-			"type":        "Polygon",
-			"coordinates": [][][]float64{{{-10, -10}, {10, -10}, {10, 10}, {-10, 10}, {-10, -10}}},
-		},
-	}
-
-	g, err := NewGeofencer(config)
-	if err != nil {
-		t.Fatalf("failed to create geofencer: %v", err)
-	}
-
-	if g.spatialIndex == nil {
-		t.Error("expected spatial index to be initialized")
-	}
-
-	// Verify spatial index is usable (though not used in current implementation)
-	if g.spatialIndex.Count() != 0 {
-		t.Errorf("expected empty spatial index, got count=%d", g.spatialIndex.Count())
-	}
-}
+// TestGeofencerWithSpatialIndex was removed alongside the dead
+// Geofencer.spatialIndex field (see comment in geofence.go).
 
 // Helper functions
 
