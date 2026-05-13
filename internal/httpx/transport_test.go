@@ -159,12 +159,12 @@ func TestRetryTransport_GivesUpAfterMaxRetries(t *testing.T) {
 		MaxBackoff:     5 * time.Millisecond,
 	})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
-	if err == nil {
-		resp.Body.Close()
-		t.Fatal("expected error after exhausting retries")
+	if err != nil {
+		t.Fatalf("retry exhaustion should surface the final response, not an error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "max retries exceeded") {
-		t.Fatalf("err = %v, want max-retries wrapper", err)
+	resp.Body.Close()
+	if resp.StatusCode != 503 {
+		t.Fatalf("final status = %d, want 503", resp.StatusCode)
 	}
 	if int(f.attempt.Load()) != 3 {
 		t.Fatalf("attempts = %d, want 3", f.attempt.Load())

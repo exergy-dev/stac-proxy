@@ -1076,6 +1076,8 @@ func TestOriginClient_Retry(t *testing.T) {
 			wantAttempts: 3,
 		},
 		{
+			// Retries exhausted: caller sees the final upstream response
+			// (502 here) rather than a synthetic error.
 			name: "retry on 502 but always fails",
 			retryPolicy: &RetryPolicy{
 				MaxRetries:     2,
@@ -1087,7 +1089,7 @@ func TestOriginClient_Retry(t *testing.T) {
 				*attempt++
 				return http.StatusBadGateway, nil
 			},
-			wantErr:      true,
+			wantErr:      false,
 			wantAttempts: 3, // initial + 2 retries
 		},
 		{
@@ -2025,10 +2027,13 @@ func TestOriginClient_Retry_BackoffProgression(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err = client.DoRequest(ctx, "GET", "/test", nil)
-
-	if err == nil {
-		t.Error("expected error but got nil")
+	resp, err := client.DoRequest(ctx, "GET", "/test", nil)
+	if err != nil {
+		t.Fatalf("DoRequest: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("final status = %d, want 502 after retry exhaustion", resp.StatusCode)
 	}
 
 	// Verify exponential backoff
