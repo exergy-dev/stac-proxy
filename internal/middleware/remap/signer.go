@@ -79,12 +79,25 @@ func (s *HMACSigner) snapshotSecrets() [][]byte {
 // signingMessage builds the canonical bytes the HMAC covers. Host, path
 // and query (sorted, exp included) are all bound so an attacker cannot
 // swap query parameters or hostnames while keeping the signature.
+//
+// Side-effect-free contract (M-remap-3): the caller's url.Values is
+// NOT mutated. The previous implementation deleted "sig" and reset
+// "exp" on the passed map, which silently corrupted the caller's
+// query (e.g. the verification path lost the original sig and could
+// not log/diagnose; the sign path was lucky because it then re-set
+// the values). Internally we work on a deep clone.
 func signingMessage(host, path string, q url.Values, expiry int64) string {
+	clone := make(url.Values, len(q))
+	for k, vs := range q {
+		// Reuse the slice header is fine — we only call Del/Set,
+		// never append to a shared slice.
+		clone[k] = append([]string(nil), vs...)
+	}
 	// Remove the signature itself before canonicalizing; everything
 	// else, including the expiry, is part of the signed input.
-	q.Del("sig")
-	q.Set("exp", fmt.Sprintf("%d", expiry))
-	return strings.ToLower(host) + "\n" + path + "\n" + q.Encode()
+	clone.Del("sig")
+	clone.Set("exp", fmt.Sprintf("%d", expiry))
+	return strings.ToLower(host) + "\n" + path + "\n" + clone.Encode()
 }
 
 // Sign adds an HMAC signature and expiry to the URL using the primary

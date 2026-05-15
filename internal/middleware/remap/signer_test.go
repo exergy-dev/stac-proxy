@@ -66,6 +66,47 @@ func TestNewSigner_RejectsCloudFrontAndS3(t *testing.T) {
 	}
 }
 
+// TestSigningMessage_DoesNotMutateInput (M-remap-3): signingMessage
+// historically called Del("sig") and Set("exp", …) on the caller's
+// url.Values map. That behavior was a footgun — callers that wanted
+// to log/inspect the original query after signing got a corrupted
+// view. signingMessage now operates on a deep clone.
+func TestSigningMessage_DoesNotMutateInput(t *testing.T) {
+	in := url.Values{
+		"sig":  {"caller-original-sig"},
+		"exp":  {"100"},
+		"role": {"read"},
+		"foo":  {"bar", "baz"},
+	}
+	// Snapshot the values before the call.
+	before := map[string][]string{}
+	for k, vs := range in {
+		before[k] = append([]string(nil), vs...)
+	}
+
+	_ = signingMessage("Host.Example", "/p", in, 999)
+
+	for k, vs := range before {
+		got, ok := in[k]
+		if !ok {
+			t.Errorf("signingMessage deleted caller's key %q", k)
+			continue
+		}
+		if len(got) != len(vs) {
+			t.Errorf("key %q: len changed (was %d, now %d)", k, len(vs), len(got))
+			continue
+		}
+		for i := range vs {
+			if got[i] != vs[i] {
+				t.Errorf("key %q[%d]: was %q, now %q", k, i, vs[i], got[i])
+			}
+		}
+	}
+	if len(in) != len(before) {
+		t.Errorf("signingMessage added/removed keys: was %d, now %d", len(before), len(in))
+	}
+}
+
 // TestHMACSigner_RotationVerifiesOldSigs (M-remap-2): after rotating
 // a new primary key in, signatures issued under the old key continue
 // to verify and new signatures use the new key. This is the property
