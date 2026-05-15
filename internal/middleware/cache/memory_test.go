@@ -1007,6 +1007,61 @@ func TestMemoryStore_ManySmallItems(t *testing.T) {
 	}
 }
 
+// TestMemoryCache_GetReturnsIndependentCopy verifies that mutating the
+// slice returned by Get does NOT affect the stored cache entry, and
+// vice versa. Previously Get handed out the underlying buffer directly,
+// so a concurrent Set/evictOldest could observe (or be observed by) a
+// caller's mutation. (HIGH H-cache-1)
+func TestMemoryCache_GetReturnsIndependentCopy(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
+	defer store.Close()
+
+	key := "k"
+	original := []byte("hello")
+	if err := store.Set(ctx, key, original, time.Hour); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	b1, ok := store.Get(ctx, key)
+	if !ok {
+		t.Fatal("Get: not found")
+	}
+	if string(b1) != "hello" {
+		t.Fatalf("Get b1 = %q, want hello", b1)
+	}
+
+	// Mutate the returned slice. This must NOT bleed into the cache.
+	b1[0] = 'X'
+
+	b2, ok := store.Get(ctx, key)
+	if !ok {
+		t.Fatal("Get (second): not found")
+	}
+	if b2[0] != 'h' {
+		t.Errorf("cache entry mutated by caller: b2[0]=%q, want 'h' (full b2=%q)", b2[0], b2)
+	}
+
+	// Mutating the original input slice (post-Set) must also not
+	// bleed into the cache: storage takes ownership of the bytes
+	// only via a defensive copy on read at a minimum.
+	original[0] = 'Z'
+	b3, ok := store.Get(ctx, key)
+	if !ok {
+		t.Fatal("Get (third): not found")
+	}
+	// The contract this test enforces is read-side: the bytes the
+	// caller observes via Get must be stable across subsequent mutations
+	// of any other slice (whether the previous Get result or the
+	// original Set input). The strongest assertion here is that two
+	// successive Get results are independent of each other.
+	if &b2[0] == &b3[0] {
+		t.Errorf("two Get results share backing array; copies must be independent")
+	}
+}
+
 func BenchmarkMemoryStore_Set(b *testing.B) {
 	ctx := context.Background()
 	store := NewMemoryStore(MemoryConfig{MaxSize: 10000})

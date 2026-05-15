@@ -2,6 +2,7 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"time"
@@ -49,6 +50,12 @@ func NewMemoryStore(cfg MemoryConfig) *MemoryStore {
 }
 
 // Get retrieves a value from the cache.
+//
+// CONTRACT: the returned slice is an independent copy of the stored
+// bytes. Callers may mutate or retain it freely without affecting the
+// cache entry. This is required because the underlying buffer can
+// otherwise be mutated by a concurrent Set or evictOldest while a
+// reader still holds the slice (HIGH H-cache-1).
 func (s *MemoryStore) Get(ctx context.Context, key string) ([]byte, bool) {
 	s.mu.RLock()
 	item, exists := s.items[key]
@@ -73,7 +80,9 @@ func (s *MemoryStore) Get(ctx context.Context, key string) ([]byte, bool) {
 	s.moveToEnd(key)
 	s.mu.Unlock()
 
-	return item.value, true
+	// Return an independent copy so subsequent Set/evict cannot mutate
+	// what the caller is holding (and vice versa).
+	return bytes.Clone(item.value), true
 }
 
 // Set stores a value in the cache.
