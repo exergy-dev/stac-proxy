@@ -119,6 +119,19 @@ func (s *Server) Addr() string {
 }
 
 // loadTLSConfig loads TLS configuration from files.
+//
+// Cipher selection: we deliberately do NOT set CipherSuites. Go's
+// crypto/tls default selection is curated by the security team across
+// releases (golang/go#41476), tracks deprecations, and prefers
+// AEAD-with-PFS suites in the order recommended for the runtime CPU.
+// A hand-picked list inevitably drifts: the previous explicit list
+// excluded ChaCha20-Poly1305 (preferred on ARM64) and is irrelevant
+// for TLS 1.3 (where Go always picks the AEAD set automatically).
+// Enforcing MinVersion = TLS 1.2 is sufficient — anything below was
+// already off the table.
+//
+// NextProtos: required for HTTP/2 negotiation via ALPN. Without it,
+// clients fall back to HTTP/1.1 even when both ends support h2.
 func loadTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 	if err != nil {
@@ -128,11 +141,6 @@ func loadTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
-		CipherSuites: []uint16{
-			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-		},
+		NextProtos:   []string{"h2", "http/1.1"},
 	}, nil
 }
