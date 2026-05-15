@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,6 +19,11 @@ import (
 type JWKSClientConfig struct {
 	HTTPClient *http.Client
 	TTL        time.Duration
+	// HardTTL is the maximum age the cache will be served past, even
+	// during issuer outage. Beyond HardTTL the entries are treated as
+	// missing. Default: 24h. HardTTL must be ≥ TTL; if smaller, it is
+	// raised to TTL.
+	HardTTL time.Duration
 	// AllowInsecureHTTP bypasses the https-only check. Test-only —
 	// production deployments MUST use https://.
 	AllowInsecureHTTP bool
@@ -32,8 +38,22 @@ type JWKSClientConfig struct {
 	// 60s. Invalidated immediately on any successful refresh so key
 	// rotation isn't delayed.
 	NegativeCacheTTL time.Duration
+	// Logger receives structured warnings for individual JWK parse
+	// failures (with jwk_kid / jwk_use / jwk_kty attributes) and for
+	// background refresh failures during stale-while-revalidate. nil →
+	// slog.Default().
+	Logger *slog.Logger
 	// now is an injectable clock for tests. nil → time.Now.
 	now func() time.Time
+}
+
+// cachedKey holds a parsed verification key together with the algorithm
+// it was published with. Binding alg to the cached entry lets callers
+// reject tokens that claim a *different* alg for the same kid (an
+// attacker who knows the public key forging an unexpected algorithm).
+type cachedKey struct {
+	key interface{}
+	alg string
 }
 
 // JWKSClient fetches and caches a JWKS (JSON Web Key Set) document
@@ -41,7 +61,10 @@ type JWKSClientConfig struct {
 //
 //   - Initial Key() call lazily fetches and caches the document.
 //   - Cache lifetime is `ttl` (default 1 hour); after expiry the next
-//     Key() triggers a refresh.
+//     Key() call returns the *last good* keys and triggers a background
+//     refresh (stale-while-revalidate). On IdP outage requests continue
+//     to be served from the stale cache until HardTTL elapses, at which
+//     point the entries are treated as missing.
 //   - A cache miss for a known-good URL also forces a refresh — this
 //     is the key-rotation path (issuer publishes a new kid before any
 //     token uses it).
@@ -51,17 +74,21 @@ type JWKSClient struct {
 	url   string
 	http  *http.Client
 	ttl   time.Duration
+	hard  time.Duration
 	group singleflight.Group
 
 	// minRefreshInterval and negCacheTTL throttle the "unknown kid →
 	// refresh" path. See JWKSClientConfig for rationale.
 	minRefreshInterval time.Duration
 	negCacheTTL        time.Duration
+	logger             *slog.Logger
 	now                func() time.Time
 
-	mu     sync.RWMutex
-	keys   map[string]interface{}
-	expiry time.Time
+	mu          sync.RWMutex
+	keys        map[string]cachedKey
+	softExpiry  time.Time // re-fetch in background after this
+	hardExpiry  time.Time // discard entirely after this
+	bgRefresh   bool      // a background refresh is in flight
 	// lastRefreshAttempt tracks when refresh() last ran (success OR
 	// failure), so unknown-kid lookups can short-circuit until the
 	// floor elapses.
@@ -96,6 +123,13 @@ func NewJWKSClientFromConfig(url string, cfg JWKSClientConfig) (*JWKSClient, err
 	if ttl <= 0 {
 		ttl = time.Hour
 	}
+	hard := cfg.HardTTL
+	if hard <= 0 {
+		hard = 24 * time.Hour
+	}
+	if hard < ttl {
+		hard = ttl
+	}
 	minRefresh := cfg.MinRefreshInterval
 	if minRefresh <= 0 {
 		minRefresh = 30 * time.Second
@@ -103,6 +137,10 @@ func NewJWKSClientFromConfig(url string, cfg JWKSClientConfig) (*JWKSClient, err
 	negTTL := cfg.NegativeCacheTTL
 	if negTTL <= 0 {
 		negTTL = 60 * time.Second
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 	now := cfg.now
 	if now == nil {
@@ -112,17 +150,31 @@ func NewJWKSClientFromConfig(url string, cfg JWKSClientConfig) (*JWKSClient, err
 		url:                url,
 		http:               httpClient,
 		ttl:                ttl,
+		hard:               hard,
 		minRefreshInterval: minRefresh,
 		negCacheTTL:        negTTL,
+		logger:             logger,
 		now:                now,
-		keys:               map[string]interface{}{},
+		keys:               map[string]cachedKey{},
 		negKids:            map[string]time.Time{},
 	}, nil
 }
 
-// Key returns the public key for the given `kid`, fetching and
-// caching the JWKS document as needed. Errors propagate from the
-// underlying HTTP call or JWK parsing.
+// Key returns the public key for the given `kid`, fetching and caching
+// the JWKS document as needed. It is a thin wrapper around
+// KeyWithAlg that drops the bound algorithm for callers that don't
+// need it. Prefer KeyWithAlg in new code so the token's alg can be
+// cross-checked against the JWK's declared alg (defense against
+// alg-confusion forgeries that present a known kid with a different
+// algorithm).
+func (c *JWKSClient) Key(ctx context.Context, kid string) (interface{}, error) {
+	k, _, err := c.KeyWithAlg(ctx, kid)
+	return k, err
+}
+
+// KeyWithAlg returns the verification key and the algorithm bound to
+// it at JWKS-publish time. Errors propagate from the underlying HTTP
+// call or JWK parsing.
 //
 // To prevent unknown-kid floods (an attacker streams tokens with random
 // kid values to force unbounded JWKS fetches against the IdP), this
@@ -133,31 +185,86 @@ func NewJWKSClientFromConfig(url string, cfg JWKSClientConfig) (*JWKSClient, err
 //   - a short negative cache: an unknown kid is cached for
 //     NegativeCacheTTL. The negative cache is cleared on any
 //     successful refresh so genuine key rotation isn't delayed.
-func (c *JWKSClient) Key(ctx context.Context, kid string) (interface{}, error) {
-	if k, ok := c.lookup(kid); ok {
-		return k, nil
+//
+// Stale-while-revalidate: when the soft TTL has elapsed but the hard
+// TTL has not, the cached key is returned immediately and a background
+// refresh is kicked off so the next caller sees fresh data without the
+// current request blocking on the issuer. If the issuer is down we
+// keep serving stale until HardTTL elapses.
+func (c *JWKSClient) KeyWithAlg(ctx context.Context, kid string) (interface{}, string, error) {
+	if entry, state := c.lookup(kid); state != lookupMiss {
+		if state == lookupStale {
+			c.maybeKickBackgroundRefresh()
+		}
+		return entry.key, entry.alg, nil
 	}
 	if c.shouldShortCircuit(kid) {
-		return nil, fmt.Errorf("jwks: kid %q not present (negative-cached)", kid)
+		return nil, "", fmt.Errorf("jwks: kid %q not present (negative-cached)", kid)
 	}
 	if err := c.refresh(ctx); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if k, ok := c.lookup(kid); ok {
-		return k, nil
+	if entry, state := c.lookup(kid); state != lookupMiss {
+		return entry.key, entry.alg, nil
 	}
 	c.markNegative(kid)
-	return nil, fmt.Errorf("jwks: kid %q not present after refresh", kid)
+	return nil, "", fmt.Errorf("jwks: kid %q not present after refresh", kid)
 }
 
-func (c *JWKSClient) lookup(kid string) (interface{}, bool) {
+// lookupState distinguishes a fresh hit (within soft TTL), a stale-but-
+// servable hit (between soft and hard TTL), and a miss (kid absent or
+// past hard TTL).
+type lookupState int
+
+const (
+	lookupMiss lookupState = iota
+	lookupFresh
+	lookupStale
+)
+
+func (c *JWKSClient) lookup(kid string) (cachedKey, lookupState) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.now().After(c.expiry) {
-		return nil, false
+	now := c.now()
+	if !c.hardExpiry.IsZero() && now.After(c.hardExpiry) {
+		return cachedKey{}, lookupMiss
 	}
 	k, ok := c.keys[kid]
-	return k, ok
+	if !ok {
+		return cachedKey{}, lookupMiss
+	}
+	if c.softExpiry.IsZero() || now.After(c.softExpiry) {
+		return k, lookupStale
+	}
+	return k, lookupFresh
+}
+
+// maybeKickBackgroundRefresh launches a non-blocking refresh if one
+// isn't already in flight. The refresh runs against context.Background
+// so it isn't cancelled when the originating request finishes; the HTTP
+// client's own timeout still bounds it.
+func (c *JWKSClient) maybeKickBackgroundRefresh() {
+	c.mu.Lock()
+	if c.bgRefresh {
+		c.mu.Unlock()
+		return
+	}
+	c.bgRefresh = true
+	c.mu.Unlock()
+
+	go func() {
+		defer func() {
+			c.mu.Lock()
+			c.bgRefresh = false
+			c.mu.Unlock()
+		}()
+		if err := c.refresh(context.Background()); err != nil {
+			c.logger.Warn("jwks: background refresh failed; serving stale",
+				"url", c.url,
+				"error", err,
+			)
+		}
+	}()
 }
 
 // shouldShortCircuit returns true when an unknown-kid lookup must NOT
@@ -210,17 +317,41 @@ func (c *JWKSClient) refresh(ctx context.Context) error {
 		if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 			return nil, fmt.Errorf("jwks: decode: %w", err)
 		}
-		out := make(map[string]interface{}, len(doc.Keys))
+		out := make(map[string]cachedKey, len(doc.Keys))
 		for _, jwk := range doc.Keys {
+			// Skip non-signing keys. RFC 7517 §4.2: `use` may be
+			// absent (treated as multi-purpose) or `sig` (signing).
+			// Anything else — notably `enc` — must NOT be admitted to
+			// the verification cache; an encryption key being used to
+			// verify a signature is a credential-substitution risk.
+			if jwk.Use != "" && jwk.Use != "sig" {
+				c.logger.Warn("jwks: skipping non-signing key",
+					"jwk_kid", jwk.Kid,
+					"jwk_use", jwk.Use,
+					"jwk_kty", jwk.Kty,
+				)
+				continue
+			}
 			key, err := parseJWK(jwk)
 			if err != nil {
-				continue // skip individual bad keys; the rest of the set is still usable
+				// Log and skip individual bad keys; the rest of the
+				// set is still usable. Structured fields let operators
+				// pinpoint a misbehaving IdP entry.
+				c.logger.Warn("jwks: skipping unparseable key",
+					"jwk_kid", jwk.Kid,
+					"jwk_use", jwk.Use,
+					"jwk_kty", jwk.Kty,
+					"error", err,
+				)
+				continue
 			}
-			out[jwk.Kid] = key
+			out[jwk.Kid] = cachedKey{key: key, alg: jwk.Alg}
 		}
 		c.mu.Lock()
 		c.keys = out
-		c.expiry = c.now().Add(c.ttl)
+		now := c.now()
+		c.softExpiry = now.Add(c.ttl)
+		c.hardExpiry = now.Add(c.hard)
 		// A successful refresh clears the negative cache: a kid that
 		// was absent before may have just been published (rotation).
 		c.negKids = map[string]time.Time{}

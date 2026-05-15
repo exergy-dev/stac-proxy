@@ -334,6 +334,127 @@ func TestJWKS_NegativeCacheClearedOnSuccessfulRefresh(t *testing.T) {
 	}
 }
 
+// TestJWKS_StaleWhileRevalidate_KeepsServingDuringOutage verifies the
+// stale-while-revalidate contract (M-auth-1): once the soft TTL has
+// elapsed, the cached key is still returned without blocking on the
+// upstream, and a background refresh is kicked off. On IdP outage the
+// cached key is served until the hard TTL elapses.
+func TestJWKS_StaleWhileRevalidate_KeepsServingDuringOutage(t *testing.T) {
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+
+	var fail atomic.Bool
+	srv, hits := newJWKSServer(t, func() []byte {
+		if fail.Load() {
+			// Simulate IdP outage. We can't return an error from the
+			// test handler easily; instead we return a 500 status by
+			// signalling via panic-recovery. Wrap below.
+			return nil
+		}
+		return jwksJSON(struct {
+			kid string
+			pub *rsa.PublicKey
+		}{"k1", &priv.PublicKey})
+	})
+	// Replace the test server's handler so we can return 500 during
+	// the "outage" phase.
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(hits, 1)
+		if fail.Load() {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(jwksJSON(struct {
+			kid string
+			pub *rsa.PublicKey
+		}{"k1", &priv.PublicKey}))
+	})
+
+	// Injectable clock so we can fast-forward past the soft TTL
+	// without sleeping in real time.
+	now := time.Now()
+	mu := sync.Mutex{}
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		now = now.Add(d)
+		mu.Unlock()
+	}
+
+	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
+		TTL:                time.Minute,           // soft
+		HardTTL:            10 * time.Minute,      // hard
+		AllowInsecureHTTP:  true,
+		MinRefreshInterval: time.Nanosecond, // not relevant to this test
+	})
+	if err != nil {
+		t.Fatalf("NewJWKSClient: %v", err)
+	}
+	c.now = clock
+
+	ctx := context.Background()
+
+	// Initial fetch populates the cache.
+	if _, err := c.Key(ctx, "k1"); err != nil {
+		t.Fatalf("initial fetch: %v", err)
+	}
+	initialHits := atomic.LoadInt64(hits)
+	if initialHits != 1 {
+		t.Fatalf("want 1 initial GET, got %d", initialHits)
+	}
+
+	// Now break the upstream and advance past the soft TTL.
+	fail.Store(true)
+	advance(2 * time.Minute)
+
+	// Foreground call must not block on the upstream. We measure
+	// elapsed time as a sanity check — should be effectively
+	// instantaneous (microseconds, not seconds).
+	start := time.Now()
+	got, err := c.Key(ctx, "k1")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("stale fetch: %v", err)
+	}
+	if got == nil {
+		t.Fatal("want stale-cached key, got nil")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("stale fetch should not block on upstream; took %v", elapsed)
+	}
+
+	// The background refresh should have been kicked off; wait briefly
+	// for it to attempt the upstream and bump the hits counter.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(hits) > initialHits {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if atomic.LoadInt64(hits) <= initialHits {
+		t.Fatalf("background refresh did not query upstream; hits stayed at %d", initialHits)
+	}
+
+	// Even after the failed background refresh, subsequent foreground
+	// calls (still under HardTTL) keep returning the cached key.
+	if _, err := c.Key(ctx, "k1"); err != nil {
+		t.Fatalf("post-refresh stale fetch: %v", err)
+	}
+
+	// Past the hard TTL, the entries are treated as missing. With the
+	// upstream still failing, the foreground refresh now surfaces an
+	// error.
+	advance(15 * time.Minute)
+	if _, err := c.Key(ctx, "k1"); err == nil {
+		t.Fatal("want error past HardTTL with failing upstream")
+	}
+}
+
 // silence unused-import vet checks; only here for future debug taps.
 var _ = httputil.DumpRequest
 var _ = fmt.Sprintf
