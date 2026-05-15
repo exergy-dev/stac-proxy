@@ -70,13 +70,19 @@ type bucket struct {
 }
 
 // NewSlidingWindowLimiter creates a TokenBucketLimiter with the
-// default LRU cap (defaultMaxEntries). The historical constructor
-// name is retained so existing wiring compiles unchanged; callers
-// that wanted strict sliding-window semantics should evaluate
-// whether the token-bucket equivalent (same sustained rate, burst-shaped
-// transient capacity) is acceptable -- for the common "Requests per
-// Window" quota the visible behavior under typical load is identical.
+// default LRU cap (defaultMaxEntries).
+//
+// Deprecated: the implementation is a token-bucket limiter despite
+// the historical name. Use NewTokenBucketLimiter(defaultMaxEntries)
+// or the no-arg NewDefaultTokenBucketLimiter convenience. This alias
+// is retained so existing wiring compiles unchanged.
 func NewSlidingWindowLimiter() *TokenBucketLimiter {
+	return NewDefaultTokenBucketLimiter()
+}
+
+// NewDefaultTokenBucketLimiter constructs a TokenBucketLimiter with
+// the default LRU cap. Equivalent to NewTokenBucketLimiter(defaultMaxEntries).
+func NewDefaultTokenBucketLimiter() *TokenBucketLimiter {
 	return NewTokenBucketLimiter(defaultMaxEntries)
 }
 

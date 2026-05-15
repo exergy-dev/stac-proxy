@@ -7,6 +7,7 @@ package ratelimit
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -36,7 +37,7 @@ type Config struct {
 func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	limiter := cfg.Limiter
 	if limiter == nil {
-		limiter = NewSlidingWindowLimiter()
+		limiter = NewDefaultTokenBucketLimiter()
 	}
 	keyFunc := cfg.KeyFunc
 	if keyFunc == nil {
@@ -76,7 +77,16 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			// clientIPMiddleware).
 			clientIP := middleware.ClientIPFromContext(ctx)
 			if clientIP == "" {
-				clientIP = r.RemoteAddr
+				// r.RemoteAddr carries "host:port"; the ephemeral
+				// source port differs per TCP connection so each
+				// would land in its own bucket and effectively
+				// disable rate limiting. Strip the port so all
+				// requests from a given host share one bucket.
+				if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+					clientIP = host
+				} else {
+					clientIP = r.RemoteAddr
+				}
 			}
 			key := keyFunc(ctx, principalID, clientIP)
 			quota := quotaFunc(roles, cfg.DefaultQuota)

@@ -294,3 +294,32 @@ func TestSlidingWindowLimiter_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestKeyFunc_StripsRemoteAddrPort verifies that when the derived
+// client IP is not in context, the fallback strips the ephemeral
+// source port from r.RemoteAddr so requests from the same host
+// share one bucket regardless of TCP connection identity.
+func TestKeyFunc_StripsRemoteAddrPort(t *testing.T) {
+	t.Parallel()
+
+	mock := &MockLimiter{}
+	mw := NewHTTPMiddleware(Config{
+		Limiter:      mock,
+		DefaultQuota: Quota{Requests: 100, Window: time.Minute},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	for _, addr := range []string{"203.0.113.5:11111", "203.0.113.5:22222"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = addr
+		mw.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.calls) != 2 {
+		t.Fatalf("limiter calls = %d, want 2", len(mock.calls))
+	}
+	if mock.calls[0].Key != mock.calls[1].Key {
+		t.Errorf("ports leaked into key: %q vs %q", mock.calls[0].Key, mock.calls[1].Key)
+	}
+}
