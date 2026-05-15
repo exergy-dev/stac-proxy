@@ -119,6 +119,63 @@ func TestLimiter_DefaultMaxEntries(t *testing.T) {
 	}
 }
 
+// TestLimiter_QuotaChangeRetainsRemainingTokens (M-ratelimit-1):
+// when the per-key quota changes (e.g., role change, config edit,
+// non-deterministic QuotaFunc), the new bucket carries the *remaining*
+// fraction of tokens proportionally rather than being reset to the
+// new burst. Otherwise an attacker (or an unstable role lookup) could
+// flip the quota every request and never accumulate throttle pressure.
+func TestLimiter_QuotaChangeRetainsRemainingTokens(t *testing.T) {
+	lim := NewTokenBucketLimiter(10)
+	defer lim.Stop()
+
+	ctx := context.Background()
+	qA := Quota{Requests: 100, Window: time.Minute, Burst: 10}
+
+	// Consume 80% of A's tokens (8 of 10).
+	for i := 0; i < 8; i++ {
+		allowed, _, err := lim.Allow(ctx, "k", qA)
+		if err != nil {
+			t.Fatalf("Allow %d: %v", i, err)
+		}
+		if !allowed {
+			t.Fatalf("Allow %d should be allowed (under quota)", i)
+		}
+	}
+
+	// Now switch quota: same per-second rate but a smaller burst.
+	qB := Quota{Requests: 100, Window: time.Minute, Burst: 4}
+	allowed, _, err := lim.Allow(ctx, "k", qB)
+	if err != nil {
+		t.Fatalf("Allow after quota change: %v", err)
+	}
+
+	// After the swap the bucket had ~2/10 of tokens left under qA;
+	// scaled to qB's burst of 4 that's ~0.8 tokens carried, then
+	// reduced by the just-served request to ~-0.2 (slightly below 0).
+	// We cannot compare exactly because rate refills tokens, but we
+	// CAN assert the bucket is NOT full: the next several requests
+	// must be denied (or at least not all allowed) — a reset to a
+	// fresh burst-of-4 bucket would let a subsequent burst of 4
+	// through unimpeded.
+	lim.mu.Lock()
+	tokensAfter := lim.buckets["k"].limiter.TokensAt(time.Now())
+	burstAfter := lim.buckets["k"].limiter.Burst()
+	lim.mu.Unlock()
+
+	if burstAfter != 4 {
+		t.Fatalf("rebuilt bucket burst: want 4, got %d", burstAfter)
+	}
+	// Carried fraction was 0.2 (2/10) -> 0.2 * 4 = 0.8 tokens.
+	// We then consumed 1 token in the Allow above, so expect <= 0.
+	// At minimum the bucket must NOT be full (4 tokens) — that would
+	// indicate a reset.
+	if tokensAfter > 1.0 {
+		t.Errorf("tokens after quota change = %.3f; expected <= 1 (carried fraction), reset would have given 4 (minus 1 consumed)", tokensAfter)
+	}
+	_ = allowed
+}
+
 // TestLimiter_CleanupCutoffUsesWindow: a bucket whose lastSeen
 // predates 2*Window should be evicted by cleanup, not the
 // previously-hardcoded 2-hour cutoff.

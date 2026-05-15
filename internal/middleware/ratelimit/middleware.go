@@ -8,6 +8,7 @@ package ratelimit
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
@@ -53,7 +54,20 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			var roles []string
 			if p := auth.PrincipalFromContext(ctx); p != nil {
 				principalID = p.ID
-				roles = p.Roles
+				// M-ratelimit-1: principal.Roles iteration order is
+				// not guaranteed (the upstream slice may be backed by
+				// a map iteration). A non-deterministic QuotaFunc
+				// (e.g. RoleBasedQuotaFunc, which picks the first
+				// matching role) would then hand the same caller a
+				// different Quota across requests, churning the
+				// bucket and effectively disabling rate limiting.
+				// Sort a copy here so the lookup is stable per
+				// principal.
+				if len(p.Roles) > 0 {
+					roles = make([]string, len(p.Roles))
+					copy(roles, p.Roles)
+					sort.Strings(roles)
+				}
 			}
 			// Prefer the derived client IP attached by the server's
 			// trusted-proxy aware middleware. Falls back to

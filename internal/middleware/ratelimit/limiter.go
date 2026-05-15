@@ -163,9 +163,34 @@ func (l *TokenBucketLimiter) getOrCreate(key string, quota Quota) *bucket {
 	}
 
 	// Either new key, or existing key with a changed quota shape.
+	// M-ratelimit-1: when the quota changes for an existing key, carry
+	// the *remaining* tokens across to the rebuilt bucket scaled by the
+	// burst ratio rather than dropping the old bucket entirely. The
+	// previous reset-on-change behavior let a caller flip back and
+	// forth between two quotas (a non-deterministic QuotaFunc, an
+	// edited config) and never accumulate any throttle pressure. If
+	// the new quota is *smaller* the carried tokens are capped at the
+	// new burst, so the bucket cannot become permanently over-issued;
+	// in the opposite direction the caller simply gets the headroom
+	// the new (larger) quota implies.
+	var carryTokens float64 = -1 // sentinel: no carry
 	if existing, ok := l.buckets[key]; ok {
-		// Quota shape changed: drop the old bucket so the rebuilt one
-		// reflects the new limits. The LRU element is reused below.
+		now := time.Now()
+		oldBurst := existing.quota.Burst
+		if oldBurst == 0 {
+			oldBurst = existing.quota.Requests
+		}
+		oldTokens := existing.limiter.TokensAt(now)
+		if oldBurst > 0 {
+			ratio := oldTokens / float64(oldBurst)
+			if ratio < 0 {
+				ratio = 0
+			}
+			if ratio > 1 {
+				ratio = 1
+			}
+			carryTokens = ratio * float64(burst)
+		}
 		if existing.elem != nil {
 			l.lru.Remove(existing.elem)
 		}
@@ -181,9 +206,28 @@ func (l *TokenBucketLimiter) getOrCreate(key string, quota Quota) *bucket {
 	}
 
 	limit := rate.Limit(float64(quota.Requests) / quota.Window.Seconds())
+	rl := rate.NewLimiter(limit, burst)
+	if carryTokens >= 0 {
+		// rate.Limiter starts full at `burst` tokens; deduct the
+		// difference so the rebuilt bucket holds exactly `carryTokens`.
+		drain := float64(burst) - carryTokens
+		if drain > 0 {
+			// AllowN-style consumption that bypasses time-based
+			// refilling: ReserveN with the carry-deficit, then
+			// immediately let the reservation stand (it adjusts the
+			// internal token state to reflect the consumption).
+			now := time.Now()
+			res := rl.ReserveN(now, int(drain))
+			if !res.OK() {
+				// drain > burst — shouldn't happen given the cap
+				// above, but be defensive.
+				_ = res
+			}
+		}
+	}
 	elem := l.lru.PushFront(key)
 	b := &bucket{
-		limiter:  rate.NewLimiter(limit, burst),
+		limiter:  rl,
 		quota:    quota,
 		lastSeen: time.Now(),
 		elem:     elem,
