@@ -6,7 +6,10 @@ package logging
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -34,6 +37,12 @@ type Config struct {
 	// query-parameter names whose values are redacted in logs.
 	// Nil/empty falls back to defaultRedactedQueryParams.
 	RedactedQueryParams []string
+	// LogRawUserAgent, when true, emits the raw User-Agent string in
+	// logs. Default false: the UA is sha256-hashed (8-char prefix) so
+	// operators can still bucket by client without retaining the
+	// fingerprintable original. Set true for debugging where the
+	// raw UA is required.
+	LogRawUserAgent bool
 }
 
 // NewHTTPMiddleware returns chi-compatible middleware that:
@@ -58,13 +67,23 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			}
 			ctx := context.WithValue(r.Context(), middleware.RequestIDKey, requestID)
 
+			ua := r.UserAgent()
+			if !cfg.LogRawUserAgent {
+				ua = hashShort(ua)
+			}
+			// Drop the source port and hash the host to avoid logging
+			// a long-lived PII identifier (GDPR). Operators who need
+			// the raw IP have it via remote_addr in the access log
+			// from the upstream proxy / load balancer.
+			remoteHash := hashRemoteAddr(r.RemoteAddr)
+
 			logger.Info("request_started",
 				"request_id", requestID,
 				"method", r.Method,
 				"path", r.URL.Path,
 				"query", redactQuery(r.URL.RawQuery, redacted),
-				"remote_addr", r.RemoteAddr,
-				"user_agent", r.UserAgent(),
+				"remote_addr_hash", remoteHash,
+				"user_agent", ua,
 			)
 
 			w.Header().Set("X-Request-ID", requestID)
@@ -75,7 +94,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", m.Code,
-				"duration", m.Duration,
+				"duration_ms", m.Duration.Milliseconds(),
 				"response_size", m.Written,
 			}
 			switch {
@@ -117,4 +136,29 @@ func redactQuery(rawQuery string, names []string) string {
 // when no upstream chain has already provided one.
 func generateRequestID() string {
 	return uuid.NewString()
+}
+
+// hashShort returns the first 8 hex chars of sha256(s), or "" for empty
+// input. Stable per input across processes; not a secret-grade HMAC,
+// just enough to bucket clients without retaining the original string.
+func hashShort(s string) string {
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+// hashRemoteAddr strips the ephemeral source port and returns a short
+// hash of the host portion. Operators get a stable per-host bucket
+// without the raw IP appearing in structured logs.
+func hashRemoteAddr(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	return hashShort(host)
 }

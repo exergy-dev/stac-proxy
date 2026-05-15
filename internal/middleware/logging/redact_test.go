@@ -20,3 +20,28 @@ func TestRedactQuery_DefaultParams(t *testing.T) {
 		}
 	}
 }
+
+func TestHashRemoteAddr_StripsPort(t *testing.T) {
+	a := hashRemoteAddr("203.0.113.5:11111")
+	b := hashRemoteAddr("203.0.113.5:22222")
+	if a == "" || a != b {
+		t.Errorf("hashRemoteAddr port stripped: %q vs %q", a, b)
+	}
+	if hashRemoteAddr("") != "" {
+		t.Error("hashRemoteAddr(\"\") should be empty")
+	}
+}
+
+func TestHashShort_DeterministicAndShort(t *testing.T) {
+	if hashShort("") != "" {
+		t.Error("hashShort(\"\") should be empty")
+	}
+	a := hashShort("Mozilla/5.0")
+	b := hashShort("Mozilla/5.0")
+	if a != b || len(a) != 8 {
+		t.Errorf("hashShort = %q (len %d), want stable 8-char digest", a, len(a))
+	}
+	if hashShort("curl/8") == a {
+		t.Error("distinct inputs collided")
+	}
+}
