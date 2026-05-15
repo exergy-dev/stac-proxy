@@ -279,9 +279,13 @@ func (v *Validator) validateOriginURL(field string, u *url.URL, allowPrivate boo
 }
 
 func (v *Validator) validateOriginAuth(prefix string, auth *OriginAuthConfig) {
+	// `custom_headers` is intentionally NOT a `type` value — it's a
+	// per-origin field (`OriginAuthConfig.CustomHeaders`) consumed by
+	// the `custom` provider. Listing it here let invalid configs pass
+	// validation and then silently no-op at the federation layer.
 	validTypes := map[string]bool{
 		"none": true, "basic": true, "bearer": true, "api_key": true,
-		"oauth2": true, "aws_sigv4": true, "custom_headers": true,
+		"oauth2": true, "aws_sigv4": true, "custom": true,
 	}
 
 	if !validTypes[auth.Type] {

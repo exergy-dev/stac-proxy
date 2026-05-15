@@ -224,7 +224,7 @@ type RetryConfig struct {
 
 // OriginAuthConfig contains authentication config for an upstream origin.
 type OriginAuthConfig struct {
-	Type string `yaml:"type"` // none, basic, bearer, api_key, oauth2, aws_sig_v4, custom
+	Type string `yaml:"type"` // none, basic, bearer, api_key, oauth2, aws_sigv4, custom
 
 	// Basic Auth
 	Username string `yaml:"username"`

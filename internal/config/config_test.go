@@ -2084,7 +2084,7 @@ func TestEdgeCases(t *testing.T) {
 		t.Parallel()
 
 		// Test valid auth types that don't require additional fields
-		validTypes := []string{"none", "custom_headers", "aws_sigv4"}
+		validTypes := []string{"none", "custom", "aws_sigv4"}
 
 		for _, authType := range validTypes {
 			cfg := &Config{
@@ -2166,6 +2166,39 @@ func TestEdgeCases(t *testing.T) {
 			t.Errorf("expected error about invalid ID, got: %v", err)
 		}
 	})
+}
+
+// TestValidation_RejectsCustomHeadersAsAuthType verifies that the
+// previously accepted (but inert) "custom_headers" auth.type is now
+// rejected. CustomHeaders is a per-config field, not a provider type;
+// the corresponding provider type is "custom".
+func TestValidation_RejectsCustomHeadersAsAuthType(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Mode: "federation",
+		Server: ServerConfig{
+			Port: 8080,
+		},
+		Federation: &FederationConfig{
+			Origins: []OriginConfig{
+				{
+					ID:      "origin1",
+					BaseURL: "https://origin1.example.com",
+					Auth: &OriginAuthConfig{
+						Type: "custom_headers",
+					},
+				},
+			},
+		},
+	}
+	cfg.setDefaults()
+
+	if err := NewValidator().Validate(cfg); err == nil {
+		t.Fatal("expected validation error for auth.type=custom_headers, got nil")
+	} else if !containsValidationError(err, "auth.type") {
+		t.Errorf("expected error to mention auth.type, got: %v", err)
+	}
 }
 
 // TestConfig_ExpandEnv_ErrorsOnUndefined verifies that referencing
