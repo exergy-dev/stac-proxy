@@ -19,31 +19,23 @@ func NewParser() *Parser {
 	return &Parser{}
 }
 
-// ParseItem parses a single STAC item from JSON.
+// ParseItem parses a single STAC item from JSON. The library validates
+// that the "type" field equals "Feature" during unmarshal.
 func (p *Parser) ParseItem(data []byte) (*Item, error) {
 	var item Item
 	if err := json.Unmarshal(data, &item); err != nil {
 		return nil, fmt.Errorf("failed to parse item: %w", err)
 	}
-
-	if item.Type != "Feature" {
-		return nil, errors.New("invalid item: type must be 'Feature'")
-	}
-
 	return &item, nil
 }
 
-// ParseCollection parses a single STAC collection from JSON.
+// ParseCollection parses a single STAC collection from JSON. The
+// library validates that the "type" field equals "Collection".
 func (p *Parser) ParseCollection(data []byte) (*Collection, error) {
 	var collection Collection
 	if err := json.Unmarshal(data, &collection); err != nil {
 		return nil, fmt.Errorf("failed to parse collection: %w", err)
 	}
-
-	if collection.Type != "Collection" {
-		return nil, errors.New("invalid collection: type must be 'Collection'")
-	}
-
 	return &collection, nil
 }
 
@@ -71,19 +63,13 @@ func (p *Parser) ParseCollections(data []byte) (*CollectionsResponse, error) {
 	return &resp, nil
 }
 
-// Note: CollectionsResponse is defined in types.go
-
-// ParseCatalog parses a STAC catalog (landing page).
+// ParseCatalog parses a STAC catalog (landing page). The library
+// validates that the "type" field equals "Catalog".
 func (p *Parser) ParseCatalog(data []byte) (*Catalog, error) {
 	var catalog Catalog
 	if err := json.Unmarshal(data, &catalog); err != nil {
 		return nil, fmt.Errorf("failed to parse catalog: %w", err)
 	}
-
-	if catalog.Type != "Catalog" {
-		return nil, errors.New("invalid catalog: type must be 'Catalog'")
-	}
-
 	return &catalog, nil
 }
 
@@ -170,11 +156,24 @@ func (p *Parser) parseSearchFromQuery(r *http.Request) (*SearchRequest, error) {
 		req.Token = token
 	}
 
-	// Intersects (as GeoJSON string)
+	// Cursor — alternate spelling used by federation-aware clients.
+	// Kept separate from Token so callers can prefer one over the other
+	// without losing the original wire value.
+	if cursor := q.Get("cursor"); cursor != "" {
+		req.Cursor = cursor
+	}
+
+	// Fields (STAC API Fields Extension, GET shorthand).
+	if fields := q.Get("fields"); fields != "" {
+		req.Fields = parseFieldsShorthand(fields)
+	}
+
+	// Intersects (as GeoJSON string) — validate it parses as JSON
+	// and store the raw bytes so downstream forwards them verbatim.
 	if intersects := q.Get("intersects"); intersects != "" {
-		var geom Geometry
-		if err := json.Unmarshal([]byte(intersects), &geom); err == nil {
-			req.Intersects = &geom
+		var probe map[string]interface{}
+		if err := json.Unmarshal([]byte(intersects), &probe); err == nil {
+			req.Intersects = json.RawMessage(intersects)
 		}
 	}
 
@@ -204,18 +203,49 @@ func (p *Parser) parseSearchFromQuery(r *http.Request) (*SearchRequest, error) {
 	return req, nil
 }
 
+// parseFieldsShorthand parses the GET-style "+a,-b,c" fields parameter
+// into a FieldsSpec. "-x" routes to Exclude; "+x" and bare "x" route to
+// Include. Empty / whitespace-only entries are dropped. Returns nil
+// when the result is empty so the field stays absent from JSON
+// serialization.
+func parseFieldsShorthand(raw string) *FieldsSpec {
+	spec := &FieldsSpec{}
+	for _, part := range strings.Split(raw, ",") {
+		field := strings.TrimSpace(part)
+		if field == "" {
+			continue
+		}
+		switch field[0] {
+		case '-':
+			if name := strings.TrimSpace(field[1:]); name != "" {
+				spec.Exclude = append(spec.Exclude, name)
+			}
+		case '+':
+			if name := strings.TrimSpace(field[1:]); name != "" {
+				spec.Include = append(spec.Include, name)
+			}
+		default:
+			spec.Include = append(spec.Include, field)
+		}
+	}
+	if len(spec.Include) == 0 && len(spec.Exclude) == 0 {
+		return nil
+	}
+	return spec
+}
+
 // ExtractNextLink finds the "next" link from a set of links.
-func ExtractNextLink(links []Link) *Link {
+func ExtractNextLink(links []*Link) *Link {
 	for _, link := range links {
-		if link.Rel == "next" {
-			return &link
+		if link != nil && link.Rel == "next" {
+			return link
 		}
 	}
 	return nil
 }
 
 // ExtractNextToken extracts token from next link.
-func ExtractNextToken(links []Link) string {
+func ExtractNextToken(links []*Link) string {
 	link := ExtractNextLink(links)
 	if link == nil {
 		return ""
@@ -241,13 +271,9 @@ func ValidateItem(item *Item) error {
 	if item.ID == "" {
 		return errors.New("item missing ID")
 	}
-	if item.Type != "Feature" {
-		return errors.New("item type must be 'Feature'")
-	}
-	if item.Geometry == nil {
+	if len(item.Geometry) == 0 {
 		return errors.New("item missing geometry")
 	}
-	// Properties is a struct, not a pointer, so we don't check for nil
 	return nil
 }
 
@@ -255,9 +281,6 @@ func ValidateItem(item *Item) error {
 func ValidateCollection(collection *Collection) error {
 	if collection.ID == "" {
 		return errors.New("collection missing ID")
-	}
-	if collection.Type != "Collection" {
-		return errors.New("collection type must be 'Collection'")
 	}
 	if collection.Description == "" {
 		return errors.New("collection missing description")
@@ -269,6 +292,9 @@ func ValidateCollection(collection *Collection) error {
 }
 
 // ValidateSearchRequest validates a search request.
+//
+// Per STAC API §7.2.1, `bbox` and `intersects` are mutually exclusive.
+// Both being set is a client error.
 func ValidateSearchRequest(req *SearchRequest) error {
 	// Validate bbox
 	if req.BBox != nil {
@@ -282,6 +308,11 @@ func ValidateSearchRequest(req *SearchRequest) error {
 		if req.BBox[1] > req.BBox[3] {
 			return errors.New("bbox south must be less than north")
 		}
+	}
+
+	// Mutual exclusion (STAC API §7.2.1).
+	if req.BBox != nil && len(req.Intersects) > 0 {
+		return errors.New("bbox and intersects are mutually exclusive")
 	}
 
 	// Validate limit
