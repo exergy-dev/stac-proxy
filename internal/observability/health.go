@@ -16,11 +16,40 @@ import (
 // upstream URLs, error strings, and other topology hints don't leak
 // to whoever can reach `/health`. Operators inside trusted networks
 // can flip Verbose=true via config to get the full payload.
+//
+// Probe-result cache (M-observability-1): per-check results are
+// memoized for CheckCacheTTL so a load balancer probing every second
+// doesn't fan out to every upstream on every request. A background
+// goroutine started by Start() refreshes results every
+// RefreshInterval; HTTP probes always serve the last cached value
+// and trigger an opportunistic background refresh when the entry is
+// older than CheckCacheTTL but never block on the upstream.
 type HealthChecker struct {
 	checks       map[string]Check
 	mu           sync.RWMutex
 	checkTimeout time.Duration
 	Verbose      bool
+
+	// CheckCacheTTL is how long a per-check result is served from cache
+	// before an opportunistic background refresh is triggered. Defaults
+	// to 10s when zero.
+	CheckCacheTTL time.Duration
+	// RefreshInterval is the period of the background refresh
+	// goroutine started by Start(). Defaults to 30s when zero.
+	RefreshInterval time.Duration
+
+	cache       map[string]cachedResult
+	cacheMu     sync.Mutex
+	refreshing  map[string]struct{} // guards against concurrent background refreshes for the same check
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	startedOnce sync.Once
+}
+
+// cachedResult is a per-check entry in the probe cache.
+type cachedResult struct {
+	result CheckResult
+	at     time.Time
 }
 
 // Check defines a single health check.
@@ -54,11 +83,22 @@ type HealthResponse struct {
 	Uptime  string                 `json:"uptime,omitempty"`
 }
 
+// defaultCheckCacheTTL is the default TTL for cached probe results.
+const defaultCheckCacheTTL = 10 * time.Second
+
+// defaultRefreshInterval is the default period of the background
+// refresh loop started by Start().
+const defaultRefreshInterval = 30 * time.Second
+
 // NewHealthChecker creates a new health checker.
 func NewHealthChecker() *HealthChecker {
 	return &HealthChecker{
-		checks:       make(map[string]Check),
-		checkTimeout: 5 * time.Second,
+		checks:          make(map[string]Check),
+		checkTimeout:    5 * time.Second,
+		CheckCacheTTL:   defaultCheckCacheTTL,
+		RefreshInterval: defaultRefreshInterval,
+		cache:           make(map[string]cachedResult),
+		refreshing:      make(map[string]struct{}),
 	}
 }
 
@@ -76,13 +116,78 @@ func (h *HealthChecker) AddCheckFunc(name string, fn func(ctx context.Context) e
 	h.AddCheck(funcCheck{name: name, fn: fn})
 }
 
-// Start is a no-op today; reserved for a future background-poll mode
-// that pre-warms results so /health responses don't block on the
-// first request. Callers may invoke it for forward-compatibility.
-func (h *HealthChecker) Start() {}
+// Start launches a background goroutine that refreshes every
+// registered check at RefreshInterval. Idempotent; subsequent calls
+// are no-ops. Stop() halts the goroutine.
+func (h *HealthChecker) Start() {
+	h.startedOnce.Do(func() {
+		h.stopCh = make(chan struct{})
+		interval := h.RefreshInterval
+		if interval <= 0 {
+			interval = defaultRefreshInterval
+		}
+		go h.refreshLoop(interval)
+	})
+}
 
-// Stop is the symmetric no-op for Start.
-func (h *HealthChecker) Stop() {}
+// Stop signals the background refresh goroutine to exit. Idempotent.
+func (h *HealthChecker) Stop() {
+	h.stopOnce.Do(func() {
+		if h.stopCh != nil {
+			close(h.stopCh)
+		}
+	})
+}
+
+// refreshLoop periodically refreshes all registered checks. Runs
+// until Stop() is called.
+func (h *HealthChecker) refreshLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Prime the cache immediately so the first probe sees fresh data.
+	h.refreshAll(context.Background())
+	for {
+		select {
+		case <-h.stopCh:
+			return
+		case <-ticker.C:
+			h.refreshAll(context.Background())
+		}
+	}
+}
+
+// refreshAll runs every registered check synchronously and updates
+// the cache. Used by both the background loop and Start()'s prime.
+func (h *HealthChecker) refreshAll(ctx context.Context) {
+	h.mu.RLock()
+	checks := make(map[string]Check, len(h.checks))
+	for k, v := range h.checks {
+		checks[k] = v
+	}
+	h.mu.RUnlock()
+
+	for name, check := range checks {
+		h.runAndCache(ctx, name, check)
+	}
+}
+
+// runAndCache executes a single check (with timeout) and stores the
+// result in the cache.
+func (h *HealthChecker) runAndCache(ctx context.Context, name string, check Check) CheckResult {
+	checkCtx, cancel := context.WithTimeout(ctx, h.checkTimeout)
+	defer cancel()
+
+	start := time.Now()
+	result := check.Check(checkCtx)
+	result.Latency = time.Since(start)
+
+	h.cacheMu.Lock()
+	h.cache[name] = cachedResult{result: result, at: time.Now()}
+	delete(h.refreshing, name)
+	h.cacheMu.Unlock()
+	return result
+}
 
 type funcCheck struct {
 	name string
@@ -104,7 +209,13 @@ func (h *HealthChecker) RemoveCheck(name string) {
 	delete(h.checks, name)
 }
 
-// RunChecks executes all health checks and returns the results.
+// RunChecks returns the latest known per-check results. Cached entries
+// younger than CheckCacheTTL are served immediately. Stale entries are
+// served immediately too, but spawn a background refresh so the next
+// probe sees fresh data — slow upstreams therefore can't block the
+// /health probe past the cache window. Cache misses (no entry yet) run
+// the check synchronously so the very first probe still produces real
+// data.
 func (h *HealthChecker) RunChecks(ctx context.Context) HealthResponse {
 	h.mu.RLock()
 	checks := make(map[string]Check, len(h.checks))
@@ -113,29 +224,31 @@ func (h *HealthChecker) RunChecks(ctx context.Context) HealthResponse {
 	}
 	h.mu.RUnlock()
 
-	results := make(map[string]CheckResult)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	for name, check := range checks {
-		wg.Add(1)
-		go func(name string, check Check) {
-			defer wg.Done()
-
-			checkCtx, cancel := context.WithTimeout(ctx, h.checkTimeout)
-			defer cancel()
-
-			start := time.Now()
-			result := check.Check(checkCtx)
-			result.Latency = time.Since(start)
-
-			mu.Lock()
-			results[name] = result
-			mu.Unlock()
-		}(name, check)
+	ttl := h.CheckCacheTTL
+	if ttl <= 0 {
+		ttl = defaultCheckCacheTTL
 	}
 
-	wg.Wait()
+	results := make(map[string]CheckResult, len(checks))
+	now := time.Now()
+
+	for name, check := range checks {
+		h.cacheMu.Lock()
+		entry, hit := h.cache[name]
+		h.cacheMu.Unlock()
+
+		if !hit {
+			// No cached entry — run synchronously so the very first
+			// probe returns a real value rather than a placeholder.
+			results[name] = h.runAndCache(ctx, name, check)
+			continue
+		}
+
+		results[name] = entry.result
+		if now.Sub(entry.at) >= ttl {
+			h.tryBackgroundRefresh(name, check)
+		}
+	}
 
 	// Determine overall status
 	overallStatus := StatusHealthy
@@ -153,6 +266,21 @@ func (h *HealthChecker) RunChecks(ctx context.Context) HealthResponse {
 		Status: overallStatus,
 		Checks: results,
 	}
+}
+
+// tryBackgroundRefresh spawns a goroutine to refresh a check, but only
+// if no other refresh is already in flight for this check. Probes that
+// arrive while a refresh is running just keep serving the stale value.
+func (h *HealthChecker) tryBackgroundRefresh(name string, check Check) {
+	h.cacheMu.Lock()
+	if _, busy := h.refreshing[name]; busy {
+		h.cacheMu.Unlock()
+		return
+	}
+	h.refreshing[name] = struct{}{}
+	h.cacheMu.Unlock()
+
+	go h.runAndCache(context.Background(), name, check)
 }
 
 // HealthHandler returns an http.HandlerFunc for health checks.
