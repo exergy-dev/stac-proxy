@@ -8,8 +8,30 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
+
+// ParseError is returned by the parser when a query parameter is
+// malformed. Callers (e.g. an HTTP middleware) can detect this with
+// errors.As and translate it to an HTTP 400.
+type ParseError struct {
+	// Param is the query parameter name (e.g. "bbox", "limit").
+	Param string
+	// Value is the raw value that failed to parse.
+	Value string
+	// Err is the underlying error from strconv (or similar).
+	Err error
+}
+
+func (e *ParseError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("invalid %s %q: %v", e.Param, e.Value, e.Err)
+	}
+	return fmt.Sprintf("invalid %s %q", e.Param, e.Value)
+}
+
+func (e *ParseError) Unwrap() error { return e.Err }
 
 // Parser handles STAC response parsing.
 type Parser struct{}
@@ -124,18 +146,29 @@ func (p *Parser) parseSearchFromQuery(r *http.Request) (*SearchRequest, error) {
 		req.IDs = strings.Split(ids, ",")
 	}
 
-	// Bbox
+	// Bbox — strict parse: every component must be a valid float, and
+	// the resulting slice must have 4 or 6 entries. Anything else is a
+	// client error and we surface it as a typed *ParseError so the HTTP
+	// layer can translate to a 400.
 	if bbox := q.Get("bbox"); bbox != "" {
-		var coords []float64
-		for _, s := range strings.Split(bbox, ",") {
-			var f float64
-			if _, err := fmt.Sscanf(s, "%f", &f); err == nil {
-				coords = append(coords, f)
+		parts := strings.Split(bbox, ",")
+		coords := make([]float64, 0, len(parts))
+		for _, s := range parts {
+			s = strings.TrimSpace(s)
+			f, err := strconv.ParseFloat(s, 64)
+			if err != nil {
+				return nil, &ParseError{Param: "bbox", Value: s, Err: err}
+			}
+			coords = append(coords, f)
+		}
+		if len(coords) != 4 && len(coords) != 6 {
+			return nil, &ParseError{
+				Param: "bbox",
+				Value: bbox,
+				Err:   fmt.Errorf("expected 4 or 6 components, got %d", len(coords)),
 			}
 		}
-		if len(coords) == 4 || len(coords) == 6 {
-			req.BBox = coords
-		}
+		req.BBox = coords
 	}
 
 	// Datetime
@@ -143,12 +176,15 @@ func (p *Parser) parseSearchFromQuery(r *http.Request) (*SearchRequest, error) {
 		req.Datetime = datetime
 	}
 
-	// Limit
+	// Limit — strict parse so that "?limit=abc" is a 400 rather than
+	// being silently coerced to 0 (which then trips the upstream's
+	// default page size).
 	if limit := q.Get("limit"); limit != "" {
-		var l int
-		if _, err := fmt.Sscanf(limit, "%d", &l); err == nil {
-			req.Limit = l
+		l, err := strconv.Atoi(strings.TrimSpace(limit))
+		if err != nil {
+			return nil, &ParseError{Param: "limit", Value: limit, Err: err}
 		}
+		req.Limit = l
 	}
 
 	// Token

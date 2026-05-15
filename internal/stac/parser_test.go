@@ -3,6 +3,7 @@ package stac
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -301,6 +302,49 @@ func TestParseSearchFromQuery(t *testing.T) {
 			}
 			tt.assert(t, req)
 		})
+	}
+}
+
+// TestParseSearchFromQuery_BadBboxReturns400 verifies a malformed bbox
+// produces a typed *ParseError (caller-mappable to HTTP 400) rather
+// than being silently coerced to a partial slice.
+func TestParseSearchFromQuery_BadBboxReturns400(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequest(http.MethodGet, "/search?bbox=foo,bar,3,4", nil)
+	_, err := NewParser().ParseSearchRequestFromHTTP(r)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("error type = %T, want *ParseError; err=%v", err, err)
+	}
+	if pe.Param != "bbox" {
+		t.Errorf("Param = %q, want %q", pe.Param, "bbox")
+	}
+	if !strings.Contains(err.Error(), "bbox") {
+		t.Errorf("error %q missing %q", err.Error(), "bbox")
+	}
+}
+
+// TestParseSearchFromQuery_BadLimitReturns400 verifies a non-numeric
+// limit produces a typed *ParseError instead of silently becoming 0.
+func TestParseSearchFromQuery_BadLimitReturns400(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequest(http.MethodGet, "/search?limit=abc", nil)
+	_, err := NewParser().ParseSearchRequestFromHTTP(r)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("error type = %T, want *ParseError; err=%v", err, err)
+	}
+	if pe.Param != "limit" {
+		t.Errorf("Param = %q, want %q", pe.Param, "limit")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Errorf("error %q missing %q", err.Error(), "limit")
 	}
 }
 
