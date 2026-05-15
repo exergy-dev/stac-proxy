@@ -46,13 +46,8 @@ type BasicUser struct {
 func NewBasicAuthProvider(cfg BasicAuthConfig) (*BasicAuthProvider, error) {
 	users := make(map[string]hashedUser)
 	for _, u := range cfg.Users {
-		hash, err := base64.StdEncoding.DecodeString(u.PasswordHash)
-		if err != nil {
-			// Assume it's a raw bcrypt hash
-			hash = []byte(u.PasswordHash)
-		}
 		users[u.Username] = hashedUser{
-			passwordHash: hash,
+			passwordHash: decodePasswordHash(u.PasswordHash),
 			roles:        u.Roles,
 			attributes:   u.Attributes,
 		}
@@ -64,6 +59,35 @@ func NewBasicAuthProvider(cfg BasicAuthConfig) (*BasicAuthProvider, error) {
 		realm:    cfg.Realm,
 		cacheTTL: cfg.CacheTTL,
 	}, nil
+}
+
+// decodePasswordHash returns the raw bcrypt digest bytes for the
+// configured PasswordHash. Bcrypt hashes use the OpenBSD modular crypt
+// format and always begin with one of the version prefixes "$2a$",
+// "$2b$" or "$2y$"; when present we MUST treat the input as a literal
+// bcrypt hash rather than try to base64-decode it. (A bcrypt hash can
+// happen to be valid base64 — silently decoding then storing the
+// wrong bytes corrupts the credential and breaks every login.)
+//
+// When no recognised prefix is present we fall back to base64 decoding
+// for backward compatibility with operators who stored hashes in
+// base64-wrapped form.
+func decodePasswordHash(s string) []byte {
+	if isBcryptHash(s) {
+		return []byte(s)
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return decoded
+	}
+	return []byte(s)
+}
+
+// isBcryptHash reports whether s starts with a recognised bcrypt
+// version prefix.
+func isBcryptHash(s string) bool {
+	return strings.HasPrefix(s, "$2a$") ||
+		strings.HasPrefix(s, "$2b$") ||
+		strings.HasPrefix(s, "$2y$")
 }
 
 // Name returns the provider name.
