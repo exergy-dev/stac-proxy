@@ -117,10 +117,47 @@ func filterCacheableHeaders(h http.Header) http.Header {
 }
 
 // Config contains configuration for the cache middleware.
+//
+// CacheableStatuses is the allowlist of HTTP status codes whose
+// responses may be persisted to the store. When empty, the package
+// default (defaultCacheableStatuses) is used. The default covers:
+//   - 200 OK and 203 Non-Authoritative — successful payloads.
+//   - 204 No Content — empty-but-valid responses (e.g. HEAD-like).
+//   - 301 Moved Permanently and 308 Permanent Redirect — stable
+//     redirects that are safe to remember; 302/307 are intentionally
+//     excluded as they are nominally non-cacheable.
+//   - 404 Not Found and 410 Gone — negative cache. Misconfigured
+//     clients hammering nonexistent items would otherwise stampede the
+//     upstream on every request.
+//
+// NegativeCacheTTL bounds the lifetime of cached 4xx responses
+// (per-status; applied uniformly to all 4xx codes in the allowlist).
+// It defaults to 5 minutes — long enough to absorb stampedes, short
+// enough that a freshly-published item is discoverable. Successful
+// 2xx and 3xx entries continue to use the Strategy's TTL.
 type Config struct {
-	Store    Store
-	Strategy Strategy
+	Store             Store
+	Strategy          Strategy
+	CacheableStatuses []int
+	NegativeCacheTTL  time.Duration
 }
+
+// defaultCacheableStatuses is the package-level default allowlist of
+// statuses cached by NewHTTPMiddleware. See Config.CacheableStatuses
+// for the per-status rationale.
+var defaultCacheableStatuses = []int{
+	http.StatusOK,                   // 200
+	http.StatusNonAuthoritativeInfo, // 203
+	http.StatusNoContent,            // 204
+	http.StatusMovedPermanently,     // 301
+	http.StatusPermanentRedirect,    // 308
+	http.StatusNotFound,             // 404
+	http.StatusGone,                 // 410
+}
+
+// defaultNegativeCacheTTL is the TTL applied to cached 4xx responses
+// when Config.NegativeCacheTTL is unset.
+const defaultNegativeCacheTTL = 5 * time.Minute
 
 // NewHTTPMiddleware returns chi-compatible response-cache middleware.
 //
@@ -131,8 +168,15 @@ type Config struct {
 // On a hit, the cached response is written directly with X-Cache-Status:
 // HIT. On a miss, the inner handler runs into an httpx.ResponseCapture;
 // the captured bytes are forwarded to the client and (when the status
-// is 200 and the strategy returns a non-zero TTL) deep-copied into the
-// store for future hits. X-Cache-Status: MISS is added on the miss path.
+// is in cfg.CacheableStatuses and the strategy returns a non-zero TTL)
+// deep-copied into the store for future hits. X-Cache-Status: MISS is
+// added on the miss path.
+//
+// 4xx entries (currently 404 and 410 in the default allowlist) are
+// stored with cfg.NegativeCacheTTL rather than the Strategy's TTL —
+// negative cache must expire faster than success TTL so that newly
+// created items become visible without waiting for the longer
+// success-bucket lifetime.
 func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	strategy := cfg.Strategy
 	if strategy == nil {
@@ -145,6 +189,18 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	store := cfg.Store
 	if store == nil {
 		store = &NoOpStore{}
+	}
+	statuses := cfg.CacheableStatuses
+	if len(statuses) == 0 {
+		statuses = defaultCacheableStatuses
+	}
+	cacheable := make(map[int]struct{}, len(statuses))
+	for _, s := range statuses {
+		cacheable[s] = struct{}{}
+	}
+	negTTL := cfg.NegativeCacheTTL
+	if negTTL <= 0 {
+		negTTL = defaultNegativeCacheTTL
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -215,10 +271,18 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			body := cap.BodyBytes()
 			_, _ = w.Write(body)
 
-			if cap.Status() != http.StatusOK {
+			status := cap.Status()
+			if _, ok := cacheable[status]; !ok {
 				return
 			}
-			ttl := strategy.TTL(cacheReq, cap.Status())
+			// Negative-cache lifetime applies to every 4xx in the
+			// allowlist; success entries take the Strategy TTL.
+			var ttl time.Duration
+			if status >= 400 && status < 500 {
+				ttl = negTTL
+			} else {
+				ttl = strategy.TTL(cacheReq, status)
+			}
 			if ttl <= 0 {
 				return
 			}
@@ -322,8 +386,13 @@ func (s *BasicStrategy) CacheKey(req CacheableRequest) string {
 }
 
 // TTL returns the TTL for the cached response, varying by request type.
+//
+// For statuses outside the 2xx/3xx success-cache range BasicStrategy
+// returns 0 — the middleware uses Config.NegativeCacheTTL for 4xx
+// entries, so 0 here is the correct "do not use the success TTL"
+// sentinel. 5xx are not cached at all (they fail the allowlist gate).
 func (s *BasicStrategy) TTL(req CacheableRequest, statusCode int) time.Duration {
-	if statusCode != http.StatusOK {
+	if statusCode < 200 || statusCode >= 400 {
 		return 0
 	}
 	switch req.RequestType {

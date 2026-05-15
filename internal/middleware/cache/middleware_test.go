@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
@@ -341,5 +343,83 @@ func TestCache_DoesNotMixAnonymousAndAuthenticated(t *testing.T) {
 	}
 	if got := rr4.Header().Get("X-Cache-Status"); got != "HIT" {
 		t.Fatalf("alice second request X-Cache-Status: want HIT, got %q", got)
+	}
+}
+
+// TestCache_404IsCachedWithNegativeTTL (M-cache-1): a 404 from
+// upstream is persisted into the store so subsequent identical
+// requests for the missing item are served from the cache and the
+// inner handler is NOT re-invoked. Real STAC traffic includes
+// misconfigured clients that hammer nonexistent items; without
+// negative cache the upstream pays for every request.
+func TestCache_404IsCachedWithNegativeTTL(t *testing.T) {
+	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
+	defer store.Close()
+
+	var inner uint32
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddUint32(&inner, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"NotFound"}`))
+	})
+	mw := NewHTTPMiddleware(Config{Store: store, NegativeCacheTTL: time.Minute})(h)
+
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeItem, Collection: "x"}
+
+	rr1 := httptest.NewRecorder()
+	mw.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/collections/x/items/missing", nil), info))
+	if rr1.Code != http.StatusNotFound {
+		t.Fatalf("first request: status=%d, want 404", rr1.Code)
+	}
+	if got := rr1.Header().Get("X-Cache-Status"); got != "MISS" {
+		t.Fatalf("first request X-Cache-Status: want MISS, got %q", got)
+	}
+
+	rr2 := httptest.NewRecorder()
+	mw.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/collections/x/items/missing", nil), info))
+	if rr2.Code != http.StatusNotFound {
+		t.Fatalf("second request: status=%d, want 404 (from cache)", rr2.Code)
+	}
+	if got := rr2.Header().Get("X-Cache-Status"); got != "HIT" {
+		t.Fatalf("second request X-Cache-Status: want HIT, got %q", got)
+	}
+	if n := atomic.LoadUint32(&inner); n != 1 {
+		t.Errorf("inner handler invocations: want 1 (negative cache hit), got %d", n)
+	}
+}
+
+// TestCache_5xxNotCached (M-cache-1): 5xx responses are NOT in the
+// cacheable allowlist; a second request for the same URL re-invokes
+// the inner handler so transient upstream failures don't poison the
+// cache.
+func TestCache_5xxNotCached(t *testing.T) {
+	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
+	defer store.Close()
+
+	var inner uint32
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddUint32(&inner, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"code":"BadGateway"}`))
+	})
+	mw := NewHTTPMiddleware(Config{Store: store})(h)
+
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeCollection, Collection: "x"}
+
+	rr1 := httptest.NewRecorder()
+	mw.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
+	if rr1.Code != http.StatusBadGateway {
+		t.Fatalf("first request: status=%d, want 502", rr1.Code)
+	}
+
+	rr2 := httptest.NewRecorder()
+	mw.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
+	if got := rr2.Header().Get("X-Cache-Status"); got != "MISS" {
+		t.Errorf("5xx leaked into cache: want MISS on second request, got %q", got)
+	}
+	if n := atomic.LoadUint32(&inner); n != 2 {
+		t.Errorf("inner handler invocations: want 2 (5xx must re-fetch), got %d", n)
 	}
 }
