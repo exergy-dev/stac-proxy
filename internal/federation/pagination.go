@@ -67,11 +67,20 @@ func (o OriginClientSearcher) BaseURL() string {
 }
 
 // PaginatedSearcher handles paginated search across multiple origins.
+//
+// PaginatedSearcher is safe for concurrent use: every Search call
+// constructs its own per-call deduplicator (see Search), so concurrent
+// callers never observe each other's item IDs. Cross-page deduplication
+// within a single logical search is intentionally NOT preserved across
+// pages — clients re-issuing a cursor get a fresh dedup window per
+// request, which is consistent with the dedup behavior prior to the
+// per-call refactor (the previous shared dedup was reset on every fresh
+// search and races between fresh+continuation pages already meant the
+// across-page dedup was best-effort at best).
 type PaginatedSearcher struct {
 	origins        map[string]Searcher
 	originBaseURLs map[string]string
 	merger         *ResultMerger
-	deduplicator   *ItemDeduplicator
 	pageSize       int
 	maxPageSize    int
 	cursorSecret   []byte
@@ -116,7 +125,6 @@ func NewPaginatedSearcher(cfg PaginatedSearchConfig) (*PaginatedSearcher, error)
 		origins:        cfg.Origins,
 		originBaseURLs: baseURLs,
 		merger:         cfg.Merger,
-		deduplicator:   NewItemDeduplicator(10000),
 		pageSize:       cfg.DefaultPageSize,
 		maxPageSize:    cfg.MaxPageSize,
 		cursorSecret:   cfg.CursorSecret,
@@ -190,10 +198,10 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 		cursor = NewFederatedCursor(hashSearchRequest(req), principalHash, originIDs, nil)
 	}
 
-	// Reset deduplicator for new searches
-	if cursorStr == "" {
-		s.deduplicator = NewItemDeduplicator(10000)
-	}
+	// Per-call deduplicator. Constructed local to this Search so that
+	// concurrent callers cannot observe one another's item IDs and
+	// accidentally drop results.
+	dedup := NewItemDeduplicator(10000)
 
 	// Fetch from all active origins
 	activeOrigins := cursor.ActiveOrigins()
@@ -208,7 +216,7 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 	results := s.fetchFromOrigins(ctx, req, cursor, activeOrigins, limit)
 
 	// Merge and deduplicate results
-	mergedItems := s.mergeResults(results, cursor, limit)
+	mergedItems := s.mergeResults(results, cursor, limit, dedup)
 
 	// Update cursor with new state
 	cursor.TotalReturned += len(mergedItems)
@@ -304,7 +312,16 @@ func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.Sear
 }
 
 // mergeResults merges results from all origins with deduplication.
-func (s *PaginatedSearcher) mergeResults(results []originFetchResult, cursor *FederatedCursor, limit int) []*stac.Item {
+//
+// dedup is the per-call deduplicator owned by Search; passing it
+// explicitly (rather than holding it on the receiver) is what makes
+// concurrent Search calls safe — see PaginatedSearcher's doc comment.
+// Tests that call mergeResults directly may pass nil to opt out of
+// deduplication.
+func (s *PaginatedSearcher) mergeResults(results []originFetchResult, cursor *FederatedCursor, limit int, dedup *ItemDeduplicator) []*stac.Item {
+	if dedup == nil {
+		dedup = NewItemDeduplicator(10000)
+	}
 	var allItems []*stac.Item
 
 	for _, result := range results {
@@ -329,7 +346,7 @@ func (s *PaginatedSearcher) mergeResults(results []originFetchResult, cursor *Fe
 
 		// Deduplicate and add items
 		for _, item := range result.Items {
-			if !s.deduplicator.IsDuplicate(item.ID) {
+			if !dedup.IsDuplicate(item.ID) {
 				allItems = append(allItems, item)
 			}
 		}

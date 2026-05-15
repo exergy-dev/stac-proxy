@@ -125,9 +125,6 @@ func TestNewPaginatedSearcher(t *testing.T) {
 		if searcher.maxPageSize != 1000 {
 			t.Errorf("expected default max page size 1000, got %d", searcher.maxPageSize)
 		}
-		if searcher.deduplicator == nil {
-			t.Error("expected deduplicator to be initialized")
-		}
 	})
 
 	t.Run("requires cursor secret", func(t *testing.T) {
@@ -478,7 +475,7 @@ func TestMergeResults(t *testing.T) {
 			{OriginID: "origin1", Items: []*stac.Item{paginationTestItem("item1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))}},
 			{OriginID: "origin2", Items: []*stac.Item{paginationTestItem("item2", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))}},
 		}
-		merged := searcher.mergeResults(results, cursor, 10)
+		merged := searcher.mergeResults(results, cursor, 10, nil)
 		if len(merged) != 2 {
 			t.Errorf("expected 2 merged items, got %d", len(merged))
 		}
@@ -495,7 +492,7 @@ func TestMergeResults(t *testing.T) {
 			{OriginID: "origin1", Items: []*stac.Item{paginationTestItem("item1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))}},
 			{OriginID: "origin2", Items: []*stac.Item{paginationTestItem("item1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))}},
 		}
-		merged := searcher.mergeResults(results, cursor, 10)
+		merged := searcher.mergeResults(results, cursor, 10, nil)
 		if len(merged) != 1 {
 			t.Errorf("expected 1 item after deduplication, got %d", len(merged))
 		}
@@ -515,7 +512,7 @@ func TestMergeResults(t *testing.T) {
 				paginationTestItem("item3", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)),
 			}},
 		}
-		merged := searcher.mergeResults(results, cursor, 10)
+		merged := searcher.mergeResults(results, cursor, 10, nil)
 		if merged[0].ID != "item2" || merged[1].ID != "item3" || merged[2].ID != "item1" {
 			t.Errorf("unexpected order: %s %s %s", merged[0].ID, merged[1].ID, merged[2].ID)
 		}
@@ -535,7 +532,7 @@ func TestMergeResults(t *testing.T) {
 				paginationTestItem("item3", time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)),
 			}},
 		}
-		merged := searcher.mergeResults(results, cursor, 2)
+		merged := searcher.mergeResults(results, cursor, 2, nil)
 		if len(merged) != 2 {
 			t.Errorf("expected 2 items (limited), got %d", len(merged))
 		}
@@ -551,7 +548,7 @@ func TestMergeResults(t *testing.T) {
 		results := []originFetchResult{
 			{OriginID: "origin1", Items: []*stac.Item{paginationTestItem("item1", time.Now())}, NextToken: "next-token"},
 		}
-		searcher.mergeResults(results, cursor, 10)
+		searcher.mergeResults(results, cursor, 10, nil)
 		origin := cursor.GetOriginCursor("origin1")
 		if origin.NextToken != "next-token" || origin.ItemCount != 1 {
 			t.Errorf("unexpected origin state: %+v", origin)
@@ -566,7 +563,7 @@ func TestMergeResults(t *testing.T) {
 		})
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		results := []originFetchResult{{OriginID: "origin1", Error: errors.New("fetch failed")}}
-		searcher.mergeResults(results, cursor, 10)
+		searcher.mergeResults(results, cursor, 10, nil)
 		if !cursor.GetOriginCursor("origin1").Error {
 			t.Error("expected origin to be marked with error")
 		}
@@ -582,7 +579,7 @@ func TestMergeResults(t *testing.T) {
 		results := []originFetchResult{
 			{OriginID: "origin1", Items: []*stac.Item{paginationTestItem("item1", time.Now())}},
 		}
-		searcher.mergeResults(results, cursor, 10)
+		searcher.mergeResults(results, cursor, 10, nil)
 		if !cursor.GetOriginCursor("origin1").Exhausted {
 			t.Error("expected origin to be marked exhausted")
 		}
@@ -615,7 +612,7 @@ func TestMergeResults(t *testing.T) {
 				Merger:  NewResultMerger(ConflictFirstWins),
 			})
 			cursor := NewFederatedCursor("hash", "", []string{"origin1", "origin2"}, nil)
-			merged := searcher.mergeResults(makeResults(), cursor, 10)
+			merged := searcher.mergeResults(makeResults(), cursor, 10, nil)
 			if len(merged) != 4 {
 				t.Fatalf("iter %d: got %d items, want 4", i, len(merged))
 			}
@@ -866,4 +863,87 @@ func TestGetDatetime(t *testing.T) {
 			t.Errorf("expected empty, got %q", got)
 		}
 	})
+}
+
+// TestPaginatedSearcher_ConcurrentSearches_DoNotCrossPollinateDedup
+// guards Fix C4: PaginatedSearcher must not share dedup state across
+// concurrent Search calls. Previously the deduplicator was a field on
+// the receiver, so two concurrent searches could see each other's item
+// IDs and silently drop results. This test spawns N concurrent
+// goroutines split across two disjoint ID namespaces and asserts every
+// goroutine sees the full count of its own namespace.
+func TestPaginatedSearcher_ConcurrentSearches_DoNotCrossPollinateDedup(t *testing.T) {
+	t.Parallel()
+
+	const goroutinesPerSet = 5
+	const itemsPerSearch = 20
+
+	// Each Search request carries a "set" hint via Collections; the stub
+	// origin emits items prefixed with that set name. Two disjoint sets
+	// ("a", "b") run concurrently — if dedup state were shared, the
+	// second goroutine in each set would see "duplicate" IDs from the
+	// first and drop them.
+	origin := newMockSearchable("origin1", 1, func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
+		set := "x"
+		if len(req.Collections) > 0 {
+			set = req.Collections[0]
+		}
+		items := make([]*stac.Item, 0, itemsPerSearch)
+		base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		for i := 0; i < itemsPerSearch; i++ {
+			id := fmt.Sprintf("set-%s-%d", set, i)
+			items = append(items, paginationTestItem(id, base.Add(time.Duration(i)*time.Hour)))
+		}
+		return items, "", "", nil
+	})
+
+	searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
+		Origins:     map[string]Searcher{"origin1": origin},
+		Merger:      NewResultMerger(ConflictFirstWins),
+		MaxPageSize: 100,
+	})
+
+	type outcome struct {
+		set   string
+		items []*stac.Item
+		err   error
+	}
+
+	results := make(chan outcome, goroutinesPerSet*2)
+	var wg sync.WaitGroup
+
+	launch := func(set string) {
+		defer wg.Done()
+		req := &stac.SearchRequest{Collections: []string{set}, Limit: itemsPerSearch}
+		res, err := searcher.Search(context.Background(), req, "")
+		if err != nil {
+			results <- outcome{set: set, err: err}
+			return
+		}
+		results <- outcome{set: set, items: res.Items}
+	}
+
+	for i := 0; i < goroutinesPerSet; i++ {
+		wg.Add(2)
+		go launch("a")
+		go launch("b")
+	}
+	wg.Wait()
+	close(results)
+
+	for o := range results {
+		if o.err != nil {
+			t.Errorf("set %s: search failed: %v", o.set, o.err)
+			continue
+		}
+		if len(o.items) != itemsPerSearch {
+			t.Errorf("set %s: expected %d items, got %d (cross-pollination of dedup state suspected)", o.set, itemsPerSearch, len(o.items))
+		}
+		wantPrefix := "set-" + o.set + "-"
+		for _, it := range o.items {
+			if !strings.HasPrefix(it.ID, wantPrefix) {
+				t.Errorf("set %s: got item with foreign ID %q", o.set, it.ID)
+			}
+		}
+	}
 }
