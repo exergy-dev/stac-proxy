@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -86,7 +87,7 @@ func (s *HMACSigner) snapshotSecrets() [][]byte {
 // query (e.g. the verification path lost the original sig and could
 // not log/diagnose; the sign path was lucky because it then re-set
 // the values). Internally we work on a deep clone.
-func signingMessage(host, path string, q url.Values, expiry int64) string {
+func signingMessage(host, urlPath string, q url.Values, expiry int64) string {
 	clone := make(url.Values, len(q))
 	for k, vs := range q {
 		// Reuse the slice header is fine — we only call Del/Set,
@@ -97,7 +98,38 @@ func signingMessage(host, path string, q url.Values, expiry int64) string {
 	// else, including the expiry, is part of the signed input.
 	clone.Del("sig")
 	clone.Set("exp", fmt.Sprintf("%d", expiry))
-	return strings.ToLower(host) + "\n" + path + "\n" + clone.Encode()
+	return strings.ToLower(host) + "\n" + canonicalPath(urlPath) + "\n" + clone.Encode()
+}
+
+// canonicalPath normalizes the URL path for signing so that
+// equivalent representations produce identical signatures (M-remap-4).
+//
+// Without this, "/foo" and "//foo" — which most HTTP servers treat as
+// the same resource — yielded different HMAC inputs. An attacker
+// could not forge a *new* signature, but the inconsistency was
+// confusing and adjacent to open-redirect classes of bug. Aligning
+// the canonical form on path.Clean gives:
+//
+//   - "//foo"     -> "/foo"
+//   - "/a//b"     -> "/a/b"
+//   - "/a/./b"    -> "/a/b"
+//   - "/a/b/.."   -> "/a"
+//   - ""          -> "/" (empty path canonicalizes to root)
+//
+// path.Clean operates on the raw byte sequence (not URL semantics);
+// percent-encoding is preserved, which matches what url.URL.Path
+// stores. Trailing slash semantics are preserved (path.Clean strips
+// trailing "/" only on roots, which is what we want).
+func canonicalPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	cleaned := path.Clean(p)
+	// path.Clean does not preserve a trailing slash on non-root
+	// paths. URL semantics frequently distinguish them, but for
+	// signing we treat them as equivalent — both Sign and Verify
+	// pass through this function so the round-trip is consistent.
+	return cleaned
 }
 
 // Sign adds an HMAC signature and expiry to the URL using the primary

@@ -66,6 +66,40 @@ func TestNewSigner_RejectsCloudFrontAndS3(t *testing.T) {
 	}
 }
 
+// TestSigner_DoubleSlashSameAsSingleSlash (M-remap-4): "/foo" and
+// "//foo" resolve to the same resource on virtually every HTTP server,
+// but pre-fix they produced different HMAC inputs because path.Clean
+// wasn't applied. The fix canonicalizes the path on both Sign and
+// Verify so the two forms verify against each other — closing an
+// open-redirect-adjacent inconsistency.
+func TestSigner_DoubleSlashSameAsSingleSlash(t *testing.T) {
+	s := NewHMACSigner("secret")
+
+	signed := s.Sign(context.Background(), "https://stac.example.com/foo?role=read", time.Hour)
+
+	// Build the "//foo" variant by injecting an extra slash into
+	// the path of the signed URL. The query (with sig + exp) stays
+	// as-is.
+	u, err := url.Parse(signed)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	u.Path = "//foo"
+	doubled := u.String()
+
+	if ok, err := s.Verify(doubled); !ok || err != nil {
+		t.Errorf("//foo should verify against /foo signature (path.Clean normalization): ok=%v err=%v", ok, err)
+	}
+
+	// Also confirm /a//b//c canonicalizes to /a/b/c equivalently.
+	signed2 := s.Sign(context.Background(), "https://stac.example.com/a/b/c?role=read", time.Hour)
+	u2, _ := url.Parse(signed2)
+	u2.Path = "/a//b//c"
+	if ok, err := s.Verify(u2.String()); !ok || err != nil {
+		t.Errorf("/a//b//c should verify against /a/b/c signature: ok=%v err=%v", ok, err)
+	}
+}
+
 // TestSigningMessage_DoesNotMutateInput (M-remap-3): signingMessage
 // historically called Del("sig") and Set("exp", …) on the caller's
 // url.Values map. That behavior was a footgun — callers that wanted
