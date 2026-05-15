@@ -62,10 +62,12 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 		return c
 	}
 
+	ctx := context.Background()
+
 	t.Run("never preserves href", func(t *testing.T) {
 		t.Parallel()
 		h := &Handler{proxyBaseURL: "https://proxy.example"}
-		if got := h.rewriteAssetHref(mkClient("never"), href); got != href {
+		if got := h.rewriteAssetHref(ctx, mkClient("never"), href); got != href {
 			t.Errorf("got %q, want unchanged", got)
 		}
 	})
@@ -73,7 +75,7 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 	t.Run("default (empty) preserves href", func(t *testing.T) {
 		t.Parallel()
 		h := &Handler{proxyBaseURL: "https://proxy.example"}
-		if got := h.rewriteAssetHref(mkClient(""), href); got != href {
+		if got := h.rewriteAssetHref(ctx, mkClient(""), href); got != href {
 			t.Errorf("got %q, want unchanged", got)
 		}
 	})
@@ -81,7 +83,7 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 	t.Run("sign without signer falls back to passthrough", func(t *testing.T) {
 		t.Parallel()
 		h := &Handler{proxyBaseURL: "https://proxy.example"}
-		if got := h.rewriteAssetHref(mkClient("sign"), href); got != href {
+		if got := h.rewriteAssetHref(ctx, mkClient("sign"), href); got != href {
 			t.Errorf("got %q, want unchanged (no signer wired)", got)
 		}
 	})
@@ -92,7 +94,7 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 			proxyBaseURL: "https://proxy.example",
 			assetSigner:  fakeSigner{prefix: "?sig=X"},
 		}
-		got := h.rewriteAssetHref(mkClient("sign"), href)
+		got := h.rewriteAssetHref(ctx, mkClient("sign"), href)
 		if !strings.Contains(got, "?sig=X") {
 			t.Errorf("got %q, want signed url", got)
 		}
@@ -101,7 +103,7 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 	t.Run("proxy mode rewrites to /assets/{id}/{ref}", func(t *testing.T) {
 		t.Parallel()
 		h := &Handler{proxyBaseURL: "https://proxy.example"}
-		got := h.rewriteAssetHref(mkClient("proxy"), href)
+		got := h.rewriteAssetHref(ctx, mkClient("proxy"), href)
 		const wantPrefix = "https://proxy.example/assets/originA/"
 		if !strings.HasPrefix(got, wantPrefix) {
 			t.Errorf("got %q, want prefix %q", got, wantPrefix)
@@ -120,7 +122,7 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 	t.Run("proxy mode with empty proxyBaseURL falls back to passthrough", func(t *testing.T) {
 		t.Parallel()
 		h := &Handler{}
-		if got := h.rewriteAssetHref(mkClient("proxy"), href); got != href {
+		if got := h.rewriteAssetHref(ctx, mkClient("proxy"), href); got != href {
 			t.Errorf("got %q, want unchanged", got)
 		}
 	})
@@ -368,7 +370,7 @@ func TestRewriteLinks_WalksAssets(t *testing.T) {
 			},
 		},
 	}
-	h.rewriteLinks(client, data)
+	h.rewriteLinks(context.Background(), client, data)
 
 	feat := data["features"].([]any)[0].(map[string]any)
 	gotHref := feat["assets"].(map[string]any)["data"].(map[string]any)["href"].(string)

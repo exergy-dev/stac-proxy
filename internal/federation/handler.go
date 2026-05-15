@@ -1256,7 +1256,7 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 	}
 
 	if h.proxyBaseURL != "" && cap.Status() == http.StatusOK {
-		resp = h.transformResponse(client, resp)
+		resp = h.transformResponse(ctx, client, resp)
 	}
 	return resp, nil
 }
@@ -1387,8 +1387,11 @@ func isInboundAuthHeader(name string) bool {
 }
 
 // transformResponse rewrites links pointing to the upstream origin so
-// downstream clients follow links back through this proxy.
-func (h *Handler) transformResponse(client *OriginClient, resp *response) *response {
+// downstream clients follow links back through this proxy. ctx is the
+// inbound request context — it is forwarded to the asset signer so that
+// signing observes client cancellation, deadlines, and any
+// request-scoped values (request-id, principal, etc.).
+func (h *Handler) transformResponse(ctx context.Context, client *OriginClient, resp *response) *response {
 	if h.proxyBaseURL == "" {
 		return resp
 	}
@@ -1403,7 +1406,7 @@ func (h *Handler) transformResponse(client *OriginClient, resp *response) *respo
 		return resp // not JSON — leave as-is
 	}
 
-	h.rewriteLinks(client, data)
+	h.rewriteLinks(ctx, client, data)
 
 	newBody, err := json.Marshal(data)
 	if err != nil {
@@ -1427,7 +1430,7 @@ func (h *Handler) transformResponse(client *OriginClient, resp *response) *respo
 //     point at object storage that the proxy does not front, so the
 //     default ("never") is intentional. Operators who need authz
 //     gating or audit on asset access opt into "sign" or "proxy".
-func (h *Handler) rewriteLinks(client *OriginClient, data interface{}) {
+func (h *Handler) rewriteLinks(ctx context.Context, client *OriginClient, data interface{}) {
 	switch v := data.(type) {
 	case map[string]interface{}:
 		if links, ok := v["links"].([]interface{}); ok {
@@ -1443,24 +1446,27 @@ func (h *Handler) rewriteLinks(client *OriginClient, data interface{}) {
 			for _, a := range assets {
 				if am, ok := a.(map[string]interface{}); ok {
 					if href, ok := am["href"].(string); ok {
-						am["href"] = h.rewriteAssetHref(client, href)
+						am["href"] = h.rewriteAssetHref(ctx, client, href)
 					}
 				}
 			}
 		}
 		for _, val := range v {
-			h.rewriteLinks(client, val)
+			h.rewriteLinks(ctx, client, val)
 		}
 	case []interface{}:
 		for _, val := range v {
-			h.rewriteLinks(client, val)
+			h.rewriteLinks(ctx, client, val)
 		}
 	}
 }
 
 // rewriteAssetHref dispatches on the origin's RewriteAssets mode.
-// `never` (the default) preserves backwards compatibility.
-func (h *Handler) rewriteAssetHref(client *OriginClient, href string) string {
+// `never` (the default) preserves backwards compatibility. ctx is the
+// inbound request context — passed to the asset signer so that signing
+// is cancellable with the client request and observes any
+// request-scoped values.
+func (h *Handler) rewriteAssetHref(ctx context.Context, client *OriginClient, href string) string {
 	origin := client.Origin()
 	switch origin.RewriteAssets {
 	case "sign":
@@ -1474,7 +1480,7 @@ func (h *Handler) rewriteAssetHref(client *OriginClient, href string) string {
 		if ttl <= 0 {
 			ttl = 15 * time.Minute
 		}
-		return h.assetSigner.Sign(context.Background(), href, ttl)
+		return h.assetSigner.Sign(ctx, href, ttl)
 	case "proxy":
 		if h.proxyBaseURL == "" {
 			return href

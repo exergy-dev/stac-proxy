@@ -2008,3 +2008,63 @@ func featureIDs(fc *stac.FeatureCollection) []string {
 	}
 	return out
 }
+
+// blockingSigner blocks in Sign until ctx is done, then returns the
+// underlying ctx error formatted as a string. Used to verify that the
+// rewrite path threads the inbound request context (not a fresh
+// context.Background()) through to the signer.
+type blockingSigner struct{}
+
+func (blockingSigner) Sign(ctx context.Context, _ string, _ time.Duration) string {
+	<-ctx.Done()
+	return "cancelled:" + ctx.Err().Error()
+}
+
+// TestRewriteAssetHref_RespectsRequestCancellation is a regression
+// test for H-federation-1: the rewrite path used to call
+// assetSigner.Sign(context.Background(), ...), which detached the
+// signer from the inbound request. With the fix, ctx flows from the
+// HTTP layer through transformResponse → rewriteLinks →
+// rewriteAssetHref → AssetSigner.Sign, so cancelling the request
+// promptly unblocks the signer.
+func TestRewriteAssetHref_RespectsRequestCancellation(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewOriginClient(&Origin{
+		ID:            "a",
+		BaseURL:       "https://upstream.example",
+		Enabled:       true,
+		Timeout:       time.Second,
+		RewriteAssets: "sign",
+	})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+
+	h := &Handler{
+		proxyBaseURL: "https://proxy.example",
+		assetSigner:  blockingSigner{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	done := make(chan string, 1)
+	start := time.Now()
+	go func() {
+		done <- h.rewriteAssetHref(ctx, client, "https://upstream.example/items/x/asset.tif")
+	}()
+
+	select {
+	case got := <-done:
+		elapsed := time.Since(start)
+		if elapsed > 200*time.Millisecond {
+			t.Errorf("rewrite returned after %s, want < 200ms", elapsed)
+		}
+		if !strings.HasPrefix(got, "cancelled:") {
+			t.Errorf("got %q, want cancellation sentinel", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("rewriteAssetHref did not return after request cancellation")
+	}
+}
