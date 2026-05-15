@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -178,8 +179,11 @@ func (s *HMACSigner) Verify(rawURL string) (bool, error) {
 		return false, fmt.Errorf("missing signature parameters")
 	}
 
-	var expiry int64
-	if _, err := fmt.Sscanf(expStr, "%d", &expiry); err != nil {
+	// strconv.ParseInt rejects negatives, leading "+", trailing junk,
+	// and non-decimal prefixes — fmt.Sscanf("%d") silently accepted
+	// any of "12abc", "-1", " 12" as 12 / -1 / 12 respectively.
+	expiry, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil || expiry < 0 {
 		return false, fmt.Errorf("invalid expiry format")
 	}
 

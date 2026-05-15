@@ -167,7 +167,7 @@ func tryRemap(ctx context.Context, rules []Rule, body []byte) ([]byte, bool) {
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, false
 	}
-	transformURLs(ctx, rules, data)
+	transformURLs(ctx, rules, data, 0)
 	out, err := json.Marshal(data)
 	if err != nil {
 		return nil, false
@@ -175,20 +175,32 @@ func tryRemap(ctx context.Context, rules []Rule, body []byte) ([]byte, bool) {
 	return out, true
 }
 
+// maxRemapDepth bounds transformURLs recursion. STAC payloads are
+// typically <=4 deep (FeatureCollection → features[] → assets →
+// alternate); 16 leaves headroom for deeply-nested vendor extensions
+// while preventing pathological JSON (an attacker-supplied payload of
+// arbitrary nesting) from blowing the stack.
+const maxRemapDepth = 16
+
 // transformURLs recursively rewrites href string values according to
-// the rules. Mutates data in place.
-func transformURLs(ctx context.Context, rules []Rule, data interface{}) {
+// the rules. Mutates data in place. depth tracks the current recursion
+// level; once it exceeds maxRemapDepth the walk stops silently and
+// nested href values at deeper levels are left unrewritten.
+func transformURLs(ctx context.Context, rules []Rule, data interface{}, depth int) {
+	if depth > maxRemapDepth {
+		return
+	}
 	switch v := data.(type) {
 	case map[string]interface{}:
 		if href, ok := v["href"].(string); ok {
 			v["href"] = remapURL(ctx, rules, href)
 		}
 		for _, val := range v {
-			transformURLs(ctx, rules, val)
+			transformURLs(ctx, rules, val, depth+1)
 		}
 	case []interface{}:
 		for _, val := range v {
-			transformURLs(ctx, rules, val)
+			transformURLs(ctx, rules, val, depth+1)
 		}
 	}
 }

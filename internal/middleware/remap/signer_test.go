@@ -204,3 +204,18 @@ func TestNewSigner_HMACAndNoOp(t *testing.T) {
 		t.Fatal("expected error for unknown signer type")
 	}
 }
+
+// TestHMACSigner_VerifyRejectsBadExpiryFormats covers the strconv
+// upgrade: fmt.Sscanf("%d") used to silently accept negatives,
+// trailing junk, and leading whitespace.
+func TestHMACSigner_VerifyRejectsBadExpiryFormats(t *testing.T) {
+	s := NewHMACSigner("test-secret")
+
+	for _, badExp := range []string{"-1", "12abc", "abc", " 12", "9999999999999999999999"} {
+		raw := "https://example.com/x?exp=" + badExp + "&sig=AAAA"
+		ok, err := s.Verify(raw)
+		if ok || err == nil {
+			t.Errorf("expected reject for exp=%q; ok=%v err=%v", badExp, ok, err)
+		}
+	}
+}

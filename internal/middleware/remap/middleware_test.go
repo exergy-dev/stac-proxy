@@ -2,10 +2,12 @@ package remap
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"testing"
+	"time"
 )
 
 // TestRemap_NonJSONResponse_NotDecoded (M-remap-1): a response with a
@@ -122,5 +124,33 @@ func TestIsJSONContentType(t *testing.T) {
 		if got := isJSONContentType(in); got != want {
 			t.Errorf("isJSONContentType(%q) = %v, want %v", in, got, want)
 		}
+	}
+}
+
+// TestTransformURLs_RespectsMaxDepth ensures pathological deeply
+// nested JSON does not blow the stack. Builds a chain of nested
+// objects (`{"x":{"x":...}}`) deeper than maxRemapDepth and asserts
+// the call returns rather than recursing forever.
+func TestTransformURLs_RespectsMaxDepth(t *testing.T) {
+	// 1000 levels of nesting (well beyond maxRemapDepth=16).
+	const depth = 1000
+	root := map[string]interface{}{}
+	cur := root
+	for i := 0; i < depth; i++ {
+		next := map[string]interface{}{}
+		cur["x"] = next
+		cur = next
+	}
+
+	done := make(chan struct{})
+	go func() {
+		transformURLs(context.Background(), nil, root, 0)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("transformURLs did not return within 2s on deep input")
 	}
 }
