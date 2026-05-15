@@ -98,15 +98,75 @@ func TestEvalCQL2_IsNull(t *testing.T) {
 	}
 }
 
-func TestEvalCQL2_UnsupportedSpatial(t *testing.T) {
-	item := map[string]interface{}{}
-	_, err := EvalCQL2(mustParse(t, `S_INTERSECTS(geometry, POINT(0 0))`), item)
-	if err == nil {
-		t.Fatal("want unsupported error for spatial op")
+// boxPolygon centred on (0,0) with the supplied half-extent.
+func boxPolygon(half float64) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "Polygon",
+		"coordinates": []interface{}{
+			[]interface{}{
+				[]interface{}{-half, -half},
+				[]interface{}{half, -half},
+				[]interface{}{half, half},
+				[]interface{}{-half, half},
+				[]interface{}{-half, -half},
+			},
+		},
 	}
-	if _, ok := err.(*ErrUnsupportedNode); !ok {
-		// Wrapping is fine; just want the error.
-		t.Logf("err type: %T %v", err, err)
+}
+
+func TestEvalCQL2_SIntersects_Match(t *testing.T) {
+	// Item geometry is a small box well inside the polygon.
+	item := map[string]interface{}{
+		"geometry": boxPolygon(0.5),
+	}
+	got, err := EvalCQL2(mustParse(t,
+		`S_INTERSECTS(geometry, POLYGON((-10 -10, 10 -10, 10 10, -10 10, -10 -10)))`), item)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got {
+		t.Fatal("want item geometry to intersect surrounding polygon")
+	}
+}
+
+func TestEvalCQL2_SIntersects_NoMatch(t *testing.T) {
+	// Item geometry sits to the east of the literal polygon.
+	item := map[string]interface{}{
+		"geometry": map[string]interface{}{
+			"type": "Polygon",
+			"coordinates": []interface{}{
+				[]interface{}{
+					[]interface{}{20.0, 20.0},
+					[]interface{}{21.0, 20.0},
+					[]interface{}{21.0, 21.0},
+					[]interface{}{20.0, 21.0},
+					[]interface{}{20.0, 20.0},
+				},
+			},
+		},
+	}
+	got, err := EvalCQL2(mustParse(t,
+		`S_INTERSECTS(geometry, POLYGON((-10 -10, 10 -10, 10 10, -10 10, -10 -10)))`), item)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Fatal("want disjoint geometries to NOT intersect")
+	}
+}
+
+func TestEvalCQL2_SIntersects_NullGeometry(t *testing.T) {
+	// Item with null geometry must drop out (false), not crash.
+	item := map[string]interface{}{
+		"geometry": nil,
+	}
+	got, err := EvalCQL2(mustParse(t,
+		`S_INTERSECTS(geometry, POLYGON((-10 -10, 10 -10, 10 10, -10 10, -10 -10)))`), item)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Fatal("want false for null item geometry")
 	}
 }
 

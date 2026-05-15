@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	cql2 "github.com/exergy-dev/go-cql2"
+	cql2geojson "github.com/exergy-dev/go-cql2/geojson"
+	"github.com/yourorg/stac-proxy/internal/geo"
 )
 
 // EvalCQL2 reports whether the given CQL2 expression evaluates to
@@ -165,8 +167,94 @@ func evalOp(op *cql2.Op, item map[string]interface{}) (interface{}, error) {
 			return nil, err
 		}
 		return v == nil, nil
+	case cql2.OpSIntersects:
+		return evalSIntersects(op, item)
 	}
 	return nil, &ErrUnsupportedNode{Kind: "Op:" + string(op.Op)}
+}
+
+// evalSIntersects implements the CQL2 S_INTERSECTS spatial predicate
+// against an in-memory STAC item. The first argument is expected to be
+// a property reference resolving to the item's geometry (typically
+// "geometry"); the second is a literal GeoJSON / WKT geometry parsed
+// into a *cql2.GeomLit or *cql2.BBoxLit by the CQL2 codec. Either
+// argument order is accepted (some encoders flip them).
+//
+// Behaviour:
+//   - Returns false (not error) when the item geometry is null or the
+//     property resolves to nil — null-geometry items must drop out of
+//     a geofence-filtered result rather than crash the evaluator.
+//   - Returns false on any geometry-parse failure on either side; the
+//     intersect predicate cannot be evaluated and the item should not
+//     pass.
+//   - Returns an error only on AST shape problems (wrong arity, both
+//     args literals, etc.) since those indicate a malformed query.
+func evalSIntersects(op *cql2.Op, item map[string]interface{}) (interface{}, error) {
+	if len(op.Args) != 2 {
+		return nil, fmt.Errorf("cql2 eval: S_INTERSECTS expects 2 args, got %d", len(op.Args))
+	}
+	propIdx, litIdx := -1, -1
+	for i, a := range op.Args {
+		switch a.(type) {
+		case *cql2.PropertyRef:
+			propIdx = i
+		case *cql2.GeomLit, *cql2.BBoxLit:
+			litIdx = i
+		}
+	}
+	if propIdx < 0 || litIdx < 0 {
+		return nil, &ErrUnsupportedNode{Kind: "Op:s_intersects (need property + literal geometry)"}
+	}
+	propRef := op.Args[propIdx].(*cql2.PropertyRef)
+	itemGeomVal := lookupProperty(item, propRef.Name)
+	if itemGeomVal == nil {
+		return false, nil
+	}
+	itemGeom, err := geo.ParseGeoJSON(itemGeomVal)
+	if err != nil || itemGeom == nil {
+		return false, nil
+	}
+	litGeoJSON, err := literalToGeoJSON(op.Args[litIdx])
+	if err != nil {
+		return false, nil
+	}
+	litGeom, err := geo.ParseGeoJSON(litGeoJSON)
+	if err != nil || litGeom == nil {
+		return false, nil
+	}
+	return itemGeom.Intersects(litGeom), nil
+}
+
+// literalToGeoJSON converts a CQL2 geometry/bbox literal into a GeoJSON
+// blob the geo facade can parse. GeomLit re-uses the cql2/geojson
+// encoder; BBoxLit is materialized into a 5-point WGS84 polygon.
+func literalToGeoJSON(n cql2.Node) ([]byte, error) {
+	switch lit := n.(type) {
+	case *cql2.GeomLit:
+		return cql2geojson.Encode(lit.Geom)
+	case *cql2.BBoxLit:
+		var minX, minY, maxX, maxY float64
+		switch len(lit.Coords) {
+		case 4:
+			minX, minY, maxX, maxY = lit.Coords[0], lit.Coords[1], lit.Coords[2], lit.Coords[3]
+		case 6:
+			minX, minY, maxX, maxY = lit.Coords[0], lit.Coords[1], lit.Coords[3], lit.Coords[4]
+		default:
+			return nil, fmt.Errorf("cql2 eval: bbox literal needs 4 or 6 coords, got %d", len(lit.Coords))
+		}
+		poly := map[string]interface{}{
+			"type": "Polygon",
+			"coordinates": [][][]float64{{
+				{minX, minY},
+				{maxX, minY},
+				{maxX, maxY},
+				{minX, maxY},
+				{minX, minY},
+			}},
+		}
+		return json.Marshal(poly)
+	}
+	return nil, fmt.Errorf("cql2 eval: unsupported geometry literal %T", n)
 }
 
 // lookupProperty resolves a CQL2 property reference against a STAC
