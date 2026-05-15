@@ -9,10 +9,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -332,6 +334,105 @@ func TestJWKS_NegativeCacheClearedOnSuccessfulRefresh(t *testing.T) {
 	if _, err := c.Key(ctx, "new-kid"); err != nil {
 		t.Fatalf("rotation lookup: %v", err)
 	}
+}
+
+// TestJWKS_RejectsEncKeysAndLogsParseErrors verifies the use=sig filter
+// (M-auth-2) and that JWK parse errors are logged with structured fields
+// rather than silently dropped.
+func TestJWKS_RejectsEncKeysAndLogsParseErrors(t *testing.T) {
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	good := JWK{
+		Kty: "RSA",
+		Kid: "good",
+		Use: "sig",
+		N:   base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
+		E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
+	}
+	encKey := JWK{
+		Kty: "RSA",
+		Kid: "enc-only",
+		Use: "enc",
+		N:   base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
+		E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
+	}
+	malformed := JWK{
+		Kty: "RSA",
+		Kid: "broken",
+		Use: "sig",
+		N:   "!!!not-base64!!!",
+		E:   "AQAB",
+	}
+	doc, _ := json.Marshal(JWKSResponse{Keys: []JWK{good, encKey, malformed}})
+
+	srv, _ := newJWKSServer(t, func() []byte { return doc })
+
+	// Capture slog output through a JSON handler so we can assert on
+	// the structured fields (jwk_kid / jwk_use).
+	var buf logBuffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(handler)
+
+	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
+		AllowInsecureHTTP: true,
+		Logger:            logger,
+	})
+	if err != nil {
+		t.Fatalf("NewJWKSClient: %v", err)
+	}
+	ctx := context.Background()
+
+	// The good key should be available.
+	if _, err := c.Key(ctx, "good"); err != nil {
+		t.Fatalf("good key fetch: %v", err)
+	}
+	// The enc-use key must NOT be admitted.
+	if _, err := c.Key(ctx, "enc-only"); err == nil {
+		t.Fatal("want error for use=enc kid; the key should not have been cached")
+	}
+	// The malformed key must NOT be admitted.
+	if _, err := c.Key(ctx, "broken"); err == nil {
+		t.Fatal("want error for malformed kid; parse error should have skipped it")
+	}
+
+	// Internal sanity: the cache contains exactly the good kid.
+	c.mu.RLock()
+	cached := make([]string, 0, len(c.keys))
+	for k := range c.keys {
+		cached = append(cached, k)
+	}
+	c.mu.RUnlock()
+	if len(cached) != 1 || cached[0] != "good" {
+		t.Fatalf("want only [good] cached, got %v", cached)
+	}
+
+	// Verify the structured log entries reference the offending kids.
+	out := buf.String()
+	if !strings.Contains(out, `"jwk_kid":"enc-only"`) || !strings.Contains(out, `"jwk_use":"enc"`) {
+		t.Errorf("expected enc-only kid + use=enc warning in log, got: %s", out)
+	}
+	if !strings.Contains(out, `"jwk_kid":"broken"`) {
+		t.Errorf("expected broken kid in parse-error warning, got: %s", out)
+	}
+}
+
+// logBuffer is a minimal sync io.Writer for capturing slog JSON output
+// without pulling in bytes.Buffer's lack of safety under goroutines.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	b.buf = append(b.buf, p...)
+	b.mu.Unlock()
+	return len(p), nil
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
 }
 
 // TestJWKS_StaleWhileRevalidate_KeepsServingDuringOutage verifies the

@@ -244,6 +244,11 @@ func (p *BearerProvider) Authenticate(ctx context.Context, req *http.Request) (*
 // JWKS fetch honours the inbound request's deadline / cancellation
 // instead of detaching to context.Background() (which would outlive
 // the caller).
+//
+// When the JWKS document declared an `alg` for the looked-up kid the
+// closure additionally rejects tokens whose header `alg` differs from
+// the cached value — defense against an attacker presenting a known
+// kid with an unexpected algorithm (alg-confusion variant).
 func (p *BearerProvider) jwksKeyFuncFor(ctx context.Context) jwt.Keyfunc {
 	return func(token *jwt.Token) (interface{}, error) {
 		if p.jwks == nil {
@@ -259,7 +264,17 @@ func (p *BearerProvider) jwksKeyFuncFor(ctx context.Context) jwt.Keyfunc {
 		default:
 			return nil, fmt.Errorf("unexpected signing method for JWKS: %v", token.Header["alg"])
 		}
-		return p.jwks.Key(ctx, kid)
+		key, alg, err := p.jwks.KeyWithAlg(ctx, kid)
+		if err != nil {
+			return nil, err
+		}
+		if alg != "" {
+			tokAlg, _ := token.Header["alg"].(string)
+			if tokAlg != alg {
+				return nil, fmt.Errorf("jwks: token alg %q does not match key alg %q for kid %q", tokAlg, alg, kid)
+			}
+		}
+		return key, nil
 	}
 }
 

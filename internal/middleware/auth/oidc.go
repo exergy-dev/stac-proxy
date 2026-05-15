@@ -199,9 +199,19 @@ func (p *OIDCProvider) Authenticate(ctx context.Context, req *http.Request) (*Pr
 		return nil, errors.New("token missing kid header")
 	}
 
-	key, err := p.jwks.Key(ctx, kid)
+	key, keyAlg, err := p.jwks.KeyWithAlg(ctx, kid)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get signing key: %w", err)
+	}
+
+	// If the JWKS entry declared an `alg`, reject tokens that claim a
+	// different alg for the same kid — an attacker who knows the public
+	// key must not be able to substitute an unexpected algorithm.
+	if keyAlg != "" {
+		tokAlg, _ := token.Header["alg"].(string)
+		if tokAlg != keyAlg {
+			return nil, fmt.Errorf("token alg %q does not match key alg %q for kid %q", tokAlg, keyAlg, kid)
+		}
 	}
 
 	// Parse and validate the token. Restrict to RSA/EC algorithms:
