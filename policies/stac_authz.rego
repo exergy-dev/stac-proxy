@@ -111,6 +111,11 @@ allowed_collections := collections if {
 #                               Filter Extension, the geofence is pushed
 #                               down as S_INTERSECTS rather than
 #                               post-filtered.
+# Single constraints rule with an if/else fallback. Splitting this
+# across two `constraints :=` rules (one guarded by `allow`, the other
+# by `not allow`) is brittle across Rego versions: some compilers
+# treat the two as conflicting assignments at the same path. The
+# else form makes the precedence explicit and version-stable.
 constraints := c if {
     allow
     c := {
@@ -118,7 +123,7 @@ constraints := c if {
         "max_results": max_results,
         "cql2_filter": cql2_filter,
     }
-}
+} else := {}
 
 # Example: clamp cloud cover for non-premium users so the upstream
 # returns clearer scenes only. Premium users get an empty filter.
@@ -150,10 +155,6 @@ cql2_filter := "" if {
 cql2_filter := "" if {
     input.principal
     "premium" in input.principal.roles
-}
-
-constraints := {} if {
-    not allow
 }
 
 # Rate limit based on role
