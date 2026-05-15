@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/yourorg/stac-proxy/internal/geo"
 )
 
 // ParseError is returned by the parser when a query parameter is
@@ -204,13 +206,19 @@ func (p *Parser) parseSearchFromQuery(r *http.Request) (*SearchRequest, error) {
 		req.Fields = parseFieldsShorthand(fields)
 	}
 
-	// Intersects (as GeoJSON string) — validate it parses as JSON
-	// and store the raw bytes so downstream forwards them verbatim.
+	// Intersects (as GeoJSON string) — validate it parses as a real
+	// GeoJSON geometry (not just any JSON object) so malformed shapes
+	// surface as a 400 here rather than at the upstream. Store the raw
+	// bytes so downstream forwards them verbatim.
 	if intersects := q.Get("intersects"); intersects != "" {
 		var probe map[string]interface{}
-		if err := json.Unmarshal([]byte(intersects), &probe); err == nil {
-			req.Intersects = json.RawMessage(intersects)
+		if err := json.Unmarshal([]byte(intersects), &probe); err != nil {
+			return nil, &ParseError{Param: "intersects", Value: intersects, Err: err}
 		}
+		if _, err := geo.ParseGeoJSON(json.RawMessage(intersects)); err != nil {
+			return nil, &ParseError{Param: "intersects", Value: intersects, Err: err}
+		}
+		req.Intersects = json.RawMessage(intersects)
 	}
 
 	// Filter

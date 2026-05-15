@@ -215,15 +215,6 @@ func TestParseSearchFromQuery(t *testing.T) {
 			},
 		},
 		{
-			"intersects invalid JSON ignored",
-			"/search?intersects={broken",
-			func(t *testing.T, r *SearchRequest) {
-				if len(r.Intersects) != 0 {
-					t.Errorf("Intersects should be empty: %s", r.Intersects)
-				}
-			},
-		},
-		{
 			"sortby asc + desc",
 			"/search?sortby=-datetime,id",
 			func(t *testing.T, r *SearchRequest) {
@@ -345,6 +336,48 @@ func TestParseSearchFromQuery_BadLimitReturns400(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "limit") {
 		t.Errorf("error %q missing %q", err.Error(), "limit")
+	}
+}
+
+// TestParseSearchFromQuery_BadIntersectsReturns400 verifies a malformed
+// GeoJSON intersects payload (parses as JSON but is not a valid
+// geometry) produces a typed *ParseError so callers map it to HTTP 400
+// rather than forwarding the bad shape upstream.
+func TestParseSearchFromQuery_BadIntersectsReturns400(t *testing.T) {
+	t.Parallel()
+	// Polygon with a non-array `coordinates` value — parses as JSON
+	// but is not a valid GeoJSON Polygon.
+	bad := `{"type":"Polygon","coordinates":"not-an-array"}`
+	r := httptest.NewRequest(http.MethodGet, "/search?intersects="+bad, nil)
+	_, err := NewParser().ParseSearchRequestFromHTTP(r)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("error type = %T, want *ParseError; err=%v", err, err)
+	}
+	if pe.Param != "intersects" {
+		t.Errorf("Param = %q, want %q", pe.Param, "intersects")
+	}
+}
+
+// TestParseSearchFromQuery_NonJSONIntersectsReturns400 covers the
+// before-state case (raw JSON parse failure) — it should now also
+// produce a typed *ParseError instead of being silently dropped.
+func TestParseSearchFromQuery_NonJSONIntersectsReturns400(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequest(http.MethodGet, "/search?intersects={broken", nil)
+	_, err := NewParser().ParseSearchRequestFromHTTP(r)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("error type = %T, want *ParseError; err=%v", err, err)
+	}
+	if pe.Param != "intersects" {
+		t.Errorf("Param = %q, want %q", pe.Param, "intersects")
 	}
 }
 
