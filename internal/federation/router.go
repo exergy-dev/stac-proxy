@@ -11,7 +11,16 @@ type CollectionRouter struct {
 	collectionToOrigins map[string][]*Origin
 	// All origins (for queries without collection filter)
 	allOrigins []*Origin
-	mu         sync.RWMutex
+	// implicitAllOrigins is the precomputed slice of origins that have
+	// no explicit Collections list — these are the "implicit-all"
+	// origins consulted on every routed collection (M-federation-4).
+	// Recomputed on Register/UpdateFromDiscovery and read directly by
+	// Route() to avoid an O(collections × allOrigins) scan per request.
+	implicitAllOrigins []*Origin
+	// recomputeImplicitHook (test-only) is invoked every time
+	// implicitAllOrigins is recomputed. Production code leaves it nil.
+	recomputeImplicitHook func()
+	mu                    sync.RWMutex
 }
 
 // NewCollectionRouter creates a new collection router.
@@ -39,6 +48,25 @@ func (r *CollectionRouter) Register(origin *Origin) {
 				r.collectionToOrigins[fullID], origin)
 		}
 	}
+
+	r.recomputeImplicitAllLocked()
+}
+
+// recomputeImplicitAllLocked rebuilds implicitAllOrigins from
+// allOrigins. Caller must hold r.mu.Lock(). Cheap (a single linear
+// scan) and runs only on Register/UpdateFromDiscovery — never on the
+// hot Route() path.
+func (r *CollectionRouter) recomputeImplicitAllLocked() {
+	implicit := r.implicitAllOrigins[:0]
+	for _, o := range r.allOrigins {
+		if len(o.Collections) == 0 {
+			implicit = append(implicit, o)
+		}
+	}
+	r.implicitAllOrigins = implicit
+	if r.recomputeImplicitHook != nil {
+		r.recomputeImplicitHook()
+	}
 }
 
 // Route returns origins that should be queried for the given collections.
@@ -61,6 +89,11 @@ func (r *CollectionRouter) Route(collections []string) []*Origin {
 	// explicit mappings and implicit (no-collection-list) origins are
 	// considered for every collection — explicit origins are not
 	// short-circuit-exclusive.
+	//
+	// implicitAllOrigins is precomputed at Register time
+	// (M-federation-4) so the inner loop iterates only the small
+	// implicit-all set rather than rescanning every registered origin
+	// per-collection.
 	originSet := make(map[string]*Origin)
 	for _, collID := range collections {
 		// Explicit mappings.
@@ -74,11 +107,11 @@ func (r *CollectionRouter) Route(collections []string) []*Origin {
 
 		// Implicit: origins without explicit collection lists may serve
 		// any collection that isn't excluded.
-		for _, o := range r.allOrigins {
+		for _, o := range r.implicitAllOrigins {
 			if !o.Enabled {
 				continue
 			}
-			if len(o.Collections) == 0 && !r.isExcluded(o, collID) {
+			if !r.isExcluded(o, collID) {
 				originSet[o.ID] = o
 			}
 		}

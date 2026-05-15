@@ -1288,3 +1288,39 @@ func TestRouterComplexScenarios(t *testing.T) {
 		}
 	})
 }
+
+// TestRouter_PrecomputesImplicitAllOnce is the M-federation-4
+// regression: Route() previously rescanned r.allOrigins for every
+// queried collection (O(collections × allOrigins)). The implicit-all
+// origin set is now cached on the router and only refreshed when
+// Register/UpdateFromDiscovery actually mutates membership. We verify
+// that 100 Route() calls do NOT trigger 100 recomputes — the hook
+// fires once per Register and zero times per Route.
+func TestRouter_PrecomputesImplicitAllOnce(t *testing.T) {
+	t.Parallel()
+
+	router := NewCollectionRouter()
+
+	var recomputes int
+	router.recomputeImplicitHook = func() { recomputes++ }
+
+	// Two implicit-all origins (no Collections list) and one explicit.
+	router.Register(testOrigin("implicit-1"))
+	router.Register(testOrigin("implicit-2"))
+	router.Register(testOrigin("explicit", routerWithCollections("c1", "c2")))
+
+	priorRegisterRecomputes := recomputes
+	if priorRegisterRecomputes < 3 {
+		t.Fatalf("expected at least one recompute per Register; got %d", priorRegisterRecomputes)
+	}
+
+	// Now slam Route() — none of these should trigger a recompute.
+	for i := 0; i < 100; i++ {
+		_ = router.Route([]string{"c1", "c2", "c-other"})
+	}
+
+	if recomputes != priorRegisterRecomputes {
+		t.Errorf("Route() triggered recomputes: prior=%d now=%d (expected stable)",
+			priorRegisterRecomputes, recomputes)
+	}
+}
