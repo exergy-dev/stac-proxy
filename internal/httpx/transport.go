@@ -21,11 +21,23 @@ import (
 // exponentially and is capped at MaxBackoff. RetryOn lists the HTTP
 // status codes that should trigger a retry; if nil/empty, all 5xx
 // responses are retried (network errors always retry).
+//
+// RetryNonIdempotent opts in to retrying methods that may not be
+// safe to replay. By default POST and PATCH are NOT retried even on
+// transport errors or 5xx -- the transport cannot, in general, know
+// whether a non-idempotent request was actually applied upstream
+// before the connection failed, and replaying it can produce
+// duplicate side effects (double-write, double-charge, etc.).
+// Set RetryNonIdempotent=true ONLY when the upstream contract for
+// these methods is known to be idempotent (e.g. a STAC search
+// endpoint that the operator has verified is read-only).
+// (HIGH H-httpx-1)
 type RetryConfig struct {
-	MaxRetries     int
-	InitialBackoff time.Duration
-	MaxBackoff     time.Duration
-	RetryOn        []int
+	MaxRetries         int
+	InitialBackoff     time.Duration
+	MaxBackoff         time.Duration
+	RetryOn            []int
+	RetryNonIdempotent bool
 }
 
 // NewRetryTransport wraps inner with retry semantics backed by
@@ -34,6 +46,11 @@ type RetryConfig struct {
 // body replay via req.GetBody (or library-managed buffering when
 // GetBody is absent). Returns the first non-retryable response
 // (success or 4xx) OR the last response/error after MaxRetries.
+//
+// Non-idempotent methods (POST, PATCH) bypass the retry layer
+// entirely by default and go straight to inner.RoundTrip -- see
+// RetryConfig.RetryNonIdempotent for the safety rationale.
+// (HIGH H-httpx-1)
 //
 // If inner is nil, http.DefaultTransport is used.
 func NewRetryTransport(inner http.RoundTripper, cfg RetryConfig) http.RoundTripper {
@@ -53,13 +70,42 @@ func NewRetryTransport(inner http.RoundTripper, cfg RetryConfig) http.RoundTripp
 	rc.CheckRetry = checkRetryFunc(cfg.RetryOn)
 	rc.ErrorHandler = retryablehttp.PassthroughErrorHandler
 
-	return &retryablehttp.RoundTripper{Client: rc}
+	retryRT := &retryablehttp.RoundTripper{Client: rc}
+	if cfg.RetryNonIdempotent {
+		return retryRT
+	}
+	return &methodGatedTransport{retry: retryRT, passthrough: inner}
+}
+
+// methodGatedTransport routes idempotent methods through the retry
+// layer and non-idempotent methods (POST, PATCH) directly to the
+// underlying transport. This is the default safety posture: we
+// cannot, in general, know whether a non-idempotent request that
+// failed mid-flight was already applied upstream, so replaying it
+// risks duplicate side effects (double-write, double-charge, etc.).
+// (HIGH H-httpx-1)
+type methodGatedTransport struct {
+	retry       http.RoundTripper
+	passthrough http.RoundTripper
+}
+
+func (t *methodGatedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	switch req.Method {
+	case http.MethodPost, http.MethodPatch:
+		return t.passthrough.RoundTrip(req)
+	default:
+		return t.retry.RoundTrip(req)
+	}
 }
 
 // checkRetryFunc returns a retryablehttp.CheckRetry that retries on
 // any RoundTrip error AND on either (a) any status in retryOn when
 // non-empty, or (b) any 5xx response otherwise. Context cancellation
 // short-circuits without retry.
+//
+// Method-level safety (the don't-retry-POST/PATCH default) is enforced
+// upstream of this function by methodGatedTransport in
+// NewRetryTransport -- see HIGH H-httpx-1.
 func checkRetryFunc(retryOn []int) retryablehttp.CheckRetry {
 	return func(ctx context.Context, resp *http.Response, err error) (bool, error) {
 		if ctx.Err() != nil {

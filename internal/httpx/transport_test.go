@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -74,15 +75,21 @@ func newPOST(t *testing.T, body string) *http.Request {
 	return req
 }
 
+// All retry-on-POST tests below opt in via RetryNonIdempotent: true so
+// they continue to exercise the retry semantics they were written for.
+// The default-deny behavior is asserted by
+// TestRetryTransport_DoesNotRetryPOSTByDefault. (HIGH H-httpx-1)
+
 func TestRetryTransport_503ThenSuccess_ReplaysPOSTBody(t *testing.T) {
 	f := &fakeRT{responses: []fakeResp{
 		{status: 503, retryAfter: "0"},
 		{status: 200},
 	}}
 	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:     3,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     5 * time.Millisecond,
+		MaxRetries:         3,
+		InitialBackoff:     1 * time.Millisecond,
+		MaxBackoff:         5 * time.Millisecond,
+		RetryNonIdempotent: true,
 	})
 
 	req := newPOST(t, "hello")
@@ -109,9 +116,10 @@ func TestRetryTransport_RetryAfterZero_NoDelay(t *testing.T) {
 		{status: 200},
 	}}
 	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:     2,
-		InitialBackoff: 1 * time.Second, // would dominate without Retry-After
-		MaxBackoff:     1 * time.Second,
+		MaxRetries:         2,
+		InitialBackoff:     1 * time.Second, // would dominate without Retry-After
+		MaxBackoff:         1 * time.Second,
+		RetryNonIdempotent: true,
 	})
 	start := time.Now()
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
@@ -131,9 +139,10 @@ func TestRetryTransport_RetryAfterOne_Honored(t *testing.T) {
 		{status: 200},
 	}}
 	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:     2,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     2 * time.Second,
+		MaxRetries:         2,
+		InitialBackoff:     1 * time.Millisecond,
+		MaxBackoff:         2 * time.Second,
+		RetryNonIdempotent: true,
 	})
 	start := time.Now()
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
@@ -154,9 +163,10 @@ func TestRetryTransport_GivesUpAfterMaxRetries(t *testing.T) {
 		{status: 503},
 	}}
 	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:     2, // 3 total attempts
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     5 * time.Millisecond,
+		MaxRetries:         2, // 3 total attempts
+		InitialBackoff:     1 * time.Millisecond,
+		MaxBackoff:         5 * time.Millisecond,
+		RetryNonIdempotent: true,
 	})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
 	if err != nil {
@@ -176,9 +186,10 @@ func TestRetryTransport_NoRetryOn4xx(t *testing.T) {
 		{status: 404},
 	}}
 	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:     3,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     5 * time.Millisecond,
+		MaxRetries:         3,
+		InitialBackoff:     1 * time.Millisecond,
+		MaxBackoff:         5 * time.Millisecond,
+		RetryNonIdempotent: true,
 	})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
 	if err != nil {
@@ -195,9 +206,10 @@ func TestRetryTransport_NoRetryOn4xx(t *testing.T) {
 func TestRetryTransport_NoRetryOn200(t *testing.T) {
 	f := &fakeRT{responses: []fakeResp{{status: 200}}}
 	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:     3,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     5 * time.Millisecond,
+		MaxRetries:         3,
+		InitialBackoff:     1 * time.Millisecond,
+		MaxBackoff:         5 * time.Millisecond,
+		RetryNonIdempotent: true,
 	})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
 	if err != nil {
@@ -217,9 +229,10 @@ func TestRetryTransport_ContextCancellationAbortsBackoff(t *testing.T) {
 		{status: 200},
 	}}
 	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:     2,
-		InitialBackoff: 500 * time.Millisecond,
-		MaxBackoff:     1 * time.Second,
+		MaxRetries:         2,
+		InitialBackoff:     500 * time.Millisecond,
+		MaxBackoff:         1 * time.Second,
+		RetryNonIdempotent: true,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -260,10 +273,11 @@ func TestRetryTransport_CustomRetryOn(t *testing.T) {
 		{status: 200},
 	}}
 	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:     2,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     5 * time.Millisecond,
-		RetryOn:        []int{429},
+		MaxRetries:         2,
+		InitialBackoff:     1 * time.Millisecond,
+		MaxBackoff:         5 * time.Millisecond,
+		RetryOn:            []int{429},
+		RetryNonIdempotent: true,
 	})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
 	if err != nil {
@@ -278,6 +292,8 @@ func TestRetryTransport_CustomRetryOn(t *testing.T) {
 }
 
 func TestRetryTransport_ZeroMaxRetries_PassesThrough(t *testing.T) {
+	// MaxRetries: 0 returns the inner transport directly, so this case
+	// is unaffected by the POST/PATCH gating.
 	f := &fakeRT{responses: []fakeResp{{status: 503}}}
 	rt := NewRetryTransport(f, RetryConfig{MaxRetries: 0})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
@@ -289,6 +305,140 @@ func TestRetryTransport_ZeroMaxRetries_PassesThrough(t *testing.T) {
 	}
 	if int(f.attempt.Load()) != 1 {
 		t.Fatalf("attempts = %d, want 1", f.attempt.Load())
+	}
+}
+
+// TestRetryTransport_DoesNotRetryPOSTByDefault (HIGH H-httpx-1):
+// without the RetryNonIdempotent opt-in, a failing POST must NOT be
+// retried even though the configuration would otherwise allow it.
+// Otherwise the federation /search path (POST) and any other
+// non-idempotent upstream call could be silently re-applied after a
+// transport hiccup, producing duplicate side effects.
+//
+// Uses an httptest.Server so the test exercises the real
+// http.DefaultTransport path (the default `inner` for
+// NewRetryTransport) end-to-end, not just the fakeRT.
+func TestRetryTransport_DoesNotRetryPOSTByDefault(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			http.Error(w, "boom", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rt := NewRetryTransport(http.DefaultTransport, RetryConfig{
+		MaxRetries:     3,
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     5 * time.Millisecond,
+		// RetryNonIdempotent intentionally false (the default).
+	})
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := BufferAndSetGetBody(req); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	resp.Body.Close()
+
+	if got := int(hits.Load()); got != 1 {
+		t.Errorf("upstream attempts = %d, want 1 (POST must not be retried by default)", got)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d (first failure surfaced as-is)", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+// TestRetryTransport_RetriesPOSTWhenOptedIn covers the opt-in path:
+// when RetryNonIdempotent is true, a POST that initially fails with
+// 503 IS retried and the second attempt's success is returned.
+func TestRetryTransport_RetriesPOSTWhenOptedIn(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			http.Error(w, "transient", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rt := NewRetryTransport(http.DefaultTransport, RetryConfig{
+		MaxRetries:         3,
+		InitialBackoff:     1 * time.Millisecond,
+		MaxBackoff:         5 * time.Millisecond,
+		RetryNonIdempotent: true,
+	})
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := BufferAndSetGetBody(req); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	resp.Body.Close()
+
+	if got := int(hits.Load()); got != 2 {
+		t.Errorf("upstream attempts = %d, want 2 (POST should retry when opted in)", got)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (retry recovered)", resp.StatusCode)
+	}
+}
+
+// TestRetryTransport_StillRetriesGETByDefault is a sanity check: the
+// no-POST/PATCH-by-default policy must not regress idempotent-method
+// retries.
+func TestRetryTransport_StillRetriesGETByDefault(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			http.Error(w, "transient", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rt := NewRetryTransport(http.DefaultTransport, RetryConfig{
+		MaxRetries:     3,
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     5 * time.Millisecond,
+	})
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	resp.Body.Close()
+
+	if got := int(hits.Load()); got != 2 {
+		t.Errorf("upstream attempts = %d, want 2 (GET should still retry)", got)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }
 
