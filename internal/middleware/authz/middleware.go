@@ -80,12 +80,16 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 
 			// Pre-upstream request mutations. Only fire when there's a
 			// parsed search body to mutate AND there are constraints.
-			// (In production, info.SearchReq is populated by federation
-			// AFTER this middleware runs, so these paths are exercised
-			// mainly via tests that pre-populate. Migration to a
-			// pre-authz search parser is out of scope.)
+			// The search-body parser middleware in internal/server runs
+			// before this middleware so info.SearchReq is populated for
+			// search-like routes; non-search routes still hit nil here
+			// and the constraint application is skipped (only the
+			// response-side enforcement runs in that case).
 			if info != nil && info.SearchReq != nil && decision.Constraints != nil {
-				applyConstraints(info.SearchReq, decision.Constraints)
+				if err := applyConstraints(info.SearchReq, decision.Constraints); err != nil {
+					writeError(w, http.StatusForbidden, "Forbidden", err.Error())
+					return
+				}
 				if cfg.CQL2InjectionEnabled &&
 					(cfg.FilterExtensionCheck == nil || cfg.FilterExtensionCheck(r, info)) {
 					if err := injectCQL2Filter(info.SearchReq, decision.Constraints); err != nil {
@@ -157,15 +161,131 @@ func writeError(w http.ResponseWriter, status int, code, description string) {
 	})
 }
 
-// applyConstraints clamps the parsed SearchRequest's Limit to the
-// authz-decided MaxResults (when smaller).
-func applyConstraints(sr *stac.SearchRequest, constraints *AuthzConstraints) {
-	if constraints.MaxResults <= 0 || sr == nil {
-		return
+// applyConstraints enforces the authz decision against the parsed
+// SearchRequest before it leaves the proxy:
+//
+//   - MaxResults: clamp sr.Limit when smaller.
+//   - AllowedCollections: intersect with sr.Collections; if the request
+//     supplied no collections, scope it to the allowed set.
+//   - DeniedCollections: remove from sr.Collections.
+//   - RequiredFilters: translate to a cql2-text predicate and AND it
+//     into constraints.CQL2Filter so injectCQL2Filter merges it with
+//     any policy CQL2 + the user filter.
+//   - Geofence.FilterMode: default to true when AllowedArea is set
+//     and FilterMode is unspecified, so an operator can't accidentally
+//     ship a geofence policy that does nothing.
+//
+// Returns an error when the surviving collections list is empty after
+// intersection/scrub *and* the request originally specified collections
+// (or AllowedCollections forced one); the caller writes 403.
+//
+// Known limitation: when AllowedCollections is empty, DeniedCollections
+// is non-empty, and the request specifies no collections, this function
+// cannot enumerate "all collections except denied" — the response-side
+// post-filter and any pushed-down CQL2 predicate become responsible.
+// Operators relying on DeniedCollections should also enumerate the
+// safe set in AllowedCollections.
+func applyConstraints(sr *stac.SearchRequest, constraints *AuthzConstraints) error {
+	if sr == nil || constraints == nil {
+		return nil
 	}
-	if sr.Limit <= 0 || sr.Limit > constraints.MaxResults {
-		sr.Limit = constraints.MaxResults
+
+	if constraints.MaxResults > 0 {
+		if sr.Limit <= 0 || sr.Limit > constraints.MaxResults {
+			sr.Limit = constraints.MaxResults
+		}
 	}
+
+	requestSpecifiedCollections := len(sr.Collections) > 0
+
+	if len(constraints.AllowedCollections) > 0 {
+		if requestSpecifiedCollections {
+			sr.Collections = intersectCollections(sr.Collections, constraints.AllowedCollections)
+			if len(sr.Collections) == 0 {
+				return errCollectionsDenied
+			}
+		} else {
+			sr.Collections = append([]string(nil), constraints.AllowedCollections...)
+		}
+	}
+
+	if len(constraints.DeniedCollections) > 0 && len(sr.Collections) > 0 {
+		sr.Collections = removeCollections(sr.Collections, constraints.DeniedCollections)
+		if len(sr.Collections) == 0 {
+			return errCollectionsDenied
+		}
+	}
+
+	if len(constraints.RequiredFilters) > 0 {
+		extra, err := requiredFiltersToCQL2(constraints.RequiredFilters)
+		if err != nil {
+			return err
+		}
+		if extra != "" {
+			if constraints.CQL2Filter == "" {
+				constraints.CQL2Filter = extra
+			} else {
+				constraints.CQL2Filter = "(" + constraints.CQL2Filter + ") AND (" + extra + ")"
+			}
+		}
+	}
+
+	if constraints.Geofence != nil &&
+		constraints.Geofence.AllowedArea != nil &&
+		!constraints.Geofence.FilterMode &&
+		!constraints.GeofencePushedDown {
+		constraints.Geofence.FilterMode = true
+	}
+
+	return nil
+}
+
+var errCollectionsDenied = &constraintError{msg: "no collections in request are permitted by policy"}
+
+type constraintError struct{ msg string }
+
+func (e *constraintError) Error() string { return e.msg }
+
+// intersectCollections returns the elements of a that also appear in b,
+// preserving the order of a. Comparison is exact-match (case-sensitive)
+// to match STAC collection-id semantics.
+func intersectCollections(a, b []string) []string {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(b))
+	for _, c := range b {
+		allowed[c] = struct{}{}
+	}
+	out := make([]string, 0, len(a))
+	for _, c := range a {
+		if _, ok := allowed[c]; ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// removeCollections returns the elements of a that do not appear in b,
+// preserving the order of a.
+func removeCollections(a, b []string) []string {
+	if len(a) == 0 {
+		return nil
+	}
+	if len(b) == 0 {
+		return append([]string(nil), a...)
+	}
+	denied := make(map[string]struct{}, len(b))
+	for _, c := range b {
+		denied[c] = struct{}{}
+	}
+	out := make([]string, 0, len(a))
+	for _, c := range a {
+		if _, ok := denied[c]; !ok {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // injectCQL2Filter merges policy CQL2 (including any geofence

@@ -350,3 +350,172 @@ func TestAuthz_NonSearchRequest_NoInject(t *testing.T) {
 		t.Fatalf("want 200 pass-through, got %d", rr.Code)
 	}
 }
+
+// --- C2 regression tests: AllowedCollections / DeniedCollections /
+// RequiredFilters / Geofence FilterMode default. The audit reported C2
+// as DONE, but applyConstraints only clamped MaxResults — these tests
+// fail without the corrected enforcement.
+
+func TestAuthz_AllowedCollections_IntersectsRequest(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				AllowedCollections: []string{"a", "b"},
+			},
+		}},
+		AllowAnonymous: true,
+	})
+	sr := &stac.SearchRequest{Collections: []string{"a", "c", "d"}}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	rr := runMW(mw, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(sr.Collections) != 1 || sr.Collections[0] != "a" {
+		t.Fatalf("want [a], got %v", sr.Collections)
+	}
+}
+
+func TestAuthz_AllowedCollections_NoIntersection_Denies403(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				AllowedCollections: []string{"a", "b"},
+			},
+		}},
+		AllowAnonymous: true,
+	})
+	sr := &stac.SearchRequest{Collections: []string{"c", "d"}}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	rr := runMW(mw, r)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d", rr.Code)
+	}
+}
+
+func TestAuthz_AllowedCollections_EmptyRequest_PopulatesFromAllowed(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				AllowedCollections: []string{"a", "b"},
+			},
+		}},
+		AllowAnonymous: true,
+	})
+	sr := &stac.SearchRequest{}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	rr := runMW(mw, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(sr.Collections) != 2 || sr.Collections[0] != "a" || sr.Collections[1] != "b" {
+		t.Fatalf("want [a,b], got %v", sr.Collections)
+	}
+}
+
+func TestAuthz_DeniedCollections_RemovesFromRequest(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				DeniedCollections: []string{"b"},
+			},
+		}},
+		AllowAnonymous: true,
+	})
+	sr := &stac.SearchRequest{Collections: []string{"a", "b", "c"}}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	rr := runMW(mw, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	if len(sr.Collections) != 2 || sr.Collections[0] != "a" || sr.Collections[1] != "c" {
+		t.Fatalf("want [a,c], got %v", sr.Collections)
+	}
+}
+
+func TestAuthz_DeniedCollections_RemovesAll_Denies403(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				DeniedCollections: []string{"b", "c"},
+			},
+		}},
+		AllowAnonymous: true,
+	})
+	sr := &stac.SearchRequest{Collections: []string{"b", "c"}}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	rr := runMW(mw, r)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d", rr.Code)
+	}
+}
+
+func TestAuthz_RequiredFilters_TranslatedToCQL2(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				RequiredFilters: map[string]interface{}{
+					"cloud_cover": map[string]interface{}{"lte": 20},
+					"platform":    "sentinel-2",
+				},
+			},
+		}},
+		AllowAnonymous:       true,
+		CQL2InjectionEnabled: true,
+	})
+	sr := &stac.SearchRequest{}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	rr := runMW(mw, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	s, ok := sr.Filter.(string)
+	if !ok {
+		t.Fatalf("want cql2-text filter, got %T %v", sr.Filter, sr.Filter)
+	}
+	if !strings.Contains(s, "cloud_cover") || !strings.Contains(s, "<=") || !strings.Contains(s, "20") {
+		t.Errorf("want cloud_cover <= 20 in filter, got %q", s)
+	}
+	if !strings.Contains(s, "platform") || !strings.Contains(s, "'sentinel-2'") {
+		t.Errorf("want platform = 'sentinel-2' in filter, got %q", s)
+	}
+}
+
+func TestAuthz_GeofenceFilterModeDefaultsTrueWhenAllowedAreaSet(t *testing.T) {
+	polygon := map[string]interface{}{
+		"type": "Polygon",
+		"coordinates": []interface{}{[]interface{}{
+			[]interface{}{0.0, 0.0},
+			[]interface{}{1.0, 0.0},
+			[]interface{}{1.0, 1.0},
+			[]interface{}{0.0, 1.0},
+			[]interface{}{0.0, 0.0},
+		}},
+	}
+	cons := &AuthzConstraints{
+		Geofence: &GeofenceConstraint{AllowedArea: polygon, FilterMode: false},
+	}
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer:       &stubEnforcer{decision: &AuthzDecision{Allowed: true, Constraints: cons}},
+		AllowAnonymous: true,
+	})
+	sr := &stac.SearchRequest{}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	runMW(mw, r)
+	if !cons.Geofence.FilterMode {
+		t.Fatalf("FilterMode must default to true when AllowedArea is set; an operator who forgets the flag must not get a silently disabled geofence")
+	}
+}

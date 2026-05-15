@@ -87,18 +87,28 @@ func NewRouter(cfg RouterConfig) *Router {
 	r.Use(clientIPMiddleware(cfg.TrustedProxies))
 	r.Use(chimiddleware.Recoverer)
 
-	// Operator-supplied chi middlewares (logging, etc.).
-	for _, mw := range cfg.HTTPMiddlewares {
-		r.Use(mw)
-	}
-
-	// Cap inbound bodies before any handler reads them.
+	// Cap inbound bodies before any handler reads them. Must run
+	// before searchParser (which reads POST /search bodies) and
+	// before any operator-supplied middleware that might consume
+	// the body.
 	limit := cfg.MaxBodyBytes
 	if limit == 0 {
 		limit = DefaultMaxBodyBytes
 	}
 	if limit > 0 {
 		r.Use(bodyLimitMiddleware(limit))
+	}
+
+	// Parse search bodies/queries before authz so authz constraint
+	// enforcement (AllowedCollections, DeniedCollections,
+	// RequiredFilters) can mutate the parsed SearchRequest. Must
+	// run before cfg.HTTPMiddlewares so authz lives in.
+	r.Use(searchParserMiddleware())
+
+	// Operator-supplied chi middlewares (logging, authz, ratelimit,
+	// cache, remap).
+	for _, mw := range cfg.HTTPMiddlewares {
+		r.Use(mw)
 	}
 
 	// Mount health endpoints
