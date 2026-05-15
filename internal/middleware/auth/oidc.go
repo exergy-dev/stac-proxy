@@ -27,11 +27,24 @@ type discoveryDoc struct {
 
 // OIDCProvider validates tokens using OIDC/JWKS.
 type OIDCProvider struct {
-	name       string
-	issuer     string
-	audience   string
-	jwks       *JWKSClient
-	claimsFunc func(claims jwt.MapClaims) (*Principal, error)
+	name             string
+	issuer           string
+	audience         string
+	jwks             *JWKSClient
+	claimsFunc       func(claims jwt.MapClaims) (*Principal, error)
+	attributeAllow   map[string]struct{}
+}
+
+// defaultOIDCAttributeAllowlist is the set of token claim names
+// that may be copied verbatim into Principal.Attributes when
+// OIDCConfig.AttributeAllowlist is unset. Notably absent is
+// "auth_method", which the provider always sets server-side so a
+// hostile token can't claim a different authentication method.
+var defaultOIDCAttributeAllowlist = []string{
+	"email",
+	"preferred_username",
+	"name",
+	"groups",
 }
 
 // OIDCConfig configures the OIDC provider.
@@ -55,6 +68,13 @@ type OIDCConfig struct {
 	// AllowInsecureHTTP relaxes the https-only check on IssuerURL and
 	// the resulting JWKS URL. Test-only.
 	AllowInsecureHTTP bool
+	// AttributeAllowlist is the set of token claim names that may be
+	// copied verbatim into Principal.Attributes. When nil the default
+	// is used (see defaultOIDCAttributeAllowlist). Use an explicit
+	// empty slice to disable claim copying entirely. Server-managed
+	// attributes (notably "auth_method") are written after this loop
+	// and always win over a like-named token claim.
+	AttributeAllowlist []string
 }
 
 // JWKSResponse represents the JWKS response.
@@ -120,12 +140,22 @@ func NewOIDCProvider(cfg OIDCConfig) (*OIDCProvider, error) {
 		return nil, err
 	}
 
+	allow := cfg.AttributeAllowlist
+	if allow == nil {
+		allow = defaultOIDCAttributeAllowlist
+	}
+	allowSet := make(map[string]struct{}, len(allow))
+	for _, name := range allow {
+		allowSet[name] = struct{}{}
+	}
+
 	return &OIDCProvider{
-		name:       cfg.Name,
-		issuer:     issuer,
-		audience:   cfg.Audience,
-		jwks:       jwks,
-		claimsFunc: cfg.ClaimsFunc,
+		name:           cfg.Name,
+		issuer:         issuer,
+		audience:       cfg.Audience,
+		jwks:           jwks,
+		claimsFunc:     cfg.ClaimsFunc,
+		attributeAllow: allowSet,
 	}, nil
 }
 
@@ -258,8 +288,14 @@ func (p *OIDCProvider) Authenticate(ctx context.Context, req *http.Request) (*Pr
 	// Extract roles from various claim locations
 	principal.Roles = extractRoles(claims)
 
-	// Copy string claims to attributes
+	// Copy allowlisted string claims to attributes. Without the
+	// allowlist a hostile token could inject downstream-meaningful
+	// keys (e.g. "auth_method") that authz then trusts. The
+	// allowlist is configurable; unset → defaultOIDCAttributeAllowlist.
 	for k, v := range claims {
+		if _, ok := p.attributeAllow[k]; !ok {
+			continue
+		}
 		if s, ok := v.(string); ok {
 			principal.Attributes[k] = s
 		}
@@ -273,8 +309,17 @@ func (p *OIDCProvider) Authenticate(ctx context.Context, req *http.Request) (*Pr
 		}
 		if customPrincipal != nil {
 			principal = customPrincipal
+			if principal.Attributes == nil {
+				principal.Attributes = make(map[string]string)
+			}
 		}
 	}
+
+	// Stamp server-managed attributes AFTER the claim copy and AFTER
+	// any custom claimsFunc swap, so a token claiming auth_method
+	// (or a custom mapping that forgets to set it) cannot override
+	// the value downstream authz relies on.
+	principal.Attributes["auth_method"] = "oidc"
 
 	return principal, nil
 }
