@@ -99,45 +99,6 @@ func (s *HMACSigner) Verify(rawURL string) (bool, error) {
 	return true, nil
 }
 
-// CloudFrontSigner signs URLs for AWS CloudFront.
-type CloudFrontSigner struct {
-	keyPairID  string
-	privateKey []byte
-}
-
-// NewCloudFrontSigner creates a new CloudFront signer.
-func NewCloudFrontSigner(keyPairID string, privateKey []byte) *CloudFrontSigner {
-	return &CloudFrontSigner{
-		keyPairID:  keyPairID,
-		privateKey: privateKey,
-	}
-}
-
-// Sign creates a CloudFront signed URL.
-func (s *CloudFrontSigner) Sign(ctx context.Context, rawURL string, ttl time.Duration) string {
-	// Simplified implementation - in production use AWS SDK
-	expiry := time.Now().Add(ttl).Unix()
-
-	// Create policy
-	policy := fmt.Sprintf(`{"Statement":[{"Resource":"%s","Condition":{"DateLessThan":{"AWS:EpochTime":%d}}}]}`,
-		rawURL, expiry)
-
-	// Sign policy (simplified - use proper RSA signing in production)
-	signature := base64.RawURLEncoding.EncodeToString([]byte(policy))
-	signature = strings.ReplaceAll(signature, "+", "-")
-	signature = strings.ReplaceAll(signature, "=", "_")
-	signature = strings.ReplaceAll(signature, "/", "~")
-
-	// Build signed URL
-	separator := "?"
-	if strings.Contains(rawURL, "?") {
-		separator = "&"
-	}
-
-	return fmt.Sprintf("%s%sExpires=%d&Signature=%s&Key-Pair-Id=%s",
-		rawURL, separator, expiry, signature, s.keyPairID)
-}
-
 // NoOpSigner is a signer that doesn't modify URLs.
 type NoOpSigner struct{}
 
@@ -146,44 +107,31 @@ func (s *NoOpSigner) Sign(ctx context.Context, rawURL string, ttl time.Duration)
 	return rawURL
 }
 
-// S3PresignedSigner creates pre-signed S3 URLs.
-type S3PresignedSigner struct {
-	accessKey string
-	secretKey string
-	region    string
-}
-
-// NewS3PresignedSigner creates a new S3 pre-signed URL signer.
-func NewS3PresignedSigner(accessKey, secretKey, region string) *S3PresignedSigner {
-	return &S3PresignedSigner{
-		accessKey: accessKey,
-		secretKey: secretKey,
-		region:    region,
+// NewSigner constructs a Signer of the given type.
+//
+// Supported types:
+//   - "hmac"  — HMAC-SHA256 signing using `secret` (see HMACSigner).
+//   - "noop"  — no-op signer (returns URLs unchanged).
+//
+// The "cloudfront" and "s3_presigned" types are explicitly rejected:
+// previous implementations in this package were stubs that did not
+// perform real RSA / SigV4 signing — they merely base64-encoded a
+// policy or appended unsigned query parameters. Shipping them in a
+// production binary was a credential-leak / auth-bypass trap, and they
+// have been removed. Use a real upstream signer (the AWS SDK) at the
+// origin instead, or use the HMAC signer for proxy-issued URLs.
+func NewSigner(typ, secret string) (Signer, error) {
+	switch typ {
+	case "hmac":
+		if secret == "" {
+			return nil, fmt.Errorf("remap: hmac signer requires a non-empty secret")
+		}
+		return NewHMACSigner(secret), nil
+	case "noop", "":
+		return &NoOpSigner{}, nil
+	case "cloudfront", "s3_presigned":
+		return nil, fmt.Errorf("remap: signer type %q is not implemented; use hmac", typ)
+	default:
+		return nil, fmt.Errorf("remap: unknown signer type %q", typ)
 	}
-}
-
-// Sign creates an S3 pre-signed URL.
-func (s *S3PresignedSigner) Sign(ctx context.Context, rawURL string, ttl time.Duration) string {
-	// This is a simplified implementation
-	// In production, use the AWS SDK to generate proper pre-signed URLs
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-
-	// Only sign S3 URLs
-	if !strings.HasPrefix(rawURL, "s3://") && !strings.Contains(parsed.Host, "s3") {
-		return rawURL
-	}
-
-	// Add expiry and simplified signature
-	expiry := time.Now().Add(ttl).Unix()
-	q := parsed.Query()
-	q.Set("X-Amz-Expires", fmt.Sprintf("%d", int(ttl.Seconds())))
-	q.Set("X-Amz-Date", time.Now().UTC().Format("20060102T150405Z"))
-	parsed.RawQuery = q.Encode()
-
-	_ = expiry // In real implementation, use this for signature
-
-	return parsed.String()
 }

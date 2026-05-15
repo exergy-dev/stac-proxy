@@ -43,3 +43,53 @@ func TestHMACSigner_TamperWithHostFails(t *testing.T) {
 		t.Fatalf("host swap must fail verification (ok=%v err=%v)", ok, err)
 	}
 }
+
+// TestNewSigner_RejectsCloudFrontAndS3 guards against re-introducing
+// the deleted CloudFront and S3-presigned signers, which were stubs
+// that performed no real RSA / SigV4 signing and thus silently shipped
+// URLs with no integrity protection.
+func TestNewSigner_RejectsCloudFrontAndS3(t *testing.T) {
+	for _, typ := range []string{"cloudfront", "s3_presigned"} {
+		typ := typ
+		t.Run(typ, func(t *testing.T) {
+			s, err := NewSigner(typ, "ignored")
+			if err == nil {
+				t.Fatalf("expected error for type %q, got signer=%v", typ, s)
+			}
+			if s != nil {
+				t.Fatalf("expected nil signer for type %q, got %v", typ, s)
+			}
+			if !strings.Contains(err.Error(), "not implemented") {
+				t.Errorf("expected 'not implemented' in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestNewSigner_HMACAndNoOp(t *testing.T) {
+	s, err := NewSigner("hmac", "secret")
+	if err != nil {
+		t.Fatalf("hmac: unexpected error: %v", err)
+	}
+	if _, ok := s.(*HMACSigner); !ok {
+		t.Fatalf("expected *HMACSigner, got %T", s)
+	}
+
+	if _, err := NewSigner("hmac", ""); err == nil {
+		t.Fatal("expected error for hmac with empty secret")
+	}
+
+	for _, typ := range []string{"noop", ""} {
+		s, err := NewSigner(typ, "")
+		if err != nil {
+			t.Fatalf("noop (%q): unexpected error: %v", typ, err)
+		}
+		if _, ok := s.(*NoOpSigner); !ok {
+			t.Fatalf("expected *NoOpSigner for %q, got %T", typ, s)
+		}
+	}
+
+	if _, err := NewSigner("bogus", ""); err == nil {
+		t.Fatal("expected error for unknown signer type")
+	}
+}
