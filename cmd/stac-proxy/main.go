@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -141,7 +142,9 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	httpMiddlewares := []func(http.Handler) http.Handler{
 		logging.NewHTTPMiddleware(logging.Config{Logger: logger}),
 	}
-	if authMW := buildAuthHTTPMiddleware(cfg, logger); authMW != nil {
+	if authMW, err := buildAuthHTTPMiddleware(cfg, logger); err != nil {
+		return fmt.Errorf("failed to build auth middleware: %w", err)
+	} else if authMW != nil {
 		httpMiddlewares = append(httpMiddlewares, authMW)
 	}
 	if rlMW := buildRateLimitHTTPMiddleware(cfg); rlMW != nil {
@@ -316,10 +319,17 @@ func buildAuthzHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(htt
 	}), nil
 }
 
-// buildAuthHTTPMiddleware builds the chi-style auth middleware from the
-// `auth` block of the middleware config list. Returns nil when no
-// `auth` block is configured — the router skips a nil entry.
-func buildAuthHTTPMiddleware(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+// buildAuthHTTPMiddleware builds the chi-style auth middleware from
+// the `auth` block of the middleware config list. Returns
+// (nil, nil) when no `auth` block is configured — the router skips
+// a nil entry.
+//
+// Supported provider types: bearer/jwt, api_key, oidc, basic, mtls.
+// Unknown types now return an error (HIGH H-config-3) — previously
+// they were silently ignored, which meant a misspelled type made a
+// production deployment look authenticated when it was actually
+// running fully open.
+func buildAuthHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
 	var rawCfg map[string]interface{}
 	for _, mw := range cfg.Middleware {
 		if mw.Name == "auth" {
@@ -328,7 +338,7 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *slog.Logger) func(http.
 		}
 	}
 	if rawCfg == nil {
-		return nil
+		return nil, nil
 	}
 
 	allowAnonymous := true
@@ -338,38 +348,16 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *slog.Logger) func(http.
 
 	var providers []auth.Provider
 	if providersCfg, ok := rawCfg["providers"].([]interface{}); ok {
-		for _, pCfg := range providersCfg {
+		for i, pCfg := range providersCfg {
 			pMap, ok := pCfg.(map[string]interface{})
 			if !ok {
-				continue
+				return nil, fmt.Errorf("auth.providers[%d]: expected map, got %T", i, pCfg)
 			}
-			switch pMap["type"] {
-			case "bearer", "jwt":
-				bearerCfg := auth.BearerConfig{
-					Name:     "bearer",
-					Issuer:   getStringConfig(pMap, "issuer"),
-					Audience: getStringConfig(pMap, "audience"),
-					JWKSURL:  getStringConfig(pMap, "jwks_url"),
-				}
-				if s := getStringConfig(pMap, "secret"); s != "" {
-					bearerCfg.Secret = []byte(s)
-				}
-				provider, err := auth.NewBearerProvider(bearerCfg)
-				if err != nil {
-					logger.Warn("Failed to create bearer provider", "error", err)
-					continue
-				}
-				providers = append(providers, provider)
-			case "api_key":
-				provider, err := auth.NewAPIKeyProvider(auth.APIKeyConfig{
-					Name:       "api_key",
-					Header:     getStringConfig(pMap, "header_name"),
-					QueryParam: getStringConfig(pMap, "query_param"),
-				})
-				if err != nil {
-					logger.Warn("Failed to create API key provider", "error", err)
-					continue
-				}
+			provider, err := buildAuthProvider(pMap, logger)
+			if err != nil {
+				return nil, fmt.Errorf("auth.providers[%d]: %w", i, err)
+			}
+			if provider != nil {
 				providers = append(providers, provider)
 			}
 		}
@@ -378,7 +366,122 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *slog.Logger) func(http.
 	return auth.NewHTTPMiddleware(auth.Config{
 		Providers:      providers,
 		AllowAnonymous: allowAnonymous,
-	})
+	}), nil
+}
+
+// buildAuthProvider materializes a single auth.Provider from a YAML
+// map. Returns (nil, nil) only when the constructor is best-effort
+// soft-failed (e.g. JWKS unreachable at boot) — currently no
+// branches do that, but the signature leaves the door open.
+func buildAuthProvider(pMap map[string]interface{}, _ *slog.Logger) (auth.Provider, error) {
+	pType, _ := pMap["type"].(string)
+	switch pType {
+	case "bearer", "jwt":
+		bearerCfg := auth.BearerConfig{
+			Name:     "bearer",
+			Issuer:   getStringConfig(pMap, "issuer"),
+			Audience: getStringConfig(pMap, "audience"),
+			JWKSURL:  getStringConfig(pMap, "jwks_url"),
+		}
+		if s := getStringConfig(pMap, "secret"); s != "" {
+			bearerCfg.Secret = []byte(s)
+		}
+		return auth.NewBearerProvider(bearerCfg)
+	case "api_key":
+		return auth.NewAPIKeyProvider(auth.APIKeyConfig{
+			Name:       "api_key",
+			Header:     getStringConfig(pMap, "header_name"),
+			QueryParam: getStringConfig(pMap, "query_param"),
+		})
+	case "oidc":
+		return auth.NewOIDCProvider(auth.OIDCConfig{
+			Name:              "oidc",
+			IssuerURL:         getStringConfig(pMap, "issuer_url"),
+			Issuer:            getStringConfig(pMap, "issuer"),
+			Audience:          getStringConfig(pMap, "audience"),
+			JWKSURL:           getStringConfig(pMap, "jwks_url"),
+			AllowInsecureHTTP: getBoolConfig(pMap, "allow_insecure_http"),
+		})
+	case "basic":
+		users, err := parseBasicUsers(pMap["users"])
+		if err != nil {
+			return nil, fmt.Errorf("basic users: %w", err)
+		}
+		return auth.NewBasicAuthProvider(auth.BasicAuthConfig{
+			Name:  "basic",
+			Realm: getStringConfig(pMap, "realm"),
+			Users: users,
+		})
+	case "mtls":
+		mtlsCfg := auth.MTLSConfig{
+			Name:            "mtls",
+			RequireClientCA: getBoolConfig(pMap, "require_client_ca"),
+		}
+		if caFile := getStringConfig(pMap, "trusted_ca_file"); caFile != "" {
+			pool, err := loadCAPool(caFile)
+			if err != nil {
+				return nil, fmt.Errorf("mtls trusted_ca_file %q: %w", caFile, err)
+			}
+			mtlsCfg.TrustedCAs = pool
+		}
+		return auth.NewMTLSProvider(mtlsCfg)
+	case "":
+		return nil, fmt.Errorf("missing required field 'type'")
+	default:
+		return nil, fmt.Errorf("unknown auth provider type %q (supported: bearer, jwt, api_key, oidc, basic, mtls)", pType)
+	}
+}
+
+// parseBasicUsers decodes the `users` array of a basic auth config.
+// Each entry should be a map with username, password_hash, and
+// optional roles/attributes.
+func parseBasicUsers(raw interface{}) ([]auth.BasicUser, error) {
+	list, ok := raw.([]interface{})
+	if !ok {
+		if raw == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("expected list, got %T", raw)
+	}
+	out := make([]auth.BasicUser, 0, len(list))
+	for i, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("users[%d]: expected map, got %T", i, item)
+		}
+		u := auth.BasicUser{
+			Username:     getStringConfig(m, "username"),
+			PasswordHash: getStringConfig(m, "password_hash"),
+			Roles:        getStringSliceConfig(m, "roles"),
+		}
+		if attrs, ok := m["attributes"].(map[string]interface{}); ok {
+			u.Attributes = attrs
+		}
+		out = append(out, u)
+	}
+	return out, nil
+}
+
+// loadCAPool loads PEM-encoded CA certificates from path into a
+// fresh x509.CertPool.
+func loadCAPool(path string) (*x509.CertPool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, fmt.Errorf("no PEM certificates found")
+	}
+	return pool, nil
+}
+
+// getBoolConfig returns m[key] as a bool, or false if missing/wrong type.
+func getBoolConfig(m map[string]interface{}, key string) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return false
 }
 
 // buildCacheHTTPMiddleware builds the chi-style cache middleware from
