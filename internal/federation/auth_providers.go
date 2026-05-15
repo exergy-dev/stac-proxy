@@ -4,7 +4,6 @@ package federation
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -189,8 +190,17 @@ func (p *OAuth2AuthProvider) fetchToken(ctx context.Context) (string, error) {
 }
 
 // AWSSigV4Provider handles AWS Signature V4 signing.
+//
+// The actual canonicalisation, signing-key derivation, and header
+// emission are delegated to github.com/aws/aws-sdk-go-v2/aws/signer/v4.
+// The previous hand-rolled implementation forced the Host header
+// without honouring non-default ports, did not URI-encode the path
+// (silently failing on spaces, `+`, or non-ASCII), and only signed
+// host;x-amz-date — all of which produced 403 SignatureDoesNotMatch
+// from real AWS endpoints.
 type AWSSigV4Provider struct {
 	config *AWSSigV4Config
+	signer *v4.Signer
 }
 
 // NewAWSSigV4Provider creates a new AWS SigV4 auth provider.
@@ -204,88 +214,63 @@ func NewAWSSigV4Provider(config *AWSSigV4Config) (*AWSSigV4Provider, error) {
 
 	return &AWSSigV4Provider{
 		config: config,
+		signer: v4.NewSigner(),
 	}, nil
 }
 
-// ApplyAuth signs the request with AWS Signature V4.
+// ApplyAuth signs the request with AWS Signature V4 via aws-sdk-go-v2.
 func (p *AWSSigV4Provider) ApplyAuth(ctx context.Context, req *http.Request) error {
-	// Read the body if present
+	// Get credentials. UseIAMRole is not yet supported (the previous
+	// hand-rolled impl carried a TODO with the same behaviour); when an
+	// IAM-role provider is wired in, this is the place to substitute it.
+	if p.config.AccessKey == "" || p.config.SecretKey == "" {
+		return fmt.Errorf("AWS credentials not configured")
+	}
+	// Session token is not currently exposed on AWSSigV4Config; pass
+	// empty so SDK signs without an X-Amz-Security-Token header. If
+	// short-lived credentials become a configuration option, plumb it
+	// here.
+	credProvider := credentials.NewStaticCredentialsProvider(
+		p.config.AccessKey,
+		p.config.SecretKey,
+		"",
+	)
+	awsCreds, err := credProvider.Retrieve(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve AWS credentials: %w", err)
+	}
+
+	// Buffer the body so (a) we can compute its SHA256 for the
+	// X-Amz-Content-Sha256 / payload-hash inputs the signer needs, and
+	// (b) downstream RoundTrip can still read it. SignHTTP does not read
+	// req.Body itself.
 	var bodyBytes []byte
 	if req.Body != nil {
-		var err error
 		bodyBytes, err = io.ReadAll(req.Body)
 		if err != nil {
 			return err
 		}
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
+	sum := sha256.Sum256(bodyBytes)
+	payloadHash := hex.EncodeToString(sum[:])
 
-	// Get credentials
-	accessKey := p.config.AccessKey
-	secretKey := p.config.SecretKey
+	// Set the content hash header explicitly. SignHTTP itself does not
+	// set X-Amz-Content-Sha256 (it is a service-specific concern), but
+	// S3 and several other services require it on the wire and many
+	// services include it in SignedHeaders when present. Setting it
+	// before signing keeps the canonical request consistent.
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
 
-	if p.config.UseIAMRole {
-		// TODO: Implement IAM role credential fetching
-		// For now, fall back to configured credentials
-	}
-
-	if accessKey == "" || secretKey == "" {
-		return fmt.Errorf("AWS credentials not configured")
-	}
-
-	// Sign the request
-	now := time.Now().UTC()
-	dateStamp := now.Format("20060102")
-	amzDate := now.Format("20060102T150405Z")
-
-	req.Header.Set("X-Amz-Date", amzDate)
-	req.Header.Set("Host", req.URL.Host)
-
-	// Create canonical request
-	canonicalURI := req.URL.Path
-	if canonicalURI == "" {
-		canonicalURI = "/"
-	}
-	canonicalQueryString := req.URL.RawQuery
-
-	signedHeaders := "host;x-amz-date"
-	canonicalHeaders := fmt.Sprintf("host:%s\nx-amz-date:%s\n", req.URL.Host, amzDate)
-
-	payloadHash := sha256Hash(bodyBytes)
-	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
-		req.Method,
-		canonicalURI,
-		canonicalQueryString,
-		canonicalHeaders,
-		signedHeaders,
+	return p.signer.SignHTTP(
+		ctx,
+		awsCreds,
+		req,
 		payloadHash,
+		p.config.Service,
+		p.config.Region,
+		time.Now(),
 	)
-
-	// Create string to sign
-	algorithm := "AWS4-HMAC-SHA256"
-	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", dateStamp, p.config.Region, p.config.Service)
-	stringToSign := fmt.Sprintf("%s\n%s\n%s\n%s",
-		algorithm,
-		amzDate,
-		credentialScope,
-		sha256Hash([]byte(canonicalRequest)),
-	)
-
-	// Calculate signature
-	signingKey := getSignatureKey(secretKey, dateStamp, p.config.Region, p.config.Service)
-	signature := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
-
-	// Add authorization header
-	authHeader := fmt.Sprintf("%s Credential=%s/%s, SignedHeaders=%s, Signature=%s",
-		algorithm,
-		accessKey,
-		credentialScope,
-		signedHeaders,
-		signature,
-	)
-	req.Header.Set("Authorization", authHeader)
-
-	return nil
 }
 
 // Refresh does nothing for SigV4 (credentials refreshed per-request).
@@ -304,23 +289,4 @@ func joinStrings(strs []string, sep string) string {
 		result += sep + s
 	}
 	return result
-}
-
-func sha256Hash(data []byte) string {
-	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:])
-}
-
-func hmacSHA256(key, data []byte) []byte {
-	m := hmac.New(sha256.New, key)
-	m.Write(data)
-	return m.Sum(nil)
-}
-
-func getSignatureKey(secretKey, dateStamp, region, service string) []byte {
-	kDate := hmacSHA256([]byte("AWS4"+secretKey), []byte(dateStamp))
-	kRegion := hmacSHA256(kDate, []byte(region))
-	kService := hmacSHA256(kRegion, []byte(service))
-	kSigning := hmacSHA256(kService, []byte("aws4_request"))
-	return kSigning
 }

@@ -22,6 +22,8 @@ require (
 require github.com/exergy-dev/go-cql2 v0.0.0-20260504204024-796456d5f243
 
 require (
+	github.com/aws/aws-sdk-go-v2 v1.41.7
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.16
 	github.com/exergy-dev/go-topology-suite v0.1.0
 	github.com/felixge/httpsnoop v1.0.4
 	github.com/google/uuid v1.6.0
@@ -34,6 +36,7 @@ require (
 require (
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
 	github.com/agnivade/levenshtein v1.2.0 // indirect
+	github.com/aws/smithy-go v1.25.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect

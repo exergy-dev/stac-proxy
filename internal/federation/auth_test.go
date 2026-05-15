@@ -1390,6 +1390,57 @@ func TestAWSSigV4Provider(t *testing.T) {
 	})
 }
 
+// TestSigV4_HandlesNonAsciiPath is a regression test for
+// H-federation-3: the previous hand-rolled signer used the raw URL
+// path verbatim, so a path containing spaces, `+`, or non-ASCII bytes
+// produced a canonical request that did not match what AWS would
+// recompute on the server side, resulting in
+// 403 SignatureDoesNotMatch. The aws-sdk-go-v2 signer URI-encodes the
+// path correctly. We assert here that signing succeeds and produces
+// well-formed Authorization / X-Amz-Date headers — the SDK is
+// responsible for the actual canonical-request shape, and its own
+// test suite validates that against AWS's published vectors.
+func TestSigV4_HandlesNonAsciiPath(t *testing.T) {
+	t.Parallel()
+	config := &AWSSigV4Config{
+		Region:    "us-east-1",
+		Service:   "execute-api",
+		AccessKey: "AKIAIOSFODNN7EXAMPLE",
+		SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	}
+	provider, err := NewAWSSigV4Provider(config)
+	if err != nil {
+		t.Fatalf("NewAWSSigV4Provider: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"https://api.example.com/path%20with%20spaces/and+plus/", nil)
+
+	if err := provider.ApplyAuth(context.Background(), req); err != nil {
+		t.Fatalf("ApplyAuth on non-ASCII path: %v", err)
+	}
+
+	auth := req.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 ") {
+		t.Errorf("Authorization = %q, want AWS4-HMAC-SHA256 prefix", auth)
+	}
+	if !strings.Contains(auth, "Credential=AKIAIOSFODNN7EXAMPLE/") {
+		t.Errorf("Authorization missing Credential=: %q", auth)
+	}
+	if !strings.Contains(auth, "SignedHeaders=") {
+		t.Errorf("Authorization missing SignedHeaders=: %q", auth)
+	}
+	if !strings.Contains(auth, "Signature=") {
+		t.Errorf("Authorization missing Signature=: %q", auth)
+	}
+	if req.Header.Get("X-Amz-Date") == "" {
+		t.Error("X-Amz-Date header missing")
+	}
+	if req.Header.Get("X-Amz-Content-Sha256") == "" {
+		t.Error("X-Amz-Content-Sha256 header missing")
+	}
+}
+
 // TestNewAWSSigV4ProviderValidation tests AWS SigV4 provider validation.
 func TestNewAWSSigV4ProviderValidation(t *testing.T) {
 	t.Parallel()
