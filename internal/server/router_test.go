@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
@@ -92,7 +93,9 @@ func TestRouter_MetricsLabelsAreBounded(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	metrics := observability.NewMetrics("test_router_cardinality")
+	// Per-instance registerer so repeated test runs (or other tests
+	// using the same namespace) don't trigger MustRegister duplicate panics.
+	metrics := observability.NewMetricsWith("test_router_cardinality", prometheus.NewRegistry())
 	r := NewRouter(RouterConfig{
 		Handler: inner,
 		Metrics: metrics,

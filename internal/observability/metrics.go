@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -39,122 +38,164 @@ type Metrics struct {
 	CQL2Injected *prometheus.CounterVec // labels: lang, reason ("policy"|"geofence"|"merged")
 }
 
-// NewMetrics creates and registers all metrics.
+// NewMetrics creates all metrics and registers them on the global
+// Prometheus registry. Equivalent to NewMetricsWith(namespace,
+// prometheus.DefaultRegisterer). Panics on duplicate registration —
+// callers that may run more than once per process (notably tests)
+// should use NewMetricsWith with a per-instance registerer.
 func NewMetrics(namespace string) *Metrics {
+	return NewMetricsWith(namespace, prometheus.DefaultRegisterer)
+}
+
+// NewMetricsWith creates all metrics and registers them on reg. A nil
+// reg is treated as "do not register" (useful for in-memory test
+// scaffolds that just want the *Vec handles without a registry).
+func NewMetricsWith(namespace string, reg prometheus.Registerer) *Metrics {
 	if namespace == "" {
 		namespace = "stac_proxy"
 	}
 
+	register := func(c prometheus.Collector) {
+		if reg != nil {
+			reg.MustRegister(c)
+		}
+	}
+
+	requestsTotal := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "requests_total",
+			Help:      "Total number of HTTP requests",
+		},
+		[]string{"method", "path", "status"},
+	)
+	register(requestsTotal)
+
+	requestDuration := prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "request_duration_seconds",
+			Help:      "HTTP request duration in seconds",
+			Buckets:   prometheus.DefBuckets,
+		},
+		[]string{"method", "path"},
+	)
+	register(requestDuration)
+
+	upstreamRequestsTotal := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "upstream_requests_total",
+			Help:      "Total number of requests to upstream servers",
+		},
+		[]string{"origin", "status"},
+	)
+	register(upstreamRequestsTotal)
+
+	upstreamRequestDuration := prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "upstream_request_duration_seconds",
+			Help:      "Upstream request duration in seconds",
+			Buckets:   prometheus.DefBuckets,
+		},
+		[]string{"origin"},
+	)
+	register(upstreamRequestDuration)
+
+	upstreamErrors := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "upstream_errors_total",
+			Help:      "Total number of upstream request errors",
+		},
+		[]string{"origin", "error_type"},
+	)
+	register(upstreamErrors)
+
+	cacheHits := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "cache_hits_total",
+			Help:      "Total number of cache hits",
+		},
+		[]string{"type"},
+	)
+	register(cacheHits)
+
+	cacheMisses := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "cache_misses_total",
+			Help:      "Total number of cache misses",
+		},
+		[]string{"type"},
+	)
+	register(cacheMisses)
+
+	authSuccesses := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "auth_successes_total",
+			Help:      "Total number of successful authentications",
+		},
+		[]string{"provider"},
+	)
+	register(authSuccesses)
+
+	authFailures := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "auth_failures_total",
+			Help:      "Total number of failed authentications",
+		},
+		[]string{"provider", "reason"},
+	)
+	register(authFailures)
+
+	rateLimitExceeded := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "rate_limit_exceeded_total",
+			Help:      "Total number of rate limit exceeded events",
+		},
+		[]string{"key_type"},
+	)
+	register(rateLimitExceeded)
+
+	federationOriginsQueried := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "federation_origins_queried_total",
+			Help:      "Total number of origins queried in federation",
+		},
+		[]string{"origin", "success"},
+	)
+	register(federationOriginsQueried)
+
+	cql2Injected := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "cql2_injected_total",
+			Help:      "Total number of requests where an authz-derived CQL2 filter was injected",
+		},
+		[]string{"lang", "reason"},
+	)
+	register(cql2Injected)
+
 	return &Metrics{
-		RequestsTotal: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "requests_total",
-				Help:      "Total number of HTTP requests",
-			},
-			[]string{"method", "path", "status"},
-		),
-
-		RequestDuration: promauto.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Name:      "request_duration_seconds",
-				Help:      "HTTP request duration in seconds",
-				Buckets:   prometheus.DefBuckets,
-			},
-			[]string{"method", "path"},
-		),
-
-		UpstreamRequestsTotal: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "upstream_requests_total",
-				Help:      "Total number of requests to upstream servers",
-			},
-			[]string{"origin", "status"},
-		),
-
-		UpstreamRequestDuration: promauto.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Name:      "upstream_request_duration_seconds",
-				Help:      "Upstream request duration in seconds",
-				Buckets:   prometheus.DefBuckets,
-			},
-			[]string{"origin"},
-		),
-
-		UpstreamErrors: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "upstream_errors_total",
-				Help:      "Total number of upstream request errors",
-			},
-			[]string{"origin", "error_type"},
-		),
-
-		CacheHits: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "cache_hits_total",
-				Help:      "Total number of cache hits",
-			},
-			[]string{"type"},
-		),
-
-		CacheMisses: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "cache_misses_total",
-				Help:      "Total number of cache misses",
-			},
-			[]string{"type"},
-		),
-
-		AuthSuccesses: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "auth_successes_total",
-				Help:      "Total number of successful authentications",
-			},
-			[]string{"provider"},
-		),
-
-		AuthFailures: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "auth_failures_total",
-				Help:      "Total number of failed authentications",
-			},
-			[]string{"provider", "reason"},
-		),
-
-		RateLimitExceeded: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "rate_limit_exceeded_total",
-				Help:      "Total number of rate limit exceeded events",
-			},
-			[]string{"key_type"},
-		),
-
-		FederationOriginsQueried: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "federation_origins_queried_total",
-				Help:      "Total number of origins queried in federation",
-			},
-			[]string{"origin", "success"},
-		),
-
-		CQL2Injected: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "cql2_injected_total",
-				Help:      "Total number of requests where an authz-derived CQL2 filter was injected",
-			},
-			[]string{"lang", "reason"},
-		),
+		RequestsTotal:            requestsTotal,
+		RequestDuration:          requestDuration,
+		UpstreamRequestsTotal:    upstreamRequestsTotal,
+		UpstreamRequestDuration:  upstreamRequestDuration,
+		UpstreamErrors:           upstreamErrors,
+		CacheHits:                cacheHits,
+		CacheMisses:              cacheMisses,
+		AuthSuccesses:            authSuccesses,
+		AuthFailures:             authFailures,
+		RateLimitExceeded:        rateLimitExceeded,
+		FederationOriginsQueried: federationOriginsQueried,
+		CQL2Injected:             cql2Injected,
 	}
 }
 
