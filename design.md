@@ -3146,7 +3146,7 @@ require (
     gopkg.in/yaml.v3 v3.0.1
     
     // Utilities
-    go.uber.org/zap v1.25.0
+    // logging via stdlib log/slog (no third-party dep)
     golang.org/x/sync v0.3.0
     golang.org/x/time v0.3.0
     github.com/golang/snappy v0.0.4             // Cursor compression

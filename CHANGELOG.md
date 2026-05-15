@@ -6,13 +6,156 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed (breaking)
+This release rolls up the post-v0.1.0 review-driven hardening pass: 5
+subsystem-snapshot commits + 4 severity-tier PRs (CRITICAL → NIT) + a
+docs PR, totaling ~80 fixes across auth, authz, federation, cache,
+ratelimit, server, config, observability, stac, and remap. Highlights
+below; see git log for the full list.
+
+### Security (CRITICAL)
+
+- **Auth** (`oidc.go`): JWT verification restricted to RSA/EC algs via
+  `jwt.WithValidMethods` — closes the alg-confusion attack where an
+  attacker forges HS256 using the JWKS public key bytes as the HMAC
+  secret.
+- **AuthZ**: `AllowedCollections`, `DeniedCollections`, and
+  `RequiredFilters` constraints are now actually *enforced* (previously
+  collected but ignored). New `searchParserMiddleware` in
+  `internal/server` parses the search body before authz so constraint
+  application is no longer a no-op in production.
+- **Cache** key now includes a principal-class component — anonymous
+  responses no longer leak to authenticated callers and vice-versa.
+- **Federation pagination**: per-search dedup state (was shared across
+  concurrent searches, racing and silently dropping items).
+- **Federation OAuth2**: first-call no longer returns an empty Bearer
+  token; refresh wrapped in singleflight; lock released across the
+  HTTP RTT.
+- **Federation reverse-proxy fast path** uses
+  `httpx.NewResponseCaptureWithLimit(MaxResponseBytes)` — a
+  multi-GB upstream response can no longer OOM the proxy.
+- **Remap** (breaking): stub `CloudFrontSigner` and `S3PresignedSigner`
+  removed (they performed no real signing); `signer.type: cloudfront` /
+  `signer.type: s3_presigned` now error at config validation. Use
+  `hmac` for now or contribute a real signer.
+
+### Security (HIGH)
+
+- **Auth provider chain** fails closed on a bad-signature credential
+  rather than falling through to anonymous (new optional
+  `CredentialClaimer` interface).
+- **JWKS** unknown-`kid` flood is throttled (per-URL min refresh
+  interval + negative cache for missing kids).
+- **API keys** are now stored as HMAC-SHA256 digests, not plaintext —
+  database-leak defense in depth.
+- **mTLS provider** rejects nil `trustedCAs` in its constructor.
+- **Single-record CQL2 validation** runs unconditionally when
+  constraints exist (was gated on `CQL2InjectionEnabled`).
+- **Geofence**: `maybePushDownGeofence` no longer mutates shared
+  constraints; geometry property name configurable per backend;
+  push-down skipped when upstream lacks spatial-predicate support;
+  malformed FeatureCollection on a 2xx returns 502 (was fail-open).
+- **Local CQL2 evaluator** implements `S_INTERSECTS` via the geo
+  package — items that match a pushed-down geofence are no longer
+  spuriously 404'd.
+- **OPA dedupe**: regex-based `default`-rule dedup removed; duplicate
+  defaults now surface as compile errors (the regex could silently
+  strip `default allow = false`, turning policies fail-open).
+- **TLS**: hardcoded `CipherSuites` dropped (lets Go pick the vetted
+  set); `NextProtos: [h2, http/1.1]` added.
+- **Federation**: SigV4 swapped from a hand-rolled implementation to
+  `aws-sdk-go-v2/aws/signer/v4` (correctly handles non-default ports
+  and URI-encoded paths); GET `/search` parsing delegated to
+  `stac.Parser`; asset signing honors request context.
+- **Cache memory**: `Get` returns an independent copy; LRU now O(1) via
+  `container/list`; cache key normalizes query-param order.
+- **httpx**: retryable transport no longer retries POST/PATCH by
+  default (avoids double-execution of non-idempotent search).
+- **XFF**: trusted-proxy aware client-IP derivation honored only when
+  the immediate hop is in `server.trusted_proxies`.
+- **Ratelimit** map is now LRU-bounded — defeats memory exhaustion via
+  IP-rotation floods.
+- **Prometheus** metrics use the chi route pattern instead of the raw
+  path — bounded label cardinality.
+
+### Security (MEDIUM)
+
+- **JWKS**: stale-while-revalidate during issuer outages; `use=sig`
+  filter; binds cached keys to declared `alg`.
+- **Basic auth**: bcrypt-prefix detection prevents corrupt base64-
+  decoded hashes.
+- **OIDC** copies only allowlisted claims into `Principal.Attributes`
+  and stamps `auth_method=oidc` server-side (token can't spoof).
+- **API key** query-parameter mode disabled by default; opt-in emits
+  WARN logs.
+- **Authz**: external OPA `OnError: deny|allow` config (default
+  `deny`); empty `PrincipalMatcher` matches nothing (was: matches
+  everyone); header extraction switched to allowlist; missing OPA
+  `allow` key surfaces as InternalError instead of silent deny.
+- **Cache**: status allowlist with negative-cache TTL for 4xx; client
+  IP read from middleware context.
+- **Ratelimit**: deterministic role ordering; carries remaining
+  tokens on quota change; correct `Reset`/`Remaining` semantics.
+- **Remap**: JSON decode gated on Content-Type; HMAC key rotation
+  (`secrets [][]byte`); `signingMessage` clones `url.Values`;
+  `path.Clean` normalization.
+- **Health**: per-check TTL cache + background refresh — slow checks
+  no longer DoS upstreams; OriginCheck shares the project's
+  instrumented HTTP client.
+- **Federation handler**: `transformResponse` skips decode when no
+  rewriting needed; `rewriteLinks` recursion bounded to known link
+  keys; precomputed implicit-all origin set; helper extraction.
+- **Stac/geo**: `intersects` validated via `geo.ParseGeoJSON`; null
+  geometry items with bbox now accepted; `BboxToGeometry` splits
+  antimeridian-crossing bboxes into MultiPolygon.
+- **Config** (breaking): `${VAR}` env-var expansion errors on
+  undefined variables (no more silent empty-string substitution);
+  `${VAR:-default}` syntax supported; `KnownFields(true)` decoder
+  rejects orphan YAML keys; `aws_sigv4` consistent spelling
+  end-to-end (was `aws_sig_v4` in some places); `custom_headers`
+  removed from auth-type validation; `reject_duplicates` conflict
+  strategy actually wired through; metrics server gracefully shut
+  down on SIGTERM; `oidc`, `basic`, `mtls` auth types now wired in
+  main (were silently no-op'd).
+
+### Cleanup (LOW + NIT)
+
+- Logging: UA + RemoteAddr redacted by default; `duration_ms`
+  numeric field.
+- httpx: strips RFC 7239 `Forwarded` header.
+- Observability: `prometheus.Registerer` injected (no more `promauto`
+  global-registry panics in tests).
+- Federation: `joinStrings` → `strings.Join`; `errors.As` for
+  `*middleware.InternalError`; `time.Sleep` race in
+  `asset_proxy_test.go` replaced with sync channel; merger.Links
+  defensive copy.
+- Cache: redis backend rejected at config validation (until
+  implemented).
+- Ratelimit: `NewSlidingWindowLimiter` renamed to
+  `NewTokenBucketLimiter` (impl was always token-bucket); legacy
+  name kept as deprecation alias; `net.SplitHostPort` for IP keying.
+- Remap: `strconv.ParseInt`; recursion-depth guard.
+- Main: typed config parsing for ratelimit `requests`; healthcheck
+  honors `cfg.Server.Port`.
+- Stac: `ItemDatetime` accepts `RFC3339Nano` and date-only;
+  `ExtractNextToken` uses `url.Parse`; `cql2_eval.compare` errors
+  propagated.
+- Policies: consolidated `constraints` rule in `stac_authz.rego`
+  using `if`/`else` to avoid Rego-version brittleness.
+
+### Changed (breaking) — also covered above
 
 - `auth.OIDCConfig.ClaimsFunc` signature aligned with
   `auth.BearerConfig.ClaimsFunc` — accepts `jwt.MapClaims` instead
-  of `map[string]interface{}`. Source-only change: `jwt.MapClaims`
-  is a type alias for the same map shape, so existing callers
-  compile after a single type-name swap.
+  of `map[string]interface{}`. Source-only change.
+- API key storage uses HMAC digests rather than plaintext map keys —
+  operators must rebuild their key store on upgrade.
+- `signer.type: cloudfront` / `signer.type: s3_presigned` now reject
+  at config validation.
+- `${VAR}` env expansion errors on undefined variables (use
+  `${VAR:-}` to opt-out).
+- YAML decoder rejects unknown keys (`KnownFields(true)`).
+- AWS SigV4 origin-auth requires `github.com/aws/aws-sdk-go-v2`
+  (added as a direct dep).
 
 ### Removed
 
@@ -20,6 +163,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   redundant `CacheTTL` zero-default in `NewOIDCProvider` —
   `JWKSClient` owns both the URL and the TTL fallback after the
   v0.1 merge.
+- Stub `CloudFrontSigner` and `S3PresignedSigner` (no real signing).
+- Hand-rolled SigV4 implementation (replaced by aws-sdk-go-v2).
+- Regex-based `default`-rule dedup in `opa_embedded.go`.
 
 ## [0.1.0] — 2026-05-11
 

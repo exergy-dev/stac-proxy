@@ -43,42 +43,43 @@ Client → Middleware Chain → Router/Handler → Origins
 
 - `cmd/stac-proxy/` - Main entry point
 - `internal/config/` - Configuration loading and validation
-- `internal/server/` - HTTP server and router
-- `internal/middleware/` - Chainable middleware components:
-  - `auth/` - Authentication providers (JWT, OIDC, API key, OAuth2)
-  - `authz/` - Authorization with OPA integration and geofencing
-  - `cache/` - Response caching (memory, Redis)
-  - `ratelimit/` - Rate limiting
-  - `remap/` - URL remapping and signing
-- `internal/proxy/` - Single-origin proxy handler
-- `internal/federation/` - Multi-origin federation:
-  - `handler.go` - Fan-out/merge orchestration
+- `internal/server/` - HTTP server, chi router, search-body parser middleware, asset endpoint
+- `internal/middleware/` - Chi-style `func(http.Handler) http.Handler` middleware components:
+  - `auth/` - Authentication providers (JWT bearer, JWKS, OIDC discovery, API key, basic, mTLS)
+  - `authz/` - Authorization with OPA (embedded + external), CQL2 injection, geofencing
+  - `cache/` - Response caching (memory; redis backend not yet implemented)
+  - `ratelimit/` - Token-bucket rate limiting (per-IP / per-principal)
+  - `remap/` - URL remapping and HMAC URL signing
+  - `logging/` - Structured slog request logging with request-id propagation
+- `internal/federation/` - Multi-origin federation (also handles single-origin as federation-of-1):
+  - `handler.go` - Fan-out/merge orchestration; conformance intersection; asset proxy
   - `router.go` - Collection-to-origin routing
-  - `origin.go` - Per-origin HTTP client with auth
+  - `origin.go` - Per-origin HTTP client with auth and bounded response capture
   - `merger.go` - Result aggregation with conflict resolution
-  - `pagination.go` - Federated cursor-based pagination
-  - `bloom.go` - Bloom filter for deduplication
-- `internal/geo/` - Geospatial operations (geometry, GeoJSON, spatial index)
-- `internal/stac/` - STAC types and parsing
-- `internal/transform/` - Response transformation (link rewriting)
+  - `pagination.go` - Federated cursor-based pagination with per-search dedup
+  - `cursor.go` - Principal-bound cursor encoding
+  - `auth_providers.go` - Per-origin auth (basic, bearer, oauth2 with singleflight, AWS SigV4 via aws-sdk-go-v2)
+- `internal/geo/` - Geospatial operations (geometry, GeoJSON, antimeridian-aware bbox, spatial index)
+- `internal/stac/` - STAC types (aliased from `go-stac-client`), parser, conformance helpers, CQL2 evaluator (incl. S_INTERSECTS)
+- `internal/httpx/` - HTTP utilities: bounded response capture, retry transport (retryablehttp), trusted-proxy XFF, hop-by-hop header stripping
+- `internal/observability/` - Prometheus metrics with chi-route-pattern labels, cached `/health` checks
 
 ### Key Interfaces
 
-**Middleware Interface** (`internal/middleware/chain.go`):
-```go
-type Middleware interface {
-    Name() string
-    ProcessRequest(ctx context.Context, req *STACRequest) (*STACRequest, error)
-    ProcessResponse(ctx context.Context, req *STACRequest, resp *STACResponse) (*STACResponse, error)
-    Priority() int
-}
-```
+**Chi Middleware** — every middleware in `internal/middleware/*` exposes a constructor returning `func(http.Handler) http.Handler`. The buffered `Chain`/`Middleware`/`Handler` types were removed in commit 32ac06a; everything is standard `http.Handler` now.
 
-**Auth Provider** (`internal/middleware/auth/`):
+**Auth Provider** (`internal/middleware/auth/provider.go`):
 ```go
-type AuthProvider interface {
+type Provider interface {
     Name() string
     Authenticate(ctx context.Context, req *http.Request) (*Principal, error)
+}
+
+// Optional: providers that own a credential type implement
+// CredentialClaimer so the chain fails closed (401) on a bad
+// signature instead of falling through to anonymous.
+type CredentialClaimer interface {
+    ClaimsCredential(req *http.Request) bool
 }
 ```
 

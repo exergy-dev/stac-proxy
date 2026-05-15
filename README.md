@@ -42,7 +42,7 @@ curl -fsS http://localhost:8080/health
 | **Caching** | In-memory LRU + TTL (Redis store is wired in code but not in main; v0.2) |
 | **Rate limiting** | Sliding-window, per-principal or per-IP |
 | **URL rewriting** | Configurable regex rules + optional HMAC / CloudFront signing |
-| **Observability** | Prometheus metrics on every middleware, structured zap logs with UUID request IDs forwarded to upstream as `X-Request-ID` |
+| **Observability** | Prometheus metrics on every middleware, structured `log/slog` logs with UUID request IDs forwarded to upstream as `X-Request-ID` |
 | **Resilience** | Graceful shutdown drains in-flight requests up to 30s on SIGTERM |
 | **Security** | Configurable request body size cap (default 1 MiB), TLS 1.2+ with modern cipher suite |
 
