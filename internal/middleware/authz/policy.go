@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -95,6 +96,16 @@ func NewPolicyEnforcer(cfg PolicyConfig) (*PolicyEnforcer, error) {
 	// Sort policies by priority
 	e.sortPolicies()
 
+	// Surface load-time warnings for empty PrincipalMatchers — they
+	// match nothing now (M-authz-3) and an operator who wrote
+	// `principals: {}` expecting "everyone" needs to know.
+	for _, p := range e.policies {
+		if p.Principals != nil && principalMatcherIsEmpty(p.Principals) {
+			slog.Warn("authz policy has an empty PrincipalMatcher; it will match no principal — omit the field to match all",
+				"enforcer", e.name, "policy_id", p.ID)
+		}
+	}
+
 	return e, nil
 }
 
@@ -183,8 +194,23 @@ func (e *PolicyEnforcer) matches(policy *Policy, input *AuthzInput) bool {
 }
 
 // matchesPrincipal checks if principal matches the matcher.
+//
+// A non-nil matcher with EVERY field empty matches NOTHING (returns
+// false). Operators occasionally write `principals: {}` expecting it
+// to behave like "no constraint", but the historical wildcard
+// behaviour silently allowed/denied every principal — a footgun. To
+// state "match all principals", omit the matcher entirely (nil) so
+// the surrounding `matches()` skips the principal check.
+//
+// principalMatcherIsEmpty distinguishes this case from a partially
+// populated matcher (one or more fields set) which retains the
+// original "all set fields must match" AND-of-fields semantics.
 func (e *PolicyEnforcer) matchesPrincipal(matcher *PrincipalMatcher, principal *PrincipalInfo) bool {
 	if principal == nil {
+		return false
+	}
+
+	if principalMatcherIsEmpty(matcher) {
 		return false
 	}
 
@@ -217,6 +243,21 @@ func (e *PolicyEnforcer) matchesPrincipal(matcher *PrincipalMatcher, principal *
 	}
 
 	return true
+}
+
+// principalMatcherIsEmpty reports whether m has every field empty
+// (matcher object exists but specifies no constraints). Used by
+// matchesPrincipal to fail-closed on `principals: {}` and by
+// ValidatePolicies to surface a load-time warning.
+func principalMatcherIsEmpty(m *PrincipalMatcher) bool {
+	if m == nil {
+		return false
+	}
+	return len(m.IDs) == 0 &&
+		len(m.Roles) == 0 &&
+		len(m.Groups) == 0 &&
+		len(m.Types) == 0 &&
+		len(m.Attributes) == 0
 }
 
 // matchesResource checks if resource matches the matcher.

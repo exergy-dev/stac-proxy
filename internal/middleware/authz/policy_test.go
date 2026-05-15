@@ -733,10 +733,13 @@ func TestPrincipalMatcher(t *testing.T) {
 			wantMatch: false,
 		},
 		{
-			name:      "empty matcher matches anything",
+			// M-authz-3: a PrincipalMatcher whose every field is empty
+			// must NOT match anything. Operators wanting "match all"
+			// should omit the matcher (set to nil) instead.
+			name:      "empty matcher matches nothing",
 			matcher:   &PrincipalMatcher{},
 			principal: &PrincipalInfo{ID: "user1"},
-			wantMatch: true,
+			wantMatch: false,
 		},
 	}
 
@@ -1995,4 +1998,80 @@ func TestEdgeCases(t *testing.T) {
 			t.Error("policy with no matchers should match everything")
 		}
 	})
+}
+
+// TestPolicy_EmptyPrincipalMatcherMatchesNothing verifies M-authz-3:
+// `principals: {}` (an object with all fields empty) must NOT match
+// any principal. The previous behaviour silently treated each empty
+// field as wildcard, allowing or denying everyone — a footgun for an
+// operator who expected `{}` to mean "no constraint".
+func TestPolicy_EmptyPrincipalMatcherMatchesNothing(t *testing.T) {
+	t.Parallel()
+
+	policy := Policy{
+		ID:         "empty-matcher",
+		Effect:     PolicyEffectAllow,
+		Priority:   100,
+		Principals: &PrincipalMatcher{}, // explicit-empty object
+	}
+
+	e, err := NewPolicyEnforcer(PolicyConfig{
+		Name:     "test",
+		Policies: []Policy{policy},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyEnforcer: %v", err)
+	}
+
+	input := &AuthzInput{
+		Principal: &PrincipalInfo{ID: "anyone"},
+		Request:   &RequestInfo{Method: "GET", RequestType: "collection"},
+		Resource:  &ResourceInfo{Type: "collection"},
+	}
+
+	decision, err := e.Authorize(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatalf("want deny (empty matcher matches nothing), got allow: %+v", decision)
+	}
+}
+
+// TestPolicy_NilPrincipalMatcherMatchesAll verifies that omitting the
+// principals matcher entirely (nil) preserves the historical
+// "no principal constraint" semantics. This is how an operator should
+// state "this policy applies to every authenticated principal".
+func TestPolicy_NilPrincipalMatcherMatchesAll(t *testing.T) {
+	t.Parallel()
+
+	policy := Policy{
+		ID:         "nil-matcher",
+		Effect:     PolicyEffectAllow,
+		Priority:   100,
+		Principals: nil, // omitted — match all
+		Actions:    []string{"*"},
+	}
+
+	e, err := NewPolicyEnforcer(PolicyConfig{
+		Name:     "test",
+		Policies: []Policy{policy},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyEnforcer: %v", err)
+	}
+
+	input := &AuthzInput{
+		Principal: &PrincipalInfo{ID: "anyone", Type: "user"},
+		Request:   &RequestInfo{Method: "GET", RequestType: "collection"},
+		Resource:  &ResourceInfo{Type: "collection"},
+	}
+
+	decision, err := e.Authorize(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("want allow (nil matcher = no constraint), got deny: %+v", decision)
+	}
 }
