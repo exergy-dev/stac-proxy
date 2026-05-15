@@ -53,7 +53,18 @@ func main() {
 	}
 
 	if *healthcheck {
-		os.Exit(runHealthcheck(*healthAddr))
+		// If the operator left --healthcheck-addr at its default and
+		// --config points at a real file, derive the URL from
+		// cfg.Server.Port so the probe hits the right port without
+		// needing the flag to be repeated. Failure to load the
+		// config is non-fatal here: fall back to the default URL.
+		addr := *healthAddr
+		if isFlagDefault(addr, "http://127.0.0.1:8080/health") && *configPath != "" {
+			if cfg, err := config.Load(*configPath); err == nil && cfg.Server.Port != 0 {
+				addr = fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Server.Port)
+			}
+		}
+		os.Exit(runHealthcheck(addr))
 	}
 
 	// Load configuration
@@ -564,8 +575,10 @@ func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Ha
 		return nil
 	}
 
+	// YAML scalars decode as int OR float64 depending on whether the
+	// value has a decimal point; accept either shape.
 	requests := 1000
-	if v, ok := rawCfg["requests"].(int); ok {
+	if v, ok := intFromAny(rawCfg["requests"]); ok {
 		requests = v
 	}
 	window := 1 * time.Hour
@@ -575,8 +588,15 @@ func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Ha
 		}
 	}
 	burst := 50
-	if v, ok := rawCfg["burst"].(int); ok {
+	if v, ok := intFromAny(rawCfg["burst"]); ok {
 		burst = v
+	}
+	// Burst must be > 0; the underlying token-bucket limiter treats
+	// 0/negative as "block everything", which is almost certainly not
+	// what an operator intended when omitting the field. Fall back to
+	// the default rather than silently bricking.
+	if burst <= 0 {
+		burst = 50
 	}
 
 	return ratelimit.NewHTTPMiddleware(ratelimit.Config{
@@ -586,6 +606,26 @@ func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Ha
 			Burst:    burst,
 		},
 	})
+}
+
+// intFromAny accepts the int / float64 shapes that YAML scalar
+// numbers can decode into and returns them as int. Returns ok=false
+// for any other kind (including nil).
+func intFromAny(v interface{}) (int, bool) {
+	switch x := v.(type) {
+	case int:
+		return x, true
+	case int64:
+		return int(x), true
+	case float64:
+		// Reject NaN/Inf and obvious non-integers.
+		if x != x || x < float64(int64(-1<<62)) || x > float64(int64(1<<62)) {
+			return 0, false
+		}
+		return int(x), true
+	default:
+		return 0, false
+	}
 }
 
 // buildFederationHandler creates the federation handler. In
@@ -932,6 +972,13 @@ func probeFilterExtension(logger *slog.Logger, id, baseURL string) bool {
 			"origin", id)
 		return false
 	}
+}
+
+// isFlagDefault reports whether got matches the documented default.
+// Used by --healthcheck so we can detect "operator did not override
+// the addr flag" and substitute the configured port.
+func isFlagDefault(got, def string) bool {
+	return got == def
 }
 
 // runHealthcheck makes a single GET against the supplied URL and
