@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -91,7 +92,14 @@ func TestJWKSClient_CachesAndRotates(t *testing.T) {
 		}{"k1", &priv1.PublicKey})
 	})
 
-	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{TTL: time.Hour, AllowInsecureHTTP: true})
+	// Disable the unknown-kid refresh floor for this test — we want to
+	// observe the rotation refresh immediately. The flood-floor
+	// behaviour itself is exercised in TestJWKS_UnknownKidDoesNotFloodIdP.
+	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
+		TTL:                time.Hour,
+		AllowInsecureHTTP:  true,
+		MinRefreshInterval: time.Nanosecond,
+	})
 	if err != nil {
 		t.Fatalf("NewJWKSClient: %v", err)
 	}
@@ -226,6 +234,103 @@ func TestParseRSAKey_AndECKey_RoundTrip(t *testing.T) {
 	}
 	if ecKey.X.Cmp(ec.PublicKey.X) != 0 || ecKey.Y.Cmp(ec.PublicKey.Y) != 0 {
 		t.Fatal("EC key mismatch")
+	}
+}
+
+// TestJWKS_UnknownKidDoesNotFloodIdP exercises the flood-floor +
+// negative-cache contract (HIGH H-auth-2): an attacker presenting
+// tokens with random unknown kids must not be able to make the JWKS
+// client hammer the IdP. With defaults (30s min-refresh + 60s negative
+// cache), 100 concurrent unknown-kid lookups must result in at most
+// a handful of upstream requests — singleflight collapses concurrent
+// refreshes, the negative cache memoises the absence per-kid, and
+// the floor blocks attempts to refresh again until 30s have elapsed.
+func TestJWKS_UnknownKidDoesNotFloodIdP(t *testing.T) {
+	srv, hits := newJWKSServer(t, func() []byte {
+		// Always serve an empty key set. Every kid lookup is a miss.
+		return []byte(`{"keys":[]}`)
+	})
+
+	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
+		TTL:               time.Hour,
+		AllowInsecureHTTP: true,
+		// Defaults: 30s floor, 60s negative cache.
+	})
+	if err != nil {
+		t.Fatalf("NewJWKSClient: %v", err)
+	}
+
+	ctx := context.Background()
+	const N = 100
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			// Mix of "always the same unknown kid" and "many distinct
+			// unknown kids" — the latter is the realistic attack
+			// shape (random kids per request).
+			kid := fmt.Sprintf("attacker-kid-%d", idx)
+			_, _ = c.Key(ctx, kid)
+		}(i)
+	}
+	wg.Wait()
+
+	got := atomic.LoadInt64(hits)
+	// Singleflight collapses concurrent refreshes to one in-flight
+	// request, so a single refresh is the expected steady state.
+	// Allow a small margin for serial bursts that arrive after a
+	// just-finished refresh (clock resolution): cap at 5.
+	if got > 5 {
+		t.Fatalf("want ≤ 5 JWKS GETs under unknown-kid flood, got %d", got)
+	}
+	if got == 0 {
+		t.Fatalf("want ≥ 1 JWKS GET (the initial refresh attempt), got 0")
+	}
+}
+
+// TestJWKS_NegativeCacheClearedOnSuccessfulRefresh verifies a kid that
+// was negative-cached is allowed to succeed once a refresh actually
+// publishes it (rotation path must not be blocked by the floor once
+// the publishing event happens).
+func TestJWKS_NegativeCacheClearedOnSuccessfulRefresh(t *testing.T) {
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	var serveKey atomic.Bool
+	srv, _ := newJWKSServer(t, func() []byte {
+		if serveKey.Load() {
+			return jwksJSON(struct {
+				kid string
+				pub *rsa.PublicKey
+			}{"new-kid", &priv.PublicKey})
+		}
+		return []byte(`{"keys":[]}`)
+	})
+
+	// Tight clock so the test doesn't have to wait real seconds.
+	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
+		TTL:                time.Hour,
+		AllowInsecureHTTP:  true,
+		MinRefreshInterval: time.Nanosecond,
+		NegativeCacheTTL:   time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("NewJWKSClient: %v", err)
+	}
+	ctx := context.Background()
+
+	// First lookup: kid absent → negative-cached.
+	if _, err := c.Key(ctx, "new-kid"); err == nil {
+		t.Fatal("want error for absent kid")
+	}
+
+	// Now publish it.
+	serveKey.Store(true)
+
+	// Wait long enough for both the floor and the negative-cache TTL
+	// to elapse. With both at 1ns this is immediate.
+	time.Sleep(time.Microsecond)
+	if _, err := c.Key(ctx, "new-kid"); err != nil {
+		t.Fatalf("rotation lookup: %v", err)
 	}
 }
 
