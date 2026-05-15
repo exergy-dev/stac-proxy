@@ -58,6 +58,14 @@ type AuthzDecision struct {
 
 	// Optional constraints on the allowed request
 	Constraints *AuthzConstraints `json:"constraints,omitempty"`
+
+	// Final marks the decision as authoritative — composite enforcers
+	// (e.g. CompositeEnforcer.authorizeAny) must NOT override it by
+	// continuing to a more permissive enforcer. Used by the external
+	// OPA enforcer's OnError fail-closed path so an OPA outage cannot
+	// silently fall through to an AlwaysAllow fallback. A Final allow
+	// decision is similarly authoritative.
+	Final bool `json:"-"`
 }
 
 // HasConstraints reports whether the decision carries any

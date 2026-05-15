@@ -94,6 +94,12 @@ func (e *CompositeEnforcer) authorizeAll(ctx context.Context, input *AuthzInput)
 // not short-circuit (so a transient OPA outage doesn't deny everything
 // when another enforcer would have allowed), but they ARE surfaced in
 // the final Reasons so operators can diagnose silent fall-throughs.
+//
+// An enforcer that returns a decision with Final=true is treated as
+// authoritative and short-circuits the loop in either direction —
+// notably the external OPA enforcer marks its OnError-deny decision
+// Final so an OPA outage cannot fall through to a more permissive
+// fallback enforcer (M-authz-2).
 func (e *CompositeEnforcer) authorizeAny(ctx context.Context, input *AuthzInput) (*AuthzDecision, error) {
 	var allReasons []string
 	var errs []error
@@ -108,6 +114,14 @@ func (e *CompositeEnforcer) authorizeAny(ctx context.Context, input *AuthzInput)
 
 		if decision.Allowed {
 			return decision, nil
+		}
+
+		// A Final deny short-circuits the OR loop: the enforcer has
+		// declared its decision authoritative (e.g. OPA outage with
+		// OnError=deny). Falling through to another enforcer would
+		// reintroduce the fail-open the Final marker exists to prevent.
+		if decision.Final {
+			return decision, errors.Join(errs...)
 		}
 
 		allReasons = append(allReasons, decision.Reasons...)

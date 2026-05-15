@@ -6,8 +6,28 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
+)
+
+// OPAErrorMode controls how the external-OPA enforcer handles
+// transport, timeout, or non-200 errors when calling the OPA server.
+//
+// Default behaviour is fail-closed (deny). Operators who prefer
+// fail-open (e.g. during planned OPA outages) can opt in via
+// OPAErrorAllow — the choice is logged at WARN on every error and the
+// decision carries a Reason explaining why.
+type OPAErrorMode string
+
+const (
+	// OPAErrorDeny returns an explicit deny decision when the OPA
+	// server is unreachable or returns an error. This is the default.
+	OPAErrorDeny OPAErrorMode = "deny"
+	// OPAErrorAllow returns an explicit allow decision when the OPA
+	// server is unreachable or returns an error. Use with care; intended
+	// for planned outages where an operator has accepted the risk.
+	OPAErrorAllow OPAErrorMode = "allow"
 )
 
 // OPAEnforcer uses Open Policy Agent for authorization.
@@ -16,6 +36,7 @@ type OPAEnforcer struct {
 	serverURL  string
 	policyPath string
 	name       string
+	onError    OPAErrorMode
 }
 
 // OPAConfig configures the OPA enforcer.
@@ -24,6 +45,10 @@ type OPAConfig struct {
 	ServerURL  string
 	PolicyPath string
 	Timeout    time.Duration
+	// OnError selects the fail-mode when the OPA server is unreachable
+	// or returns a non-200 response. Defaults to OPAErrorDeny
+	// (fail-closed). Documented values: "deny", "allow".
+	OnError OPAErrorMode
 }
 
 // OPARequest is the request sent to OPA.
@@ -55,6 +80,17 @@ func NewOPAEnforcer(cfg OPAConfig) (*OPAEnforcer, error) {
 		policyPath = "/v1/data/stac/authz"
 	}
 
+	onError := cfg.OnError
+	switch onError {
+	case OPAErrorDeny, OPAErrorAllow:
+		// valid
+	case "":
+		onError = OPAErrorDeny
+	default:
+		return nil, fmt.Errorf("invalid OPA OnError mode %q (want %q or %q)",
+			onError, OPAErrorDeny, OPAErrorAllow)
+	}
+
 	return &OPAEnforcer{
 		client: &http.Client{
 			Timeout: timeout,
@@ -62,6 +98,7 @@ func NewOPAEnforcer(cfg OPAConfig) (*OPAEnforcer, error) {
 		serverURL:  cfg.ServerURL,
 		policyPath: policyPath,
 		name:       cfg.Name,
+		onError:    onError,
 	}, nil
 }
 
@@ -88,21 +125,24 @@ func (e *OPAEnforcer) Authorize(ctx context.Context, input *AuthzInput) (*AuthzD
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Send request
+	// Send request. Transport / non-200 / decode failures yield an
+	// EXPLICIT decision (not a bare error) so CompositeEnforcer.authorizeAny
+	// cannot silently fall through to a more permissive enforcer during
+	// an OPA outage. The decision's allowed flag is governed by OnError.
 	resp, err := e.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("OPA request failed: %w", err)
+		return e.errorDecision(fmt.Errorf("OPA request failed: %w", err)), nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("OPA returned status %d", resp.StatusCode)
+		return e.errorDecision(fmt.Errorf("OPA returned status %d", resp.StatusCode)), nil
 	}
 
 	// Parse response
 	var opaResp OPAResponse
 	if err := json.NewDecoder(resp.Body).Decode(&opaResp); err != nil {
-		return nil, fmt.Errorf("failed to decode OPA response: %w", err)
+		return e.errorDecision(fmt.Errorf("failed to decode OPA response: %w", err)), nil
 	}
 
 	// Convert to AuthzDecision
@@ -126,6 +166,33 @@ func (e *OPAEnforcer) Authorize(ctx context.Context, input *AuthzInput) (*AuthzD
 	}
 
 	return decision, nil
+}
+
+// errorDecision converts a transport / response error into an explicit
+// AuthzDecision honoring OnError. Returning a decision (rather than a
+// bare error) prevents CompositeEnforcer.authorizeAny from swallowing
+// the failure and silently falling through to a fallback enforcer
+// during an OPA outage. The reason string names the chosen mode so
+// operators can spot fail-open events in audit logs.
+func (e *OPAEnforcer) errorDecision(err error) *AuthzDecision {
+	switch e.onError {
+	case OPAErrorAllow:
+		slog.Warn("external OPA unreachable; allowing per OnError=allow",
+			"enforcer", e.name, "err", err)
+		return &AuthzDecision{
+			Allowed: true,
+			Reasons: []string{"external-opa unavailable: allow on error"},
+			Final:   true,
+		}
+	default: // deny / unset
+		slog.Warn("external OPA unreachable; denying per OnError=deny",
+			"enforcer", e.name, "err", err)
+		return &AuthzDecision{
+			Allowed: false,
+			Reasons: []string{"external-opa unavailable: deny on error"},
+			Final:   true,
+		}
+	}
 }
 
 // parseOPAConstraints converts OPA constraint output to AuthzConstraints.
