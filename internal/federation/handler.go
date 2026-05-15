@@ -1183,7 +1183,16 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 		return nil, err
 	}
 
-	cap := httpx.NewResponseCapture()
+	// Bound the captured upstream body so a hostile or runaway origin
+	// cannot OOM the proxy via the reverse-proxy fast path. The cap
+	// matches the per-origin MaxResponseBytes used by OriginClient's
+	// JSON paths, falling back to defaultMaxResponseBytes (32 MiB) when
+	// the origin did not configure one.
+	maxBytes := client.MaxResponseBytes()
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxResponseBytes
+	}
+	cap := &boundedCapture{ResponseCapture: httpx.NewResponseCaptureWithLimit(maxBytes)}
 	var upstreamErr error
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -1220,6 +1229,23 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 		return nil, &middleware.InternalError{Message: "upstream request failed: " + upstreamErr.Error(), Cause: upstreamErr}
 	}
 
+	// If the upstream body exceeded the cap, surface 502 Bad Gateway
+	// rather than forwarding the truncated bytes (which are not a
+	// valid response). Logged so operators can identify the offending
+	// origin.
+	if cap.overflowed() {
+		slog.Error("federation: upstream response exceeded capture limit",
+			slog.String("origin", origin.ID),
+			slog.Int64("max_bytes", maxBytes),
+		)
+		body := []byte(fmt.Sprintf(`{"code":"BadGateway","description":"upstream response exceeded %d bytes"}`, maxBytes))
+		return &response{
+			StatusCode: http.StatusBadGateway,
+			Headers:    http.Header{"Content-Type": []string{"application/json"}},
+			Body:       body,
+		}, nil
+	}
+
 	headers := cap.HeadersOut()
 	httpx.StripHopByHopHeaders(headers)
 
@@ -1234,6 +1260,30 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 	}
 	return resp, nil
 }
+
+// boundedCapture wraps an httpx.ResponseCapture and remembers whether
+// any Write was rejected with ErrResponseTooLarge. ReverseProxy
+// silently swallows writer errors (they only surface in its error
+// log), so this side channel is needed to detect overflow at the call
+// site.
+type boundedCapture struct {
+	httpx.ResponseCapture
+	over bool
+}
+
+// Write proxies to the underlying capture and records overflow. Any
+// other error is returned as-is.
+func (b *boundedCapture) Write(p []byte) (int, error) {
+	n, err := b.ResponseCapture.Write(p)
+	if errors.Is(err, httpx.ErrResponseTooLarge) {
+		b.over = true
+	}
+	return n, err
+}
+
+// overflowed reports whether the upstream body exceeded the configured
+// cap during this capture's lifetime.
+func (b *boundedCapture) overflowed() bool { return b.over }
 
 // buildOutboundRequest constructs the *http.Request that ReverseProxy
 // will dispatch. It:

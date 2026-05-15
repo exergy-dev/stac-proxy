@@ -371,3 +371,72 @@ type panicRoundTripper struct{}
 func (panicRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	panic("simulated panic inside upstream RoundTrip")
 }
+
+// TestReverseProxy_OversizedUpstreamReturns502 guards Fix C6: the
+// reverse-proxy fast path used to call httpx.NewResponseCapture() with
+// no byte cap, so a hostile or runaway upstream could OOM the proxy.
+// The handler now uses NewResponseCaptureWithLimit(MaxResponseBytes)
+// (falling back to defaultMaxResponseBytes) and surfaces a 502 when the
+// captured body would exceed the cap.
+func TestReverseProxy_OversizedUpstreamReturns502(t *testing.T) {
+	const maxCap = 256 * 1024 // 256 KiB cap
+	const body = 1024 * 1024 // 1 MiB upstream body
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Stream the oversized body.
+		buf := make([]byte, 4096)
+		for i := range buf {
+			buf[i] = 'A'
+		}
+		written := 0
+		for written < body {
+			n := len(buf)
+			if body-written < n {
+				n = body - written
+			}
+			m, err := w.Write(buf[:n])
+			written += m
+			if err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(HandlerConfig{
+		Origins: []*Origin{{
+			ID:               "primary",
+			BaseURL:          upstream.URL,
+			Enabled:          true,
+			Priority:         100,
+			Searchable:       true,
+			MaxResponseBytes: maxCap,
+		}},
+		ConflictStrategy: ConflictPriorityWins,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	resp, err := handler.Handle(context.Background(), &request{
+		Request:     httptest.NewRequest("GET", "/queryables", nil),
+		Context:     context.Background(),
+		RequestType: middleware.RequestTypeQueryables,
+	})
+	if err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d (oversized upstream must surface 502)", resp.StatusCode, http.StatusBadGateway)
+	}
+
+	// The proxy must not have buffered the full upstream body. Even
+	// allowing for the small JSON error envelope, the response body
+	// MUST be far below the upstream's 1 MiB.
+	if len(resp.Body) > maxCap {
+		t.Errorf("response body length %d exceeds cap %d — capture was not bounded", len(resp.Body), maxCap)
+	}
+}
