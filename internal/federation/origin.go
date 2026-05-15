@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,13 +19,18 @@ import (
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
+// defaultMaxResponseBytes is the per-call upstream response body cap
+// used when Origin.MaxResponseBytes is unset (zero or negative).
+const defaultMaxResponseBytes int64 = 32 << 20 // 32 MiB
+
 // OriginClient handles communication with a single downstream STAC server.
 type OriginClient struct {
-	origin       *Origin
-	httpClient   *http.Client
-	transport    http.RoundTripper
-	authProvider AuthProvider
-	baseURL      *url.URL
+	origin           *Origin
+	httpClient       *http.Client
+	transport        http.RoundTripper
+	authProvider     AuthProvider
+	baseURL          *url.URL
+	maxResponseBytes int64
 
 	// Cached collection info
 	collections     map[string]*stac.Collection
@@ -31,11 +38,26 @@ type OriginClient struct {
 	lastDiscovery   time.Time
 }
 
-// NewOriginClient creates a new client for an origin. Retry and auth
-// are layered into the transport so that ReverseProxy, raw
+// NewOriginClient creates a new client for an origin using a detached
+// background context for auto-discovery. Prefer NewOriginClientWithContext
+// for new call sites — it ties background discovery to the proxy's
+// lifetime so shutdown aborts in-flight upstream calls.
+func NewOriginClient(origin *Origin) (*OriginClient, error) {
+	return NewOriginClientWithContext(context.Background(), slog.Default(), origin)
+}
+
+// NewOriginClientWithContext creates a new client for an origin and
+// binds the background discovery goroutine to parentCtx. Retry and
+// auth are layered into the transport so that ReverseProxy, raw
 // DoRequest calls, and Search/GetCollection/GetItem helpers all share
 // the same per-origin behavior automatically.
-func NewOriginClient(origin *Origin) (*OriginClient, error) {
+func NewOriginClientWithContext(parentCtx context.Context, logger *slog.Logger, origin *Origin) (*OriginClient, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
 	baseURL, err := url.Parse(origin.BaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base URL: %w", err)
@@ -84,23 +106,33 @@ func NewOriginClient(origin *Origin) (*OriginClient, error) {
 		Timeout:   origin.Timeout,
 	}
 
-	client := &OriginClient{
-		origin:       origin,
-		httpClient:   httpClient,
-		transport:    rt,
-		authProvider: authProvider,
-		baseURL:      baseURL,
-		collections:  make(map[string]*stac.Collection),
+	maxResp := origin.MaxResponseBytes
+	if maxResp <= 0 {
+		maxResp = defaultMaxResponseBytes
 	}
 
-	// Initial collection discovery if enabled
+	client := &OriginClient{
+		origin:           origin,
+		httpClient:       httpClient,
+		transport:        rt,
+		authProvider:     authProvider,
+		baseURL:          baseURL,
+		maxResponseBytes: maxResp,
+		collections:      make(map[string]*stac.Collection),
+	}
+
+	// Initial collection discovery if enabled. Bound to parentCtx so
+	// a shutdown signal aborts any in-flight discovery rather than
+	// letting it run to its 30s cap.
 	if origin.AutoDiscover {
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 			defer cancel()
 			if err := client.DiscoverCollections(ctx); err != nil {
-				// Log warning but don't fail
-				fmt.Printf("initial collection discovery failed for %s: %v\n", origin.ID, err)
+				logger.Warn("initial collection discovery failed",
+					"origin", origin.ID,
+					"error", err,
+				)
 			}
 		}()
 	}
@@ -111,14 +143,21 @@ func NewOriginClient(origin *Origin) (*OriginClient, error) {
 // DoRequest executes an HTTP request to the origin. Authentication and
 // retry are applied transparently by the client's RoundTripper chain
 // — see NewOriginClient.
+//
+// The supplied path is treated as a suffix to be appended to the
+// origin's BaseURL path: BaseURL=https://example.com/v1 + path=/search
+// yields https://example.com/v1/search. (url.ResolveReference would
+// instead REPLACE the base path with an absolute path reference, per
+// RFC 3986, which is the wrong operation for STAC endpoints — every
+// public STAC API in the wild hosts its endpoints under a version
+// prefix like /v1 or /api/stac/v1, and ResolveReference would strip
+// that prefix.)
 func (c *OriginClient) DoRequest(ctx context.Context, method, path string,
 	body io.Reader) (*http.Response, error) {
 
-	ref, err := url.Parse(path)
-	if err != nil {
-		return nil, fmt.Errorf("invalid path %q: %w", path, err)
-	}
-	reqURL := c.baseURL.ResolveReference(ref)
+	reqURL := *c.baseURL
+	basePath := strings.TrimSuffix(c.baseURL.Path, "/")
+	reqURL.Path = basePath + "/" + strings.TrimPrefix(path, "/")
 
 	req, err := http.NewRequestWithContext(ctx, method, reqURL.String(), body)
 	if err != nil {
@@ -141,6 +180,28 @@ func (c *OriginClient) DoRequest(ctx context.Context, method, path string,
 	return c.httpClient.Do(req)
 }
 
+// countingReader wraps an io.Reader and tracks the cumulative number
+// of bytes read so callers can enforce a maximum after a streaming
+// decode.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.n += int64(n)
+	return n, err
+}
+
+// limitedBody wraps the upstream resp.Body with an io.LimitReader at
+// (maxResponseBytes + 1) bytes and a counter so that, after JSON
+// decoding, we can detect whether the response exceeded the cap.
+// Returns the counting reader (use cr.n to check the bytes read).
+func (c *OriginClient) limitedBody(body io.Reader) *countingReader {
+	return &countingReader{r: io.LimitReader(body, c.maxResponseBytes+1)}
+}
+
 // Search executes a search request against this origin.
 func (c *OriginClient) Search(ctx context.Context, req *stac.SearchRequest) (*stac.FeatureCollection, error) {
 	body, err := json.Marshal(req)
@@ -155,20 +216,27 @@ func (c *OriginClient) Search(ctx context.Context, req *stac.SearchRequest) (*st
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
 		return nil, fmt.Errorf("search failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
+	cr := c.limitedBody(resp.Body)
 	var fc stac.FeatureCollection
-	if err := json.NewDecoder(resp.Body).Decode(&fc); err != nil {
+	if err := json.NewDecoder(cr).Decode(&fc); err != nil {
+		if cr.n > c.maxResponseBytes {
+			return nil, fmt.Errorf("upstream search response exceeded max %d bytes", c.maxResponseBytes)
+		}
 		return nil, fmt.Errorf("failed to parse search response: %w", err)
+	}
+	if cr.n > c.maxResponseBytes {
+		return nil, fmt.Errorf("upstream search response exceeded max %d bytes", c.maxResponseBytes)
 	}
 
 	return &fc, nil
 }
 
 // GetCollections fetches all collections from this origin.
-func (c *OriginClient) GetCollections(ctx context.Context) ([]stac.Collection, error) {
+func (c *OriginClient) GetCollections(ctx context.Context) ([]*stac.Collection, error) {
 	resp, err := c.DoRequest(ctx, "GET", "/collections", nil)
 	if err != nil {
 		return nil, err
@@ -176,13 +244,20 @@ func (c *OriginClient) GetCollections(ctx context.Context) ([]stac.Collection, e
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
 		return nil, fmt.Errorf("get collections failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
+	cr := c.limitedBody(resp.Body)
 	var result stac.CollectionsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(cr).Decode(&result); err != nil {
+		if cr.n > c.maxResponseBytes {
+			return nil, fmt.Errorf("upstream collections response exceeded max %d bytes", c.maxResponseBytes)
+		}
 		return nil, fmt.Errorf("failed to parse collections response: %w", err)
+	}
+	if cr.n > c.maxResponseBytes {
+		return nil, fmt.Errorf("upstream collections response exceeded max %d bytes", c.maxResponseBytes)
 	}
 
 	return result.Collections, nil
@@ -202,13 +277,20 @@ func (c *OriginClient) GetCollection(ctx context.Context, collectionID string) (
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
 		return nil, fmt.Errorf("get collection failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
+	cr := c.limitedBody(resp.Body)
 	var collection stac.Collection
-	if err := json.NewDecoder(resp.Body).Decode(&collection); err != nil {
+	if err := json.NewDecoder(cr).Decode(&collection); err != nil {
+		if cr.n > c.maxResponseBytes {
+			return nil, fmt.Errorf("upstream collection response exceeded max %d bytes", c.maxResponseBytes)
+		}
 		return nil, fmt.Errorf("failed to parse collection response: %w", err)
+	}
+	if cr.n > c.maxResponseBytes {
+		return nil, fmt.Errorf("upstream collection response exceeded max %d bytes", c.maxResponseBytes)
 	}
 
 	return &collection, nil
@@ -228,13 +310,20 @@ func (c *OriginClient) GetItem(ctx context.Context, collectionID, itemID string)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
 		return nil, fmt.Errorf("get item failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
+	cr := c.limitedBody(resp.Body)
 	var item stac.Item
-	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
+	if err := json.NewDecoder(cr).Decode(&item); err != nil {
+		if cr.n > c.maxResponseBytes {
+			return nil, fmt.Errorf("upstream item response exceeded max %d bytes", c.maxResponseBytes)
+		}
 		return nil, fmt.Errorf("failed to parse item response: %w", err)
+	}
+	if cr.n > c.maxResponseBytes {
+		return nil, fmt.Errorf("upstream item response exceeded max %d bytes", c.maxResponseBytes)
 	}
 
 	return &item, nil
@@ -251,8 +340,11 @@ func (c *OriginClient) DiscoverCollections(ctx context.Context) error {
 	defer c.collectionsLock.Unlock()
 
 	c.collections = make(map[string]*stac.Collection)
-	for i := range collections {
-		c.collections[collections[i].ID] = &collections[i]
+	for _, coll := range collections {
+		if coll == nil {
+			continue
+		}
+		c.collections[coll.ID] = coll
 	}
 	c.lastDiscovery = time.Now()
 
@@ -317,4 +409,12 @@ func (c *OriginClient) BaseURLParsed() *url.URL {
 // auth + retry are applied to proxied requests).
 func (c *OriginClient) Transport() http.RoundTripper {
 	return c.transport
+}
+
+// MaxResponseBytes returns the resolved per-call upstream response
+// body cap for this client. Callers wrapping reverse-proxy responses
+// (e.g. reverseProxyOnce) can use this to enforce the same cap on
+// the raw byte stream.
+func (c *OriginClient) MaxResponseBytes() int64 {
+	return c.maxResponseBytes
 }

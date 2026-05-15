@@ -25,26 +25,21 @@ type ItemOption func(*stac.Item)
 func SampleItem(id string, opts ...ItemOption) *stac.Item {
 	now := time.Now().UTC()
 	item := &stac.Item{
-		Type:       "Feature",
+		Version:    "1.0.0",
 		ID:         id,
 		Collection: "test-collection",
-		Geometry: &stac.Geometry{
-			Type:        "Polygon",
-			Coordinates: json.RawMessage(`[[[-180,-90],[180,-90],[180,90],[-180,90],[-180,-90]]]`),
+		Geometry:   json.RawMessage(`{"type":"Polygon","coordinates":[[[-180,-90],[180,-90],[180,90],[-180,90],[-180,-90]]]}`),
+		Bbox:       []float64{-180, -90, 180, 90},
+		Properties: map[string]any{
+			"datetime":    now.Format(time.RFC3339),
+			"title":       "Test Item " + id,
+			"description": "A test item for unit testing",
 		},
-		BBox: []float64{-180, -90, 180, 90},
-		Properties: stac.Properties{
-			DateTime: &now,
-			Title:    "Test Item " + id,
-			Extra: map[string]interface{}{
-				"description": "A test item for unit testing",
-			},
-		},
-		Links: []stac.Link{
+		Links: []*stac.Link{
 			{Rel: "self", Href: "https://example.com/items/" + id, Type: "application/geo+json"},
 			{Rel: "collection", Href: "https://example.com/collections/test-collection", Type: "application/json"},
 		},
-		Assets: map[string]stac.Asset{
+		Assets: map[string]*stac.Asset{
 			"data": {
 				Href:  "https://example.com/assets/" + id + "/data.tif",
 				Type:  "image/tiff; application=geotiff",
@@ -65,18 +60,20 @@ func WithCollection(collection string) ItemOption {
 
 // --- Collection / FeatureCollection fixtures -------------------------------
 
+func strPtr(s string) *string { return &s }
+
 func SampleCollection(id string) *stac.Collection {
 	return &stac.Collection{
-		Type:        "Collection",
+		Version:     "1.0.0",
 		ID:          id,
 		Title:       "Test Collection " + id,
 		Description: "A test collection for unit testing",
 		License:     "MIT",
-		Extent: stac.Extent{
-			Spatial:  stac.SpatialExtent{BBox: [][]float64{{-180, -90, 180, 90}}},
-			Temporal: stac.TemporalExtent{Interval: [][]interface{}{{"2020-01-01T00:00:00Z", "2023-12-31T23:59:59Z"}}},
+		Extent: &stac.Extent{
+			Spatial:  &stac.SpatialExtent{Bbox: [][]float64{{-180, -90, 180, 90}}},
+			Temporal: &stac.TemporalExtent{Interval: [][]*string{{strPtr("2020-01-01T00:00:00Z"), strPtr("2023-12-31T23:59:59Z")}}},
 		},
-		Links: []stac.Link{
+		Links: []*stac.Link{
 			{Rel: "self", Href: "https://example.com/collections/" + id, Type: "application/json"},
 			{Rel: "items", Href: "https://example.com/collections/" + id + "/items", Type: "application/geo+json"},
 		},
@@ -84,16 +81,11 @@ func SampleCollection(id string) *stac.Collection {
 }
 
 func SampleFeatureCollection(items ...*stac.Item) *stac.FeatureCollection {
-	features := make([]stac.Item, len(items))
-	for i, item := range items {
-		if item != nil {
-			features[i] = *item
-		}
-	}
+	features := append([]*stac.Item(nil), items...)
 	return &stac.FeatureCollection{
 		Type:     "FeatureCollection",
 		Features: features,
-		Links: []stac.Link{
+		Links: []*stac.Link{
 			{Rel: "self", Href: "https://example.com/search", Type: "application/geo+json"},
 		},
 		Context: &stac.SearchContext{Returned: len(items), Limit: 10},

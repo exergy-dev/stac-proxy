@@ -11,25 +11,22 @@ import (
 
 // Helper functions for creating test items
 
-func testItem(id, collection string) stac.Item {
-	now := time.Now().UTC()
-	return stac.Item{
-		Type:       "Feature",
+func testItem(id, collection string) *stac.Item {
+	now := time.Now().UTC().Truncate(time.Second)
+	return &stac.Item{
+		Version:    "1.0.0",
 		ID:         id,
 		Collection: collection,
-		Geometry: &stac.Geometry{
-			Type: "Point",
+		Geometry:   json.RawMessage(`{"type":"Point","coordinates":[0,0]}`),
+		Bbox:       []float64{-180, -90, 180, 90},
+		Properties: map[string]any{
+			"datetime": now.Format(time.RFC3339),
+			"title":    "Test Item " + id,
 		},
-		BBox: []float64{-180, -90, 180, 90},
-		Properties: stac.Properties{
-			DateTime: &now,
-			Title:    "Test Item " + id,
-			Extra:    make(map[string]interface{}),
-		},
-		Links: []stac.Link{
+		Links: []*stac.Link{
 			{Rel: "self", Href: "https://example.com/items/" + id},
 		},
-		Assets: map[string]stac.Asset{
+		Assets: map[string]*stac.Asset{
 			"data": {
 				Href:  "https://example.com/assets/" + id + "/data.tif",
 				Type:  "image/tiff",
@@ -40,34 +37,30 @@ func testItem(id, collection string) stac.Item {
 	}
 }
 
-func testItemWithAssets(id, collection string, assets map[string]stac.Asset) stac.Item {
+func testItemWithAssets(id, collection string, assets map[string]*stac.Asset) *stac.Item {
 	item := testItem(id, collection)
 	item.Assets = assets
 	return item
 }
 
-func testItemWithDateTime(id, collection string, dt time.Time) stac.Item {
+func testItemWithDateTime(id, collection string, dt time.Time) *stac.Item {
 	item := testItem(id, collection)
-	item.Properties.DateTime = &dt
+	item.Properties["datetime"] = dt.Format(time.RFC3339)
 	return item
 }
 
-func testCollection(id string) stac.Collection {
-	return stac.Collection{
-		Type:        "Collection",
+func testCollection(id string) *stac.Collection {
+	return &stac.Collection{
+		Version:     "1.0.0",
 		ID:          id,
 		Title:       "Test Collection " + id,
 		Description: "A test collection",
 		License:     "MIT",
-		Extent: stac.Extent{
-			Spatial: stac.SpatialExtent{
-				BBox: [][]float64{{-180, -90, 180, 90}},
-			},
-			Temporal: stac.TemporalExtent{
-				Interval: [][]interface{}{{"2020-01-01T00:00:00Z", "2023-12-31T23:59:59Z"}},
-			},
+		Extent: &stac.Extent{
+			Spatial:  &stac.SpatialExtent{Bbox: [][]float64{{-180, -90, 180, 90}}},
+			Temporal: &stac.TemporalExtent{Interval: [][]*string{{strPtr("2020-01-01T00:00:00Z"), strPtr("2023-12-31T23:59:59Z")}}},
 		},
-		Links: []stac.Link{
+		Links: []*stac.Link{
 			{Rel: "self", Href: "https://example.com/collections/" + id},
 		},
 	}
@@ -124,11 +117,11 @@ func TestMergeSearchResults_EmptyResults(t *testing.T) {
 	if fc.Context == nil {
 		t.Fatal("Context is nil")
 	}
-	if fc.Context.Returned != 0 {
-		t.Errorf("Context.Returned = %d, want 0", fc.Context.Returned)
+	if stac.SearchContextOf(fc).Returned != 0 {
+		t.Errorf("Context.Returned = %d, want 0", stac.SearchContextOf(fc).Returned)
 	}
-	if fc.Context.Matched != 0 {
-		t.Errorf("Context.Matched = %d, want 0", fc.Context.Matched)
+	if stac.SearchContextOf(fc).Matched != 0 {
+		t.Errorf("Context.Matched = %d, want 0", stac.SearchContextOf(fc).Matched)
 	}
 }
 
@@ -137,7 +130,7 @@ func TestMergeSearchResults_SingleOrigin(t *testing.T) {
 
 	merger := NewResultMerger(ConflictFirstWins)
 
-	items := []stac.Item{
+	items := []*stac.Item{
 		testItem("item-1", "collection-1"),
 		testItem("item-2", "collection-1"),
 		testItem("item-3", "collection-1"),
@@ -164,17 +157,17 @@ func TestMergeSearchResults_SingleOrigin(t *testing.T) {
 	if len(fc.Features) != 3 {
 		t.Errorf("Features length = %d, want 3", len(fc.Features))
 	}
-	if fc.Context.Returned != 3 {
-		t.Errorf("Context.Returned = %d, want 3", fc.Context.Returned)
+	if stac.SearchContextOf(fc).Returned != 3 {
+		t.Errorf("Context.Returned = %d, want 3", stac.SearchContextOf(fc).Returned)
 	}
-	if fc.Context.Matched != 3 {
-		t.Errorf("Context.Matched = %d, want 3", fc.Context.Matched)
+	if stac.SearchContextOf(fc).Matched != 3 {
+		t.Errorf("Context.Matched = %d, want 3", stac.SearchContextOf(fc).Matched)
 	}
 
-	// Check that origin metadata was added
+	// Check that origin metadata was added (as a stac_proxy:origin link)
 	for i, item := range fc.Features {
-		if item.Properties.Extra["stac_proxy:origin"] != "origin-1" {
-			t.Errorf("item %d: stac_proxy:origin = %v, want origin-1", i, item.Properties.Extra["stac_proxy:origin"])
+		if got := stac.ItemOriginID(item); got != "origin-1" {
+			t.Errorf("item %d: ItemOriginID = %q, want origin-1", i, got)
 		}
 	}
 }
@@ -189,14 +182,14 @@ func TestMergeSearchResults_FirstWins(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 2, // Lower priority (should come second after sorting)
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 		},
 		{
 			OriginID: "origin-2",
 			Priority: 1, // Higher priority (should come first after sorting)
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"), // Same ID
 				testItem("item-2", "collection-1"),
 			},
@@ -219,9 +212,8 @@ func TestMergeSearchResults_FirstWins(t *testing.T) {
 	for _, item := range fc.Features {
 		if item.ID == "item-1" {
 			item1Found = true
-			if item.Properties.Extra["stac_proxy:origin"] != "origin-2" {
-				t.Errorf("item-1 origin = %v, want origin-2 (first wins after priority sort)",
-					item.Properties.Extra["stac_proxy:origin"])
+			if got := stac.ItemOriginID(item); got != "origin-2" {
+				t.Errorf("item-1 origin = %q, want origin-2 (first wins after priority sort)", got)
 			}
 		}
 	}
@@ -240,21 +232,21 @@ func TestMergeSearchResults_PriorityWins(t *testing.T) {
 		{
 			OriginID: "origin-low",
 			Priority: 5, // Lower priority
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 		},
 		{
 			OriginID: "origin-high",
 			Priority: 1, // Higher priority (lower number)
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"), // Same ID
 			},
 		},
 		{
 			OriginID: "origin-medium",
 			Priority: 3,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"), // Same ID
 				testItem("item-2", "collection-1"),
 			},
@@ -276,9 +268,8 @@ func TestMergeSearchResults_PriorityWins(t *testing.T) {
 	for _, item := range fc.Features {
 		if item.ID == "item-1" {
 			item1Found = true
-			if item.Properties.Extra["stac_proxy:origin"] != "origin-high" {
-				t.Errorf("item-1 origin = %v, want origin-high (highest priority wins)",
-					item.Properties.Extra["stac_proxy:origin"])
+			if got := stac.ItemOriginID(item); got != "origin-high" {
+				t.Errorf("item-1 origin = %q, want origin-high (highest priority wins)", got)
 			}
 		}
 	}
@@ -293,7 +284,7 @@ func TestMergeSearchResults_Merge(t *testing.T) {
 	merger := NewResultMerger(ConflictMerge)
 
 	// Create items with different assets
-	item1Assets1 := map[string]stac.Asset{
+	item1Assets1 := map[string]*stac.Asset{
 		"thumbnail": {
 			Href:  "https://origin1.com/thumb.jpg",
 			Type:  "image/jpeg",
@@ -301,7 +292,7 @@ func TestMergeSearchResults_Merge(t *testing.T) {
 			Roles: []string{"thumbnail"},
 		},
 	}
-	item1Assets2 := map[string]stac.Asset{
+	item1Assets2 := map[string]*stac.Asset{
 		"data": {
 			Href:  "https://origin2.com/data.tif",
 			Type:  "image/tiff",
@@ -314,14 +305,14 @@ func TestMergeSearchResults_Merge(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItemWithAssets("item-1", "collection-1", item1Assets1),
 			},
 		},
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItemWithAssets("item-1", "collection-1", item1Assets2),
 			},
 		},
@@ -357,14 +348,14 @@ func TestMergeSearchResults_MergeAssetCollision(t *testing.T) {
 	merger := NewResultMerger(ConflictMerge)
 
 	// Create items with same asset key
-	item1Assets1 := map[string]stac.Asset{
+	item1Assets1 := map[string]*stac.Asset{
 		"data": {
 			Href:  "https://origin1.com/data1.tif",
 			Type:  "image/tiff",
 			Title: "Data from Origin 1",
 		},
 	}
-	item1Assets2 := map[string]stac.Asset{
+	item1Assets2 := map[string]*stac.Asset{
 		"data": {
 			Href:  "https://origin2.com/data2.tif",
 			Type:  "image/tiff",
@@ -376,14 +367,14 @@ func TestMergeSearchResults_MergeAssetCollision(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItemWithAssets("item-1", "collection-1", item1Assets1),
 			},
 		},
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItemWithAssets("item-1", "collection-1", item1Assets2),
 			},
 		},
@@ -427,7 +418,7 @@ func TestMergeSearchResults_MergeDateTimeComparison(t *testing.T) {
 
 	merger := NewResultMerger(ConflictMerge)
 
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Second)
 	older := now.Add(-24 * time.Hour)
 	newer := now.Add(24 * time.Hour)
 
@@ -435,14 +426,14 @@ func TestMergeSearchResults_MergeDateTimeComparison(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItemWithDateTime("item-1", "collection-1", older),
 			},
 		},
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItemWithDateTime("item-1", "collection-1", newer),
 			},
 		},
@@ -461,12 +452,12 @@ func TestMergeSearchResults_MergeDateTimeComparison(t *testing.T) {
 	item := fc.Features[0]
 
 	// Should use the newer datetime
-	if item.Properties.DateTime == nil {
-		t.Fatal("DateTime is nil")
+	got, ok := stac.ItemDatetime(item)
+	if !ok {
+		t.Fatal("DateTime missing")
 	}
-	if !item.Properties.DateTime.Equal(newer) {
-		t.Errorf("DateTime = %v, want %v (should use newer datetime)",
-			item.Properties.DateTime, newer)
+	if !got.Equal(newer) {
+		t.Errorf("DateTime = %v, want %v (should use newer datetime)", got, newer)
 	}
 }
 
@@ -480,14 +471,14 @@ func TestMergeSearchResults_Namespace(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 		},
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"), // Same ID
 				testItem("item-2", "collection-1"),
 			},
@@ -544,14 +535,14 @@ func TestMergeSearchResults_RejectDuplicates(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 		},
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"), // Same ID - should cause error
 			},
 		},
@@ -581,7 +572,7 @@ func TestMergeSearchResults_LimitZero(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 				testItem("item-2", "collection-1"),
 				testItem("item-3", "collection-1"),
@@ -610,7 +601,7 @@ func TestMergeSearchResults_LimitPartial(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 				testItem("item-2", "collection-1"),
 				testItem("item-3", "collection-1"),
@@ -629,11 +620,11 @@ func TestMergeSearchResults_LimitPartial(t *testing.T) {
 	if len(fc.Features) != 3 {
 		t.Errorf("Features length = %d, want 3", len(fc.Features))
 	}
-	if fc.Context.Returned != 3 {
-		t.Errorf("Context.Returned = %d, want 3", fc.Context.Returned)
+	if stac.SearchContextOf(fc).Returned != 3 {
+		t.Errorf("Context.Returned = %d, want 3", stac.SearchContextOf(fc).Returned)
 	}
-	if fc.Context.Limit != 3 {
-		t.Errorf("Context.Limit = %d, want 3", fc.Context.Limit)
+	if stac.SearchContextOf(fc).Limit != 3 {
+		t.Errorf("Context.Limit = %d, want 3", stac.SearchContextOf(fc).Limit)
 	}
 }
 
@@ -646,7 +637,7 @@ func TestMergeSearchResults_LimitExact(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 				testItem("item-2", "collection-1"),
 				testItem("item-3", "collection-1"),
@@ -674,7 +665,7 @@ func TestMergeSearchResults_LimitExceeding(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 				testItem("item-2", "collection-1"),
 			},
@@ -701,21 +692,21 @@ func TestMergeSearchResults_PriorityOrdering(t *testing.T) {
 		{
 			OriginID: "origin-low",
 			Priority: 10,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-low", "collection-1"),
 			},
 		},
 		{
 			OriginID: "origin-high",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-high", "collection-1"),
 			},
 		},
 		{
 			OriginID: "origin-medium",
 			Priority: 5,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-medium", "collection-1"),
 			},
 		},
@@ -753,7 +744,7 @@ func TestMergeSearchResults_OriginMetadata(t *testing.T) {
 		{
 			OriginID: "test-origin-id",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 		},
@@ -770,12 +761,8 @@ func TestMergeSearchResults_OriginMetadata(t *testing.T) {
 	}
 
 	item := fc.Features[0]
-	origin, ok := item.Properties.Extra["stac_proxy:origin"]
-	if !ok {
-		t.Error("stac_proxy:origin not found in item properties")
-	}
-	if origin != "test-origin-id" {
-		t.Errorf("stac_proxy:origin = %v, want test-origin-id", origin)
+	if got := stac.ItemOriginID(item); got != "test-origin-id" {
+		t.Errorf("ItemOriginID = %q, want test-origin-id", got)
 	}
 }
 
@@ -793,7 +780,7 @@ func TestMergeSearchResults_FailedOrigins(t *testing.T) {
 		{
 			OriginID: "origin-success",
 			Priority: 2,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 			Context: &stac.SearchContext{
@@ -813,8 +800,8 @@ func TestMergeSearchResults_FailedOrigins(t *testing.T) {
 	if len(fc.Features) != 1 {
 		t.Errorf("Features length = %d, want 1", len(fc.Features))
 	}
-	if fc.Context.Matched != 1 {
-		t.Errorf("Context.Matched = %d, want 1", fc.Context.Matched)
+	if stac.SearchContextOf(fc).Matched != 1 {
+		t.Errorf("Context.Matched = %d, want 1", stac.SearchContextOf(fc).Matched)
 	}
 }
 
@@ -828,14 +815,14 @@ func TestMergeSearchResults_DuplicateAcrossCollections(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-A"),
 			},
 		},
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-B"),
 			},
 		},
@@ -862,7 +849,7 @@ func TestMergeSearchResults_ContextAggregation(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 			Context: &stac.SearchContext{
@@ -873,7 +860,7 @@ func TestMergeSearchResults_ContextAggregation(t *testing.T) {
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-2", "collection-1"),
 			},
 			Context: &stac.SearchContext{
@@ -890,12 +877,12 @@ func TestMergeSearchResults_ContextAggregation(t *testing.T) {
 	}
 
 	// Matched should be sum of all origins
-	if fc.Context.Matched != 150 {
-		t.Errorf("Context.Matched = %d, want 150 (sum of all origins)", fc.Context.Matched)
+	if stac.SearchContextOf(fc).Matched != 150 {
+		t.Errorf("Context.Matched = %d, want 150 (sum of all origins)", stac.SearchContextOf(fc).Matched)
 	}
 	// Returned should be actual count
-	if fc.Context.Returned != 2 {
-		t.Errorf("Context.Returned = %d, want 2", fc.Context.Returned)
+	if stac.SearchContextOf(fc).Returned != 2 {
+		t.Errorf("Context.Returned = %d, want 2", stac.SearchContextOf(fc).Returned)
 	}
 }
 
@@ -904,7 +891,7 @@ func TestDeduplicateCollections(t *testing.T) {
 
 	merger := NewResultMerger(ConflictFirstWins)
 
-	collections := []stac.Collection{
+	collections := []*stac.Collection{
 		testCollection("collection-1"),
 		testCollection("collection-2"),
 		testCollection("collection-1"), // Duplicate
@@ -944,7 +931,7 @@ func TestDeduplicateCollections_Empty(t *testing.T) {
 
 	merger := NewResultMerger(ConflictFirstWins)
 
-	result := merger.DeduplicateCollections([]stac.Collection{})
+	result := merger.DeduplicateCollections([]*stac.Collection{})
 
 	if len(result) != 0 {
 		t.Errorf("result length = %d, want 0", len(result))
@@ -956,7 +943,7 @@ func TestDeduplicateCollections_AllUnique(t *testing.T) {
 
 	merger := NewResultMerger(ConflictFirstWins)
 
-	collections := []stac.Collection{
+	collections := []*stac.Collection{
 		testCollection("collection-1"),
 		testCollection("collection-2"),
 		testCollection("collection-3"),
@@ -977,14 +964,14 @@ func TestMergeCollections(t *testing.T) {
 	results := []*OriginCollectionsResult{
 		{
 			OriginID: "origin-1",
-			Collections: []stac.Collection{
+			Collections: []*stac.Collection{
 				testCollection("collection-1"),
 				testCollection("collection-2"),
 			},
 		},
 		{
 			OriginID: "origin-2",
-			Collections: []stac.Collection{
+			Collections: []*stac.Collection{
 				testCollection("collection-2"), // Duplicate
 				testCollection("collection-3"),
 			},
@@ -997,18 +984,15 @@ func TestMergeCollections(t *testing.T) {
 		t.Errorf("merged length = %d, want 3 (deduplicated)", len(merged))
 	}
 
-	// Check that origin metadata was added
+	// Check that origin metadata was added (as a stac_proxy:origin link)
 	for _, coll := range merged {
-		if coll.Properties == nil {
-			t.Error("collection Properties is nil")
+		origin := stac.CollectionOriginID(coll)
+		if origin == "" {
+			t.Errorf("collection %s: stac_proxy:origin link missing", coll.ID)
 			continue
 		}
-		origin, ok := coll.Properties["stac_proxy:origin"]
-		if !ok {
-			t.Errorf("collection %s: stac_proxy:origin not found", coll.ID)
-		}
 		if origin != "origin-1" && origin != "origin-2" {
-			t.Errorf("collection %s: stac_proxy:origin = %v, want origin-1 or origin-2", coll.ID, origin)
+			t.Errorf("collection %s: origin = %q, want origin-1 or origin-2", coll.ID, origin)
 		}
 	}
 }
@@ -1025,7 +1009,7 @@ func TestMergeCollections_FailedOrigins(t *testing.T) {
 		},
 		{
 			OriginID: "origin-success",
-			Collections: []stac.Collection{
+			Collections: []*stac.Collection{
 				testCollection("collection-1"),
 			},
 		},
@@ -1058,7 +1042,7 @@ func TestCalculateMergeStats(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 				testItem("item-2", "collection-1"),
 			},
@@ -1066,7 +1050,7 @@ func TestCalculateMergeStats(t *testing.T) {
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"), // Duplicate
 				testItem("item-3", "collection-1"),
 			},
@@ -1105,13 +1089,13 @@ func TestCalculateMergeStats_NoDuplicates(t *testing.T) {
 	results := []*OriginSearchResult{
 		{
 			OriginID: "origin-1",
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 		},
 		{
 			OriginID: "origin-2",
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-2", "collection-1"),
 			},
 		},
@@ -1129,7 +1113,7 @@ func TestItemToJSON(t *testing.T) {
 
 	item := testItem("test-item", "test-collection")
 
-	jsonBytes, err := ItemToJSON(&item)
+	jsonBytes, err := ItemToJSON(item)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1150,7 +1134,7 @@ func TestCollectionToJSON(t *testing.T) {
 
 	collection := testCollection("test-collection")
 
-	jsonBytes, err := CollectionToJSON(&collection)
+	jsonBytes, err := CollectionToJSON(collection)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1200,12 +1184,12 @@ func TestMergeItems_LinksAreAppended(t *testing.T) {
 	merger := NewResultMerger(ConflictMerge)
 
 	existing := testItem("item-1", "collection-1")
-	existing.Links = []stac.Link{
+	existing.Links = []*stac.Link{
 		{Rel: "self", Href: "https://origin1.com/item-1"},
 	}
 
 	incoming := testItem("item-1", "collection-1")
-	incoming.Links = []stac.Link{
+	incoming.Links = []*stac.Link{
 		{Rel: "alternate", Href: "https://origin2.com/item-1"},
 	}
 
@@ -1226,8 +1210,8 @@ func TestMergeSearchResults_MultipleOriginsSameItems(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
-				testItemWithAssets("item-1", "collection-1", map[string]stac.Asset{
+			Items: []*stac.Item{
+				testItemWithAssets("item-1", "collection-1", map[string]*stac.Asset{
 					"asset-a": {Href: "https://origin1.com/a", Title: "Asset A"},
 				}),
 			},
@@ -1235,8 +1219,8 @@ func TestMergeSearchResults_MultipleOriginsSameItems(t *testing.T) {
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items: []stac.Item{
-				testItemWithAssets("item-1", "collection-1", map[string]stac.Asset{
+			Items: []*stac.Item{
+				testItemWithAssets("item-1", "collection-1", map[string]*stac.Asset{
 					"asset-b": {Href: "https://origin2.com/b", Title: "Asset B"},
 				}),
 			},
@@ -1244,8 +1228,8 @@ func TestMergeSearchResults_MultipleOriginsSameItems(t *testing.T) {
 		{
 			OriginID: "origin-3",
 			Priority: 3,
-			Items: []stac.Item{
-				testItemWithAssets("item-1", "collection-1", map[string]stac.Asset{
+			Items: []*stac.Item{
+				testItemWithAssets("item-1", "collection-1", map[string]*stac.Asset{
 					"asset-c": {Href: "https://origin3.com/c", Title: "Asset C"},
 				}),
 			},
@@ -1282,14 +1266,20 @@ func TestTransformItem_AddsOriginMetadata(t *testing.T) {
 	merger := NewResultMerger(ConflictFirstWins)
 	item := testItem("item-1", "collection-1")
 
-	transformed := merger.transformItem(item, "test-origin")
+	transformed := merger.transformItem(item, "test-origin", "https://test.example/v1")
 
-	origin, ok := transformed.Properties.Extra["stac_proxy:origin"]
-	if !ok {
-		t.Error("stac_proxy:origin not found")
+	if got := stac.ItemOriginID(transformed); got != "test-origin" {
+		t.Errorf("ItemOriginID = %q, want test-origin", got)
 	}
-	if origin != "test-origin" {
-		t.Errorf("origin = %v, want test-origin", origin)
+	// The link's href carries the upstream URL.
+	var hrefSeen string
+	for _, l := range transformed.Links {
+		if l != nil && l.Rel == stac.OriginLinkRel {
+			hrefSeen = l.Href
+		}
+	}
+	if hrefSeen != "https://test.example/v1" {
+		t.Errorf("origin link href = %q, want https://test.example/v1", hrefSeen)
 	}
 }
 
@@ -1300,7 +1290,7 @@ func TestTransformItem_NamespaceStrategy(t *testing.T) {
 	item := testItem("item-1", "collection-1")
 	originalID := item.ID
 
-	transformed := merger.transformItem(item, "test-origin")
+	transformed := merger.transformItem(item, "test-origin", "https://test.example/v1")
 
 	expectedID := "test-origin:" + originalID
 	if transformed.ID != expectedID {
@@ -1317,7 +1307,7 @@ func TestMergeSearchResults_NilContext(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 			Context: nil, // No context
@@ -1331,11 +1321,11 @@ func TestMergeSearchResults_NilContext(t *testing.T) {
 	}
 
 	// Should handle nil context gracefully
-	if fc.Context.Matched != 0 {
-		t.Errorf("Context.Matched = %d, want 0 (nil context)", fc.Context.Matched)
+	if stac.SearchContextOf(fc).Matched != 0 {
+		t.Errorf("Context.Matched = %d, want 0 (nil context)", stac.SearchContextOf(fc).Matched)
 	}
-	if fc.Context.Returned != 1 {
-		t.Errorf("Context.Returned = %d, want 1", fc.Context.Returned)
+	if stac.SearchContextOf(fc).Returned != 1 {
+		t.Errorf("Context.Returned = %d, want 1", stac.SearchContextOf(fc).Returned)
 	}
 }
 
@@ -1345,12 +1335,12 @@ func TestMergeItems_NilDateTime(t *testing.T) {
 	merger := NewResultMerger(ConflictMerge)
 
 	existing := testItem("item-1", "collection-1")
-	existing.Properties.DateTime = nil
+	delete(existing.Properties, "datetime")
 
 	incoming := testItem("item-1", "collection-1")
-	incoming.Properties.DateTime = nil
+	delete(incoming.Properties, "datetime")
 
-	// Should not panic with nil datetimes
+	// Should not panic with absent datetimes
 	merged := merger.mergeItems(existing, incoming, "origin-2")
 
 	if merged.ID != "item-1" {
@@ -1363,21 +1353,23 @@ func TestMergeItems_OneNilDateTime(t *testing.T) {
 
 	merger := NewResultMerger(ConflictMerge)
 
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Second)
 
 	existing := testItem("item-1", "collection-1")
-	existing.Properties.DateTime = &now
+	existing.Properties["datetime"] = now.Format(time.RFC3339)
 
 	incoming := testItem("item-1", "collection-1")
-	incoming.Properties.DateTime = nil
+	delete(incoming.Properties, "datetime")
 
 	merged := merger.mergeItems(existing, incoming, "origin-2")
 
-	// Should keep existing properties when incoming datetime is nil
-	if merged.Properties.DateTime == nil {
-		t.Error("DateTime is nil, should keep existing")
-	} else if !merged.Properties.DateTime.Equal(now) {
-		t.Errorf("DateTime = %v, want %v", merged.Properties.DateTime, now)
+	// Should keep existing properties when incoming datetime is absent.
+	got, ok := stac.ItemDatetime(merged)
+	if !ok {
+		t.Fatal("DateTime missing, should keep existing")
+	}
+	if !got.Equal(now) {
+		t.Errorf("DateTime = %v, want %v", got, now)
 	}
 }
 
@@ -1390,7 +1382,7 @@ func TestMergeSearchResults_DeduplicatorReset(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 		},
@@ -1412,7 +1404,7 @@ func TestMergeSearchResults_DeduplicatorReset(t *testing.T) {
 		{
 			OriginID: "origin-2",
 			Priority: 1,
-			Items: []stac.Item{
+			Items: []*stac.Item{
 				testItem("item-1", "collection-1"),
 			},
 		},
@@ -1437,7 +1429,7 @@ func TestMergeSearchResults_NilAssets(t *testing.T) {
 	item1.Assets = nil
 
 	item2 := testItem("item-1", "collection-1")
-	item2.Assets = map[string]stac.Asset{
+	item2.Assets = map[string]*stac.Asset{
 		"data": {Href: "https://example.com/data.tif", Type: "image/tiff"},
 	}
 
@@ -1445,12 +1437,12 @@ func TestMergeSearchResults_NilAssets(t *testing.T) {
 		{
 			OriginID: "origin-1",
 			Priority: 1,
-			Items:    []stac.Item{item1},
+			Items:    []*stac.Item{item1},
 		},
 		{
 			OriginID: "origin-2",
 			Priority: 2,
-			Items:    []stac.Item{item2},
+			Items:    []*stac.Item{item2},
 		},
 	}
 
@@ -1474,7 +1466,7 @@ func BenchmarkMergeSearchResults_FirstWins(b *testing.B) {
 	merger := NewResultMerger(ConflictFirstWins)
 
 	// Create test data
-	items := make([]stac.Item, 100)
+	items := make([]*stac.Item, 100)
 	for i := 0; i < 100; i++ {
 		items[i] = testItem(fmt.Sprintf("item-%d", i), "collection-1")
 	}
@@ -1512,15 +1504,15 @@ func BenchmarkMergeSearchResults_Merge(b *testing.B) {
 	merger := NewResultMerger(ConflictMerge)
 
 	// Create test data with assets
-	items1 := make([]stac.Item, 50)
-	items2 := make([]stac.Item, 50)
+	items1 := make([]*stac.Item, 50)
+	items2 := make([]*stac.Item, 50)
 	for i := 0; i < 50; i++ {
 		items1[i] = testItemWithAssets(fmt.Sprintf("item-%d", i), "collection-1",
-			map[string]stac.Asset{
+			map[string]*stac.Asset{
 				"asset-1": {Href: "https://origin1.com/asset1", Type: "image/tiff"},
 			})
 		items2[i] = testItemWithAssets(fmt.Sprintf("item-%d", i), "collection-1",
-			map[string]stac.Asset{
+			map[string]*stac.Asset{
 				"asset-2": {Href: "https://origin2.com/asset2", Type: "image/tiff"},
 			})
 	}
@@ -1552,7 +1544,7 @@ func BenchmarkMergeSearchResults_Merge(b *testing.B) {
 func BenchmarkDeduplicateCollections(b *testing.B) {
 	merger := NewResultMerger(ConflictFirstWins)
 
-	collections := make([]stac.Collection, 100)
+	collections := make([]*stac.Collection, 100)
 	for i := 0; i < 100; i++ {
 		// Create some duplicates
 		collections[i] = testCollection(fmt.Sprintf("collection-%d", i%20))

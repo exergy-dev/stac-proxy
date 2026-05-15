@@ -2,12 +2,46 @@
 package federation
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
+)
+
+// Sentinel errors for cursor decoding. Callers can use errors.Is to
+// distinguish a malformed cursor from a tampered one from a
+// principal/origin mismatch.
+var (
+	// ErrCursorInvalid is returned when the cursor token is structurally
+	// malformed (not two base64 parts, invalid base64, invalid JSON).
+	ErrCursorInvalid = errors.New("cursor: invalid")
+
+	// ErrCursorTampered is returned when the HMAC signature does not
+	// match the payload (key mismatch or payload was modified).
+	ErrCursorTampered = errors.New("cursor: signature mismatch")
+
+	// ErrCursorExpired is returned when the cursor's ExpiresAt is in the
+	// past.
+	ErrCursorExpired = errors.New("cursor: expired")
+
+	// ErrCursorPrincipalMismatch is returned when the cursor was issued
+	// for a different principal than the one making the current request.
+	ErrCursorPrincipalMismatch = errors.New("cursor: principal mismatch")
+
+	// ErrCursorOriginURLNotAllowed is returned when an OriginCursor's
+	// NextURL does not begin with the configured origin BaseURL. This
+	// guards against SSRF/authz bypass via tampered NextURLs.
+	ErrCursorOriginURLNotAllowed = errors.New("cursor: origin NextURL not allowed")
+
+	// ErrCursorSecretMissing is returned when Encode or DecodeCursor is
+	// called with an empty secret.
+	ErrCursorSecretMissing = errors.New("cursor: secret required")
 )
 
 // FederatedCursor tracks pagination state across multiple origins.
@@ -17,6 +51,10 @@ type FederatedCursor struct {
 
 	// Original search parameters hash
 	QueryHash string `json:"q"`
+
+	// PrincipalHash binds the cursor to the principal that originally
+	// requested it. Empty == anonymous. See PrincipalHash().
+	PrincipalHash string `json:"ph,omitempty"`
 
 	// Per-origin cursor state
 	Origins map[string]*OriginCursor `json:"o"`
@@ -68,19 +106,34 @@ func DefaultCursorConfig() *CursorConfig {
 	}
 }
 
-// NewFederatedCursor creates a new federated cursor.
-func NewFederatedCursor(queryHash string, originIDs []string, cfg *CursorConfig) *FederatedCursor {
+// PrincipalHash returns a short stable hash binding a cursor to a
+// principal. Empty input returns empty output (anonymous). The output
+// is 16 hex chars of sha256(principalID)[:8].
+func PrincipalHash(principalID string) string {
+	if principalID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(principalID))
+	return hex.EncodeToString(sum[:8])
+}
+
+// NewFederatedCursor creates a new federated cursor bound to the given
+// principal hash. queryHash should be the output of hashSearchRequest;
+// principalHash should be the output of PrincipalHash (or "" for
+// anonymous).
+func NewFederatedCursor(queryHash, principalHash string, originIDs []string, cfg *CursorConfig) *FederatedCursor {
 	if cfg == nil {
 		cfg = DefaultCursorConfig()
 	}
 
 	now := time.Now()
 	cursor := &FederatedCursor{
-		Version:   1,
-		QueryHash: queryHash,
-		Origins:   make(map[string]*OriginCursor),
-		CreatedAt: now.Unix(),
-		ExpiresAt: now.Add(cfg.DefaultTTL).Unix(),
+		Version:       1,
+		QueryHash:     queryHash,
+		PrincipalHash: principalHash,
+		Origins:       make(map[string]*OriginCursor),
+		CreatedAt:     now.Unix(),
+		ExpiresAt:     now.Add(cfg.DefaultTTL).Unix(),
 	}
 
 	for _, id := range originIDs {
@@ -92,36 +145,87 @@ func NewFederatedCursor(queryHash string, originIDs []string, cfg *CursorConfig)
 	return cursor
 }
 
-// Encode serializes the cursor to a URL-safe string.
-func (c *FederatedCursor) Encode() (string, error) {
+// Encode serializes and signs the cursor. The token format is:
+//
+//	base64url(payload-json) + "." + base64url(hmac-sha256(payload-json, secret))
+//
+// secret must be non-empty.
+func (c *FederatedCursor) Encode(secret []byte) (string, error) {
+	if len(secret) == 0 {
+		return "", ErrCursorSecretMissing
+	}
 	data, err := json.Marshal(c)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cursor: marshal: %w", err)
 	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(data)
+	sig := mac.Sum(nil)
 
-	// Base64 URL-safe encoding
-	return base64.RawURLEncoding.EncodeToString(data), nil
+	payload := base64.RawURLEncoding.EncodeToString(data)
+	signature := base64.RawURLEncoding.EncodeToString(sig)
+	return payload + "." + signature, nil
 }
 
-// DecodeCursor deserializes a cursor from a string.
-func DecodeCursor(encoded string) (*FederatedCursor, error) {
+// DecodeCursor parses, verifies HMAC, and validates the cursor against
+// the calling principal and the configured origin allowlist. It checks:
+//  1. token format (two base64url parts separated by ".")
+//  2. HMAC over the payload matches signature
+//  3. cursor not expired
+//  4. cursor.PrincipalHash matches the supplied principalHash
+//  5. for each OriginCursor.NextURL: either empty OR prefixed by allowed[OriginCursor.ID]
+//
+// allowed is originID -> originBaseURL. principalHash empty == anonymous request.
+func DecodeCursor(encoded string, secret []byte, allowed map[string]string, principalHash string) (*FederatedCursor, error) {
 	if encoded == "" {
-		return nil, errors.New("empty cursor")
+		return nil, fmt.Errorf("%w: empty cursor", ErrCursorInvalid)
+	}
+	if len(secret) == 0 {
+		return nil, ErrCursorSecretMissing
 	}
 
-	data, err := base64.RawURLEncoding.DecodeString(encoded)
+	parts := strings.Split(encoded, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("%w: token must have payload and signature", ErrCursorInvalid)
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return nil, fmt.Errorf("invalid cursor encoding: %w", err)
+		return nil, fmt.Errorf("%w: payload base64: %v", ErrCursorInvalid, err)
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("%w: signature base64: %v", ErrCursorInvalid, err)
+	}
+
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(payload)
+	expected := mac.Sum(nil)
+	if !hmac.Equal(expected, signature) {
+		return nil, ErrCursorTampered
 	}
 
 	var cursor FederatedCursor
-	if err := json.Unmarshal(data, &cursor); err != nil {
-		return nil, fmt.Errorf("invalid cursor data: %w", err)
+	if err := json.Unmarshal(payload, &cursor); err != nil {
+		return nil, fmt.Errorf("%w: payload JSON: %v", ErrCursorInvalid, err)
 	}
 
-	// Check expiration
 	if time.Now().Unix() > cursor.ExpiresAt {
-		return nil, errors.New("cursor expired")
+		return nil, ErrCursorExpired
+	}
+
+	if cursor.PrincipalHash != principalHash {
+		return nil, ErrCursorPrincipalMismatch
+	}
+
+	for _, oc := range cursor.Origins {
+		if oc == nil || oc.NextURL == "" {
+			continue
+		}
+		base, ok := allowed[oc.ID]
+		if !ok || base == "" || !strings.HasPrefix(oc.NextURL, base) {
+			return nil, fmt.Errorf("%w: origin=%s url=%s", ErrCursorOriginURLNotAllowed, oc.ID, oc.NextURL)
+		}
 	}
 
 	return &cursor, nil
@@ -202,6 +306,7 @@ func (c *FederatedCursor) Clone() *FederatedCursor {
 	clone := &FederatedCursor{
 		Version:       c.Version,
 		QueryHash:     c.QueryHash,
+		PrincipalHash: c.PrincipalHash,
 		Origins:       make(map[string]*OriginCursor),
 		TotalReturned: c.TotalReturned,
 		CreatedAt:     c.CreatedAt,

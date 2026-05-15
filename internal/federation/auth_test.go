@@ -1329,7 +1329,7 @@ func TestAWSSigV4Provider(t *testing.T) {
 
 	t.Run("defaults service to execute-api", func(t *testing.T) {
 		config := &AWSSigV4Config{
-			Region:    "us-east-1",
+			Region: "us-east-1",
 			// Service not specified
 			AccessKey: "AKIAIOSFODNN7EXAMPLE",
 			SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",

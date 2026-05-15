@@ -455,7 +455,7 @@ func TestRoute(t *testing.T) {
 		t.Parallel()
 		router := NewCollectionRouter()
 		origin1 := testOrigin("origin-1", routerWithCollections("coll-a")) // Explicit
-		origin2 := testOrigin("origin-2")                            // Implicit (no collection list)
+		origin2 := testOrigin("origin-2")                                  // Implicit (no collection list)
 
 		router.Register(origin1)
 		router.Register(origin2)

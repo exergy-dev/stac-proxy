@@ -189,9 +189,9 @@ func TestNewOriginClient(t *testing.T) {
 
 func TestNewOriginClient_AutoDiscover(t *testing.T) {
 	// Set up a test server
-	collections := []stac.Collection{
-		*sampleCollection("test-col-1"),
-		*sampleCollection("test-col-2"),
+	collections := []*stac.Collection{
+		sampleCollection("test-col-1"),
+		sampleCollection("test-col-2"),
 	}
 	resp := stac.CollectionsResponse{Collections: collections}
 
@@ -336,9 +336,9 @@ func TestOriginClient_DoRequest(t *testing.T) {
 			path:   "/collections",
 			body:   nil,
 			authConfig: AuthConfig{
-				Type:         "api_key",
-				APIKeyHeader: "X-API-Key",
-				APIKeyValue:  "test-key-123",
+				Type:          "api_key",
+				APIKeyHeader:  "X-API-Key",
+				APIKeyValue:   "test-key-123",
 				APIKeyInQuery: false,
 			},
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
@@ -691,20 +691,20 @@ func TestOriginClient_GetCollections(t *testing.T) {
 		serverStatus   int
 		wantErr        bool
 		errContains    string
-		checkResult    func(t *testing.T, collections []stac.Collection)
+		checkResult    func(t *testing.T, collections []*stac.Collection)
 	}{
 		{
 			name: "successful get collections",
 			serverResponse: &stac.CollectionsResponse{
-				Collections: []stac.Collection{
-					*sampleCollection("col-1"),
-					*sampleCollection("col-2"),
-					*sampleCollection("col-3"),
+				Collections: []*stac.Collection{
+					sampleCollection("col-1"),
+					sampleCollection("col-2"),
+					sampleCollection("col-3"),
 				},
 			},
 			serverStatus: http.StatusOK,
 			wantErr:      false,
-			checkResult: func(t *testing.T, collections []stac.Collection) {
+			checkResult: func(t *testing.T, collections []*stac.Collection) {
 				if len(collections) != 3 {
 					t.Errorf("expected 3 collections, got %d", len(collections))
 				}
@@ -716,11 +716,11 @@ func TestOriginClient_GetCollections(t *testing.T) {
 		{
 			name: "get collections returns empty list",
 			serverResponse: &stac.CollectionsResponse{
-				Collections: []stac.Collection{},
+				Collections: []*stac.Collection{},
 			},
 			serverStatus: http.StatusOK,
 			wantErr:      false,
-			checkResult: func(t *testing.T, collections []stac.Collection) {
+			checkResult: func(t *testing.T, collections []*stac.Collection) {
 				if len(collections) != 0 {
 					t.Errorf("expected 0 collections, got %d", len(collections))
 				}
@@ -1195,9 +1195,9 @@ func TestOriginClient_DiscoverCollections(t *testing.T) {
 		{
 			name: "successful discovery",
 			serverResponse: &stac.CollectionsResponse{
-				Collections: []stac.Collection{
-					*sampleCollection("col-1"),
-					*sampleCollection("col-2"),
+				Collections: []*stac.Collection{
+					sampleCollection("col-1"),
+					sampleCollection("col-2"),
 				},
 			},
 			serverStatus: http.StatusOK,
@@ -1230,7 +1230,7 @@ func TestOriginClient_DiscoverCollections(t *testing.T) {
 		{
 			name: "discovery with no collections",
 			serverResponse: &stac.CollectionsResponse{
-				Collections: []stac.Collection{},
+				Collections: []*stac.Collection{},
 			},
 			serverStatus: http.StatusOK,
 			wantErr:      false,
@@ -1608,22 +1608,19 @@ func TestOriginClient_URLConstruction(t *testing.T) {
 func sampleItem(id string) *stac.Item {
 	now := time.Now()
 	return &stac.Item{
-		Type:       "Feature",
+		Version:    "1.0.0",
 		ID:         id,
 		Collection: "test-collection",
-		Geometry: &stac.Geometry{
-			Type:        "Polygon",
-			Coordinates: json.RawMessage(`[[[-180,-90],[180,-90],[180,90],[-180,90],[-180,-90]]]`),
+		Geometry:   json.RawMessage(`{"type":"Polygon","coordinates":[[[-180,-90],[180,-90],[180,90],[-180,90],[-180,-90]]]}`),
+		Bbox:       []float64{-180, -90, 180, 90},
+		Properties: map[string]any{
+			"datetime": now.Format(time.RFC3339),
+			"title":    "Test Item " + id,
 		},
-		BBox: []float64{-180, -90, 180, 90},
-		Properties: stac.Properties{
-			DateTime: &now,
-			Title:    "Test Item " + id,
-		},
-		Links: []stac.Link{
+		Links: []*stac.Link{
 			{Rel: "self", Href: "https://example.com/items/" + id, Type: "application/geo+json"},
 		},
-		Assets: map[string]stac.Asset{
+		Assets: map[string]*stac.Asset{
 			"data": {
 				Href:  "https://example.com/assets/" + id + "/data.tif",
 				Type:  "image/tiff",
@@ -1636,35 +1633,26 @@ func sampleItem(id string) *stac.Item {
 
 func sampleCollection(id string) *stac.Collection {
 	return &stac.Collection{
-		Type:        "Collection",
+		Version:     "1.0.0",
 		ID:          id,
 		Title:       "Test Collection " + id,
 		Description: "A test collection for unit testing",
 		License:     "MIT",
-		Extent: stac.Extent{
-			Spatial: stac.SpatialExtent{
-				BBox: [][]float64{{-180, -90, 180, 90}},
-			},
-			Temporal: stac.TemporalExtent{
-				Interval: [][]interface{}{{"2020-01-01T00:00:00Z", "2023-12-31T23:59:59Z"}},
-			},
+		Extent: &stac.Extent{
+			Spatial:  &stac.SpatialExtent{Bbox: [][]float64{{-180, -90, 180, 90}}},
+			Temporal: &stac.TemporalExtent{Interval: [][]*string{{strPtr("2020-01-01T00:00:00Z"), strPtr("2023-12-31T23:59:59Z")}}},
 		},
-		Links: []stac.Link{
+		Links: []*stac.Link{
 			{Rel: "self", Href: "https://example.com/collections/" + id, Type: "application/json"},
 		},
 	}
 }
 
 func sampleFeatureCollection(items ...*stac.Item) *stac.FeatureCollection {
-	stacItems := make([]stac.Item, len(items))
-	for i, item := range items {
-		stacItems[i] = *item
-	}
-
-	fc := &stac.FeatureCollection{
+	return &stac.FeatureCollection{
 		Type:     "FeatureCollection",
-		Features: stacItems,
-		Links: []stac.Link{
+		Features: append([]*stac.Item(nil), items...),
+		Links: []*stac.Link{
 			{Rel: "self", Href: "https://example.com/search", Type: "application/geo+json"},
 		},
 		Context: &stac.SearchContext{
@@ -1672,7 +1660,6 @@ func sampleFeatureCollection(items ...*stac.Item) *stac.FeatureCollection {
 			Limit:    10,
 		},
 	}
-	return fc
 }
 
 func sampleSearchRequest() *stac.SearchRequest {
@@ -1912,12 +1899,12 @@ func TestOriginClient_DiscoverCollections_UpdateCache(t *testing.T) {
 	t.Parallel()
 
 	// Test that discovery updates an existing cache
-	collections1 := []stac.Collection{
-		*sampleCollection("col-1"),
+	collections1 := []*stac.Collection{
+		sampleCollection("col-1"),
 	}
-	collections2 := []stac.Collection{
-		*sampleCollection("col-2"),
-		*sampleCollection("col-3"),
+	collections2 := []*stac.Collection{
+		sampleCollection("col-2"),
+		sampleCollection("col-3"),
 	}
 
 	callCount := 0
@@ -2074,5 +2061,166 @@ func TestOriginClient_HasCollection_EmptyCache(t *testing.T) {
 	has := client.HasCollection("any-collection")
 	if has {
 		t.Error("expected false for empty cache with no explicit collections")
+	}
+}
+
+// TestOriginClient_DoRequest_PathPrefixedBaseURL is a regression test
+// for a real-world bug discovered by the live tests: STAC APIs in
+// the wild host their endpoints under version-prefixed paths like
+// https://earth-search.aws.element84.com/v1 and
+// https://planetarycomputer.microsoft.com/api/stac/v1. The previous
+// implementation used url.ResolveReference("/search"), which per
+// RFC 3986 treats `/search` as an absolute-path reference that
+// REPLACES the base's path — so the request went out to /search
+// instead of /v1/search and the upstream returned 403/405. The fix
+// is to treat the path argument as a suffix to be appended to the
+// base path.
+func TestOriginClient_DoRequest_PathPrefixedBaseURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		basePath   string
+		callerPath string
+		wantPath   string
+	}{
+		{"no base path, leading slash", "", "/search", "/search"},
+		{"no base path, no leading slash", "", "search", "/search"},
+		{"single-segment base, leading slash", "/v1", "/search", "/v1/search"},
+		{"single-segment base, no leading slash", "/v1", "search", "/v1/search"},
+		{"single-segment base with trailing slash", "/v1/", "/search", "/v1/search"},
+		{"multi-segment base", "/api/stac/v1", "/collections", "/api/stac/v1/collections"},
+		{"multi-segment base, no leading slash", "/api/stac/v1", "collections", "/api/stac/v1/collections"},
+		{"nested suffix path", "/v1", "/collections/landsat/items", "/v1/collections/landsat/items"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+
+			client, err := NewOriginClient(&Origin{
+				ID:      "t",
+				BaseURL: srv.URL + tt.basePath,
+				Enabled: true,
+				Timeout: 5 * time.Second,
+			})
+			if err != nil {
+				t.Fatalf("NewOriginClient: %v", err)
+			}
+
+			resp, err := client.DoRequest(context.Background(), http.MethodGet, tt.callerPath, nil)
+			if err != nil {
+				t.Fatalf("DoRequest: %v", err)
+			}
+			resp.Body.Close()
+
+			if gotPath != tt.wantPath {
+				t.Errorf("path = %q, want %q (base=%q, caller=%q)",
+					gotPath, tt.wantPath, tt.basePath, tt.callerPath)
+			}
+		})
+	}
+}
+
+// --- H1 regression tests (Worktree B) -----------------------------------
+
+// TestOriginClient_RejectsOversizedResponse: when the upstream returns
+// a body larger than Origin.MaxResponseBytes, the origin client must
+// error rather than buffer the whole thing into memory.
+func TestOriginClient_RejectsOversizedResponse(t *testing.T) {
+	t.Parallel()
+
+	// Build a FeatureCollection with a single Item carrying a giant
+	// title in Properties. JSON-marshaling produces well over 1 KiB.
+	pad := strings.Repeat("A", 2048)
+	item := sampleItem("big-item")
+	item.Properties["title"] = pad
+	fc := sampleFeatureCollection(item)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(fc)
+	}))
+	defer server.Close()
+
+	origin := &Origin{
+		ID:               "test-origin",
+		BaseURL:          server.URL,
+		Enabled:          true,
+		Timeout:          5 * time.Second,
+		MaxResponseBytes: 1024,
+	}
+
+	client, err := NewOriginClient(origin)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	_, err = client.Search(context.Background(), sampleSearchRequest())
+	if err == nil {
+		t.Fatal("expected error for oversized response, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeded") {
+		t.Errorf("error %q does not contain 'exceeded'", err.Error())
+	}
+}
+
+func TestOriginClient_AcceptsUnderLimit(t *testing.T) {
+	t.Parallel()
+
+	fc := sampleFeatureCollection(sampleItem("item-1"))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(fc)
+	}))
+	defer server.Close()
+
+	origin := &Origin{
+		ID:               "test-origin",
+		BaseURL:          server.URL,
+		Enabled:          true,
+		Timeout:          5 * time.Second,
+		MaxResponseBytes: 1 << 20,
+	}
+
+	client, err := NewOriginClient(origin)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	got, err := client.Search(context.Background(), sampleSearchRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil || len(got.Features) != 1 {
+		t.Fatalf("expected 1 feature, got %+v", got)
+	}
+}
+
+func TestOriginClient_DefaultMaxResponseBytes(t *testing.T) {
+	t.Parallel()
+
+	origin := &Origin{
+		ID:      "test-origin",
+		BaseURL: "https://api.example.com",
+	}
+	client, err := NewOriginClient(origin)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	if got, want := client.MaxResponseBytes(), int64(32<<20); got != want {
+		t.Errorf("default MaxResponseBytes = %d, want %d", got, want)
 	}
 }

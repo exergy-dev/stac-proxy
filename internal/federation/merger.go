@@ -24,12 +24,20 @@ func NewResultMerger(strategy ConflictStrategy) *ResultMerger {
 }
 
 // MergeSearchResults merges results from multiple origins into a single response.
+//
+// Ordering is deterministic: results are sorted by (priority asc,
+// originID asc) before iteration, so a tie between origins sharing the
+// same priority resolves stably rather than depending on goroutine
+// completion order.
 func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 	req *stac.SearchRequest) (*stac.FeatureCollection, error) {
 
-	// Sort by priority (lower = higher priority)
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Priority < results[j].Priority
+	// Sort by (priority asc, originID asc) for deterministic merge.
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Priority != results[j].Priority {
+			return results[i].Priority < results[j].Priority
+		}
+		return results[i].OriginID < results[j].OriginID
 	})
 
 	// Track items by ID for conflict resolution. itemsByID gives us
@@ -50,18 +58,21 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 		}
 
 		for _, item := range result.Items {
+			if item == nil {
+				continue
+			}
 			key := m.itemKey(result.OriginID, item)
 
 			if existing, exists := itemsByID[key]; exists {
 				// Handle conflict and persist the merged result.
-				merged, err := m.resolveConflict(existing, &item, result.OriginID)
+				merged, err := m.resolveConflict(existing, item, result.OriginID)
 				if err != nil {
 					return nil, err
 				}
 				existing.item = merged
 			} else {
 				// New item
-				transformed := m.transformItem(item, result.OriginID)
+				transformed := m.transformItem(item, result.OriginID, result.OriginURL)
 				itemsByID[key] = &itemWithOrigin{
 					item:     transformed,
 					originID: result.OriginID,
@@ -73,7 +84,7 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 	}
 
 	// Materialise items from the canonical map so merges are observed.
-	items := make([]stac.Item, 0, len(keyOrder))
+	items := make([]*stac.Item, 0, len(keyOrder))
 	for _, k := range keyOrder {
 		items = append(items, itemsByID[k].item)
 	}
@@ -81,25 +92,27 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 		items = items[:req.Limit]
 	}
 
-	// Build the response
+	// Build the response. The library's ItemsList.Context is `any`;
+	// we store our typed SearchContext there and rely on the JSON
+	// encoder to flatten it.
+	sc := &stac.SearchContext{
+		Returned: len(items),
+		Matched:  totalMatched,
+	}
+	if req.Limit > 0 {
+		sc.Limit = req.Limit
+	}
 	fc := &stac.FeatureCollection{
 		Type:     "FeatureCollection",
 		Features: items,
-		Context: &stac.SearchContext{
-			Returned: len(items),
-			Matched:  totalMatched,
-		},
-	}
-
-	if req.Limit > 0 {
-		fc.Context.Limit = req.Limit
+		Context:  sc,
 	}
 
 	return fc, nil
 }
 
 // itemKey generates a unique key for an item.
-func (m *ResultMerger) itemKey(originID string, item stac.Item) string {
+func (m *ResultMerger) itemKey(originID string, item *stac.Item) string {
 	if m.strategy == ConflictNamespace {
 		return originID + ":" + item.ID
 	}
@@ -117,13 +130,13 @@ func (m *ResultMerger) itemKey(originID string, item stac.Item) string {
 // pre-sort, FirstWins is a race that depends on arrival order, and
 // Namespace prefixes keys so duplicates never reach here in the first place.
 func (m *ResultMerger) resolveConflict(existing *itemWithOrigin,
-	incoming *stac.Item, incomingOrigin string) (stac.Item, error) {
+	incoming *stac.Item, incomingOrigin string) (*stac.Item, error) {
 
 	switch m.strategy {
 	case ConflictMerge:
-		return m.mergeItems(existing.item, *incoming, incomingOrigin), nil
+		return m.mergeItems(existing.item, incoming, incomingOrigin), nil
 	case ConflictRejectDuplicates:
-		return stac.Item{}, fmt.Errorf("duplicate item ID %s from origins %s and %s",
+		return nil, fmt.Errorf("duplicate item ID %s from origins %s and %s",
 			incoming.ID, existing.originID, incomingOrigin)
 	default:
 		// ConflictFirstWins, ConflictPriorityWins, ConflictNamespace.
@@ -132,12 +145,12 @@ func (m *ResultMerger) resolveConflict(existing *itemWithOrigin,
 }
 
 // mergeItems combines two items with the same ID.
-func (m *ResultMerger) mergeItems(existing, incoming stac.Item, incomingOrigin string) stac.Item {
-	merged := existing
+func (m *ResultMerger) mergeItems(existing, incoming *stac.Item, incomingOrigin string) *stac.Item {
+	merged := *existing
 
 	// Merge assets from both items
 	if merged.Assets == nil {
-		merged.Assets = make(map[string]stac.Asset)
+		merged.Assets = make(map[string]*stac.Asset)
 	}
 	for key, asset := range incoming.Assets {
 		// Prefix asset keys with origin to avoid overwrites
@@ -148,41 +161,48 @@ func (m *ResultMerger) mergeItems(existing, incoming stac.Item, incomingOrigin s
 		merged.Assets[mergedKey] = asset
 	}
 
-	// Keep the most recent properties (by datetime)
-	if incoming.Properties.DateTime != nil && existing.Properties.DateTime != nil {
-		if incoming.Properties.DateTime.After(*existing.Properties.DateTime) {
-			merged.Properties = incoming.Properties
+	// Keep the most recent properties (by datetime).
+	if incT, ok := stac.ItemDatetime(incoming); ok {
+		if existT, ok := stac.ItemDatetime(existing); ok {
+			if incT.After(existT) {
+				merged.Properties = incoming.Properties
+			}
 		}
 	}
 
 	// Merge links
 	merged.Links = append(merged.Links, incoming.Links...)
 
-	return merged
+	return &merged
 }
 
-// transformItem adds origin metadata to an item.
-func (m *ResultMerger) transformItem(item stac.Item, originID string) stac.Item {
-	// Add origin metadata to item properties
-	if item.Properties.Extra == nil {
-		item.Properties.Extra = make(map[string]interface{})
-	}
-	item.Properties.Extra["stac_proxy:origin"] = originID
+// transformItem adds origin metadata to an item via a stac_proxy:origin
+// link (rel="stac_proxy:origin", href=originURL, title=originID).
+// Using a link rather than a property keeps the marker in the
+// standard navigational surface (links[]) so generic STAC tooling
+// surfaces it the same way it surfaces self/parent/root links.
+func (m *ResultMerger) transformItem(item *stac.Item, originID, originURL string) *stac.Item {
+	out := *item // shallow copy so we don't mutate caller's item
+	stac.AddItemOriginLink(&out, originID, originURL)
 
 	// Namespace item ID if configured
 	if m.strategy == ConflictNamespace {
-		item.ID = originID + ":" + item.ID
+		out.ID = originID + ":" + out.ID
 	}
 
-	return item
+	return &out
 }
 
-// DeduplicateCollections removes duplicate collections.
-func (m *ResultMerger) DeduplicateCollections(collections []stac.Collection) []stac.Collection {
+// DeduplicateCollections removes duplicate collections by ID and
+// returns them sorted by ID for stable output.
+func (m *ResultMerger) DeduplicateCollections(collections []*stac.Collection) []*stac.Collection {
 	seen := make(map[string]bool)
-	var result []stac.Collection
+	var result []*stac.Collection
 
 	for _, coll := range collections {
+		if coll == nil {
+			continue
+		}
 		if !seen[coll.ID] {
 			seen[coll.ID] = true
 			result = append(result, coll)
@@ -197,21 +217,28 @@ func (m *ResultMerger) DeduplicateCollections(collections []stac.Collection) []s
 	return result
 }
 
-// MergeCollections merges collection results from multiple origins.
-func (m *ResultMerger) MergeCollections(results []*OriginCollectionsResult) []stac.Collection {
-	var allCollections []stac.Collection
+// MergeCollections merges collection results from multiple origins
+// and attaches a stac_proxy:origin link to each (rel = origin link
+// rel, href = origin BaseURL, title = origin ID).
+//
+// All mutation happens here, in the caller's goroutine, AFTER the
+// per-origin fan-out has completed. The previous design also wrote
+// the marker from each per-origin goroutine, which raced with the
+// JSON-marshal step under the race detector even though the writes
+// happened-before the marshal via wg.Wait. Keeping a single writer
+// removes the ambiguity.
+func (m *ResultMerger) MergeCollections(results []*OriginCollectionsResult) []*stac.Collection {
+	var allCollections []*stac.Collection
 
 	for _, result := range results {
 		if result.Error != nil {
 			continue
 		}
-
 		for _, coll := range result.Collections {
-			// Add origin metadata
-			if coll.Properties == nil {
-				coll.Properties = make(map[string]interface{})
+			if coll == nil {
+				continue
 			}
-			coll.Properties["stac_proxy:origin"] = result.OriginID
+			stac.AddCollectionOriginLink(coll, result.OriginID, result.OriginURL)
 			allCollections = append(allCollections, coll)
 		}
 	}
@@ -221,7 +248,7 @@ func (m *ResultMerger) MergeCollections(results []*OriginCollectionsResult) []st
 
 // itemWithOrigin tracks an item with its origin metadata.
 type itemWithOrigin struct {
-	item     stac.Item
+	item     *stac.Item
 	originID string
 	priority int
 }

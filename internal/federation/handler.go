@@ -4,14 +4,17 @@ package federation
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
+	"runtime/debug"
 	"strings"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -31,6 +34,25 @@ type Handler struct {
 	proxyBaseURL     string
 	defaultPageSize  int
 	maxPageSize      int
+	conformanceCaps  stac.ConformanceCaps
+	// searcher is the federated paginated searcher. It is non-nil only
+	// when a CursorSecret was configured; otherwise handleSearch falls
+	// back to a single-page fan-out (validation warns on this so the
+	// operator gets a startup-time signal).
+	searcher *PaginatedSearcher
+	// assetSigner is used by rewriteAssetHref when an origin has
+	// `rewrite_assets: sign` configured. When nil and an origin asks
+	// for "sign", the rewrite falls back to passthrough (we never
+	// silently emit unsigned URLs while pretending they are gated).
+	assetSigner AssetSigner
+}
+
+// AssetSigner is the minimal contract rewriteAssetHref needs from a
+// URL signer when an origin opts into `rewrite_assets: sign`. The
+// concrete implementation today is remap.HMACSigner; the interface
+// keeps federation from depending on internal/middleware/remap.
+type AssetSigner interface {
+	Sign(ctx context.Context, rawURL string, ttl time.Duration) string
 }
 
 // HandlerConfig contains configuration for the federation handler.
@@ -42,6 +64,28 @@ type HandlerConfig struct {
 	ProxyBaseURL     string
 	DefaultPageSize  int
 	MaxPageSize      int
+	// ConformanceCaps controls which conformance classes the proxy is
+	// willing to advertise on /conformance and the landing page. The
+	// actual response is the intersection of these caps with what every
+	// routed origin advertises (see internal/stac.Intersect).
+	ConformanceCaps stac.ConformanceCaps
+	// LifetimeCtx (optional) is used to tie background goroutines
+	// (auto-discovery) to the proxy's lifetime so a shutdown signal
+	// aborts in-flight upstream calls. Defaults to context.Background()
+	// when nil, preserving previous behavior.
+	LifetimeCtx context.Context
+	// Logger (optional) receives structured logs from background work
+	// like auto-discovery. Defaults to slog.Default() when nil.
+	Logger *slog.Logger
+	// AssetSigner is invoked when an origin has rewrite_assets: sign.
+	// Optional — when nil and `sign` is configured, the rewriter falls
+	// back to passthrough rather than emit unsigned URLs.
+	AssetSigner AssetSigner
+	// CursorSecret is the HMAC key used to sign federated pagination
+	// cursors. When empty the proxy still serves single-page federated
+	// searches but cannot issue "next" links — config validation emits
+	// a warning in that case.
+	CursorSecret []byte
 }
 
 // NewHandler creates a new federation handler.
@@ -55,6 +99,8 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 		proxyBaseURL:     cfg.ProxyBaseURL,
 		defaultPageSize:  cfg.DefaultPageSize,
 		maxPageSize:      cfg.MaxPageSize,
+		conformanceCaps:  cfg.ConformanceCaps,
+		assetSigner:      cfg.AssetSigner,
 	}
 
 	if handler.maxConcurrent <= 0 {
@@ -70,19 +116,50 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 		handler.maxPageSize = 1000
 	}
 
+	parentCtx := cfg.LifetimeCtx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	// Initialize origin clients
 	for _, origin := range cfg.Origins {
 		if !origin.Enabled {
 			continue
 		}
 
-		client, err := NewOriginClient(origin)
+		client, err := NewOriginClientWithContext(parentCtx, logger, origin)
 		if err != nil {
 			return nil, fmt.Errorf("failed to init origin %s: %w", origin.ID, err)
 		}
 
 		handler.origins[origin.ID] = client
 		handler.router.Register(origin)
+	}
+
+	// Build the paginated searcher when a cursor secret is configured.
+	// Without a secret, handleSearch falls back to a single-page
+	// fan-out — federated multi-page pagination requires signed
+	// cursors (NewPaginatedSearcher rejects an empty key).
+	if len(cfg.CursorSecret) > 0 && len(handler.origins) > 0 {
+		origins := make(map[string]Searcher, len(handler.origins))
+		for id, c := range handler.origins {
+			origins[id] = OriginClientSearcher{Client: c}
+		}
+		searcher, err := NewPaginatedSearcher(PaginatedSearchConfig{
+			Origins:         origins,
+			Merger:          handler.merger,
+			DefaultPageSize: handler.defaultPageSize,
+			MaxPageSize:     handler.maxPageSize,
+			CursorSecret:    cfg.CursorSecret,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("paginated searcher: %w", err)
+		}
+		handler.searcher = searcher
 	}
 
 	return handler, nil
@@ -93,12 +170,26 @@ func (h *Handler) Handle(ctx context.Context, req *request) (*response, error) {
 	switch req.RequestType {
 	case middleware.RequestTypeSearch:
 		return h.handleSearch(ctx, req)
+	case middleware.RequestTypeItems:
+		return h.handleItems(ctx, req)
+	case middleware.RequestTypeQueryables, middleware.RequestTypeCollectionQueryables:
+		return h.handleQueryables(ctx, req)
 	case middleware.RequestTypeCollections:
 		return h.handleGetCollections(ctx, req)
 	case middleware.RequestTypeCollection:
 		return h.handleGetCollection(ctx, req)
 	case middleware.RequestTypeItem:
 		return h.handleGetItem(ctx, req)
+	case middleware.RequestTypeConformance:
+		return h.handleConformance(ctx, req)
+	case middleware.RequestTypeLanding:
+		return h.handleLanding(ctx, req)
+	case middleware.RequestTypeAsset:
+		// The asset endpoint streams response bytes directly; the
+		// federation `*response` shape buffers them, so we cannot
+		// handle this path via Handle(). The router calls
+		// ServeAssetHTTP directly for /assets/.
+		return nil, fmt.Errorf("asset requests must be served via ServeAssetHTTP")
 	default:
 		// For other request types, try to proxy to the first available origin
 		return h.handleGenericProxy(ctx, req)
@@ -203,7 +294,26 @@ func (h *Handler) handleSearch(ctx context.Context, req *request) (*response, er
 	ctx, cancel := context.WithTimeout(ctx, h.aggregateTimeout)
 	defer cancel()
 
-	// Fan out requests to origins
+	// Cursor-aware path: when a paginated searcher is configured,
+	// route through it so multi-page searches across origins work.
+	if h.searcher != nil {
+		cursorStr := searchReq.Cursor
+		if cursorStr == "" {
+			cursorStr = searchReq.Token
+		}
+		// Reset pagination fields before hashing so the cursor's query
+		// hash matches across pages of the same logical query.
+		hashReq := *searchReq
+		hashReq.Cursor = ""
+		hashReq.Token = ""
+		result, err := h.searcher.Search(ctx, &hashReq, cursorStr)
+		if err != nil {
+			return nil, fmt.Errorf("federated search: %w", err)
+		}
+		return h.buildPaginatedSearchResponse(result, &hashReq, req)
+	}
+
+	// Fallback: single-page fan-out when no cursor secret is set.
 	results := h.fanOutSearch(ctx, origins, searchReq)
 
 	// Merge results
@@ -217,6 +327,11 @@ func (h *Handler) handleSearch(ctx context.Context, req *request) (*response, er
 }
 
 // fanOutSearch executes search requests to multiple origins in parallel.
+//
+// Each goroutine carries a panic recovery so that a bug in one origin's
+// code path cannot crash the whole proxy process: a panic is logged
+// (origin + value + stack) and the offending origin is recorded with
+// an Error result so the merger treats it as a failed origin.
 func (h *Handler) fanOutSearch(ctx context.Context, origins []*Origin,
 	searchReq *stac.SearchRequest) []*OriginSearchResult {
 
@@ -228,6 +343,21 @@ func (h *Handler) fanOutSearch(ctx context.Context, origins []*Origin,
 		wg.Add(1)
 		go func(origin *Origin) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("federation origin search panicked",
+						"origin", origin.ID,
+						"panic", r,
+						"stack", string(debug.Stack()),
+					)
+					resultsChan <- &OriginSearchResult{
+						OriginID:  origin.ID,
+						OriginURL: origin.BaseURL,
+						Priority:  origin.Priority,
+						Error:     fmt.Errorf("origin %s panicked: %v", origin.ID, r),
+					}
+				}
+			}()
 
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -257,8 +387,9 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 	client := h.origins[origin.ID]
 
 	result := &OriginSearchResult{
-		OriginID: origin.ID,
-		Priority: origin.Priority,
+		OriginID:  origin.ID,
+		OriginURL: client.BaseURL(),
+		Priority:  origin.Priority,
 	}
 
 	// Adapt request for this origin
@@ -294,7 +425,9 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 	}
 
 	result.Items = fc.Features
-	result.Context = fc.Context
+	if sc, ok := fc.Context.(*stac.SearchContext); ok {
+		result.Context = sc
+	}
 	result.Links = fc.Links
 
 	return result
@@ -355,6 +488,22 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("federation origin GetCollections panicked",
+						"origin", originID,
+						"panic", r,
+						"stack", string(debug.Stack()),
+					)
+					mu.Lock()
+					results = append(results, &OriginCollectionsResult{
+						OriginID:  originID,
+						OriginURL: client.BaseURL(),
+						Error:     fmt.Errorf("origin %s panicked: %v", originID, r),
+					})
+					mu.Unlock()
+				}
+			}()
 
 			collections, err := client.GetCollections(ctx)
 
@@ -362,21 +511,25 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 			defer mu.Unlock()
 
 			result := &OriginCollectionsResult{
-				OriginID: originID,
-				Error:    err,
+				OriginID:  originID,
+				OriginURL: client.BaseURL(),
+				Error:     err,
 			}
 
 			if err == nil {
-				// Apply collection prefix
-				for i := range collections {
+				// Apply collection prefix. The stac_proxy:origin marker
+				// is attached centrally by merger.MergeCollections so
+				// that mutation happens in a single goroutine after
+				// wg.Wait — writing it here too would double-write the
+				// map under the race detector even though it's
+				// logically safe.
+				for _, coll := range collections {
+					if coll == nil {
+						continue
+					}
 					if origin.CollectionPrefix != "" {
-						collections[i].ID = origin.CollectionPrefix + collections[i].ID
+						coll.ID = origin.CollectionPrefix + coll.ID
 					}
-					// Add origin metadata
-					if collections[i].Properties == nil {
-						collections[i].Properties = make(map[string]interface{})
-					}
-					collections[i].Properties["stac_proxy:origin"] = originID
 				}
 				result.Collections = collections
 			}
@@ -444,7 +597,7 @@ func (h *Handler) handleGetCollection(ctx context.Context,
 			return resp, nil
 		}
 		if annotate {
-			injectOriginMetadata(resp, "properties", origin.ID)
+			injectOriginMetadata(resp, origin.ID, origin.BaseURL)
 		}
 		return resp, nil
 	}
@@ -483,7 +636,7 @@ func (h *Handler) handleGetItem(ctx context.Context,
 			return resp, nil
 		}
 		if annotate {
-			injectOriginMetadata(resp, "properties", origin.ID)
+			injectOriginMetadata(resp, origin.ID, origin.BaseURL)
 		}
 		return resp, nil
 	}
@@ -500,9 +653,192 @@ func notFoundResponse(description string) *response {
 	}
 }
 
+// handleItems handles GET /collections/{collectionId}/items as a
+// federated search scoped to the URL's collection ID. It delegates to
+// handleSearch so multi-page cursoring, link rewriting, and the
+// single-origin fast path are inherited unchanged — items federation
+// is just collection-scoped search.
+func (h *Handler) handleItems(ctx context.Context, req *request) (*response, error) {
+	if req.Collection == "" {
+		return nil, fmt.Errorf("items endpoint requires a collection id")
+	}
+	if req.SearchReq == nil {
+		sr, err := h.parseSearchRequest(req)
+		if err != nil {
+			return nil, fmt.Errorf("invalid items query: %w", err)
+		}
+		req.SearchReq = sr
+	}
+	// Force scope to the URL's collection ID. Anything the client
+	// passed in collections= is overridden — the URL is authoritative
+	// per OGC API Features.
+	req.SearchReq.Collections = []string{req.Collection}
+	return h.handleSearch(ctx, req)
+}
+
+// handleQueryables handles GET /queryables and
+// GET /collections/{collectionId}/queryables.
+//
+// The merged schema is the conservative intersection of properties
+// returned by all reachable origins: a property is advertised only
+// when every origin agrees on it. Origin failures are skipped (logged
+// and excluded from the intersection) so a single bad upstream cannot
+// block discovery of common queryables.
+func (h *Handler) handleQueryables(ctx context.Context, req *request) (*response, error) {
+	path := "/queryables"
+	if req.Collection != "" {
+		path = "/collections/" + req.Collection + "/queryables"
+	}
+
+	// Determine the candidate origin set. For collection-scoped
+	// queryables, only origins that route the collection.
+	var clients []*OriginClient
+	if req.Collection != "" {
+		for _, o := range h.router.Route([]string{req.Collection}) {
+			if c, ok := h.origins[o.ID]; ok {
+				clients = append(clients, c)
+			}
+		}
+	} else {
+		for _, c := range h.origins {
+			clients = append(clients, c)
+		}
+	}
+	if len(clients) == 0 {
+		return &response{
+			StatusCode: http.StatusServiceUnavailable,
+			Headers:    http.Header{"Content-Type": []string{"application/json"}},
+			Body:       []byte(`{"code":"ServiceUnavailable","description":"no origins available for queryables"}`),
+		}, nil
+	}
+
+	// Single-origin shortcut: pass through transparently.
+	if len(clients) == 1 {
+		origin := clients[0].Origin()
+		return h.reverseProxyOnce(ctx, origin, req)
+	}
+
+	type fetchResult struct {
+		schema map[string]any
+		ok     bool
+	}
+	results := make(chan fetchResult, len(clients))
+	perOrigin := 5 * time.Second
+	if h.aggregateTimeout > 0 && h.aggregateTimeout < perOrigin {
+		perOrigin = h.aggregateTimeout
+	}
+
+	var wg sync.WaitGroup
+	for _, c := range clients {
+		c := c
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("queryables fetch panicked",
+						"origin", c.Origin().ID, "panic", r,
+					)
+					results <- fetchResult{}
+				}
+			}()
+			fctx, cancel := context.WithTimeout(ctx, perOrigin)
+			defer cancel()
+			resp, err := c.DoRequest(fctx, http.MethodGet, path, nil)
+			if err != nil {
+				slog.Warn("queryables fetch failed", "origin", c.Origin().ID, "error", err)
+				results <- fetchResult{}
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				results <- fetchResult{}
+				return
+			}
+			var schema map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&schema); err != nil {
+				slog.Warn("queryables decode failed", "origin", c.Origin().ID, "error", err)
+				results <- fetchResult{}
+				return
+			}
+			results <- fetchResult{schema: schema, ok: true}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var schemas []map[string]any
+	for r := range results {
+		if r.ok {
+			schemas = append(schemas, r.schema)
+		}
+	}
+	if len(schemas) == 0 {
+		return &response{
+			StatusCode: http.StatusServiceUnavailable,
+			Headers:    http.Header{"Content-Type": []string{"application/json"}},
+			Body:       []byte(`{"code":"ServiceUnavailable","description":"queryables unavailable from all origins"}`),
+		}, nil
+	}
+
+	merged := intersectQueryables(schemas, h.proxyBaseURL, path)
+	body, err := json.Marshal(merged)
+	if err != nil {
+		return nil, err
+	}
+	return &response{
+		StatusCode: http.StatusOK,
+		Headers:    http.Header{"Content-Type": []string{"application/schema+json"}},
+		Body:       body,
+	}, nil
+}
+
+// intersectQueryables returns a JSON Schema whose `properties` is the
+// per-property intersection across `schemas`: a property is kept only
+// when every schema declares it. Per-property values are taken from
+// the first schema that declared them, which is acceptable for the
+// metadata-discovery use case the queryables endpoint exists for.
+func intersectQueryables(schemas []map[string]any, proxyBase, path string) map[string]any {
+	out := map[string]any{
+		"$schema":              "https://json-schema.org/draft/2019-09/schema",
+		"type":                 "object",
+		"title":                "Queryables",
+		"description":          "Federated queryables (intersection across origins)",
+		"additionalProperties": false,
+	}
+	if proxyBase != "" {
+		out["$id"] = strings.TrimRight(proxyBase, "/") + path
+	}
+	if len(schemas) == 0 {
+		out["properties"] = map[string]any{}
+		return out
+	}
+
+	// Count property occurrences across schemas.
+	counts := map[string]int{}
+	firstSeen := map[string]any{}
+	for _, s := range schemas {
+		props, _ := s["properties"].(map[string]any)
+		for name, def := range props {
+			counts[name]++
+			if _, exists := firstSeen[name]; !exists {
+				firstSeen[name] = def
+			}
+		}
+	}
+	keep := map[string]any{}
+	for name, n := range counts {
+		if n == len(schemas) {
+			keep[name] = firstSeen[name]
+		}
+	}
+	out["properties"] = keep
+	return out
+}
+
 // handleGenericProxy proxies requests to the highest priority origin
 // via ReverseProxy. Used for STAC endpoints that don't have dedicated
-// federation handling (e.g. /, /conformance).
+// federation handling.
 func (h *Handler) handleGenericProxy(ctx context.Context,
 	req *request) (*response, error) {
 
@@ -515,6 +851,128 @@ func (h *Handler) handleGenericProxy(ctx context.Context,
 	}
 
 	return h.reverseProxyOnce(ctx, origin, req)
+}
+
+// handleConformance returns the intersection of the proxy's
+// advertised capabilities with each routed origin's /conformance
+// response. We never advertise a class the proxy itself does not
+// support (per ProxyConformanceFor), and we never advertise a class
+// no origin actually implements — the spec calls for honest
+// conformance and our previous "passthrough first origin" behavior
+// could surprise federated clients.
+func (h *Handler) handleConformance(ctx context.Context,
+	req *request) (*response, error) {
+
+	classes := h.advertisedConformance(ctx)
+	body, err := json.Marshal(map[string]interface{}{
+		"conformsTo": classes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &response{
+		StatusCode: http.StatusOK,
+		Headers:    http.Header{"Content-Type": []string{"application/json"}},
+		Body:       body,
+	}, nil
+}
+
+// handleLanding builds a STAC Catalog landing page whose conformsTo
+// reflects the intersected proxy/origin capability set. Links are
+// kept minimal — clients use /conformance for the authoritative list
+// and follow the standard STAC link rels for navigation.
+func (h *Handler) handleLanding(ctx context.Context,
+	req *request) (*response, error) {
+
+	classes := h.advertisedConformance(ctx)
+	body, err := json.Marshal(map[string]interface{}{
+		"type":         "Catalog",
+		"stac_version": "1.0.0",
+		"id":           "stac-proxy",
+		"description":  "Federated STAC proxy",
+		"conformsTo":   classes,
+		"links":        []map[string]string{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &response{
+		StatusCode: http.StatusOK,
+		Headers:    http.Header{"Content-Type": []string{"application/json"}},
+		Body:       body,
+	}, nil
+}
+
+// advertisedConformance returns the conformance classes the proxy is
+// willing to advertise: the intersection of ProxyConformanceFor(caps)
+// with each routed origin's /conformance response. Origins that fail
+// to respond within the per-origin timeout are excluded from the
+// intersection (their classes simply aren't considered as supported).
+// If no origins are configured we fall back to the proxy's own caps.
+func (h *Handler) advertisedConformance(ctx context.Context) []string {
+	proxy := stac.ProxyConformanceFor(h.conformanceCaps)
+	if len(h.origins) == 0 {
+		return stac.Intersect(proxy)
+	}
+
+	perOrigin := 5 * time.Second
+	if h.aggregateTimeout > 0 && h.aggregateTimeout < perOrigin {
+		perOrigin = h.aggregateTimeout
+	}
+
+	type result struct {
+		classes []string
+		ok      bool
+	}
+	results := make(chan result, len(h.origins))
+	var wg sync.WaitGroup
+	for _, client := range h.origins {
+		client := client
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				// A panic in conformance probing must not take the
+				// process down — log and treat the origin as if it
+				// failed to advertise.
+				if r := recover(); r != nil {
+					slog.Error("conformance probe panicked",
+						"origin", client.Origin().ID,
+						"panic", r,
+					)
+					results <- result{}
+				}
+			}()
+			fetchCtx, cancel := context.WithTimeout(ctx, perOrigin)
+			defer cancel()
+			classes, err := stac.FetchConformance(fetchCtx, client.httpClient, client.BaseURL())
+			if err != nil {
+				slog.Warn("conformance probe failed",
+					"origin", client.Origin().ID,
+					"error", err,
+				)
+				results <- result{}
+				return
+			}
+			results <- result{classes: classes, ok: true}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var originSets [][]string
+	for r := range results {
+		if r.ok {
+			originSets = append(originSets, r.classes)
+		}
+	}
+	// If no origin responded, advertise just the proxy's caps to keep
+	// the surface honest about what we can serve from cache or
+	// fallback handlers.
+	if len(originSets) == 0 {
+		return stac.Intersect(proxy)
+	}
+	return stac.Intersect(proxy, originSets...)
 }
 
 // primaryOrigin returns the highest-priority enabled origin (or nil
@@ -563,7 +1021,7 @@ func (h *Handler) parseSearchRequest(req *request) (*stac.SearchRequest, error) 
 func (h *Handler) emptySearchResponse(req *stac.SearchRequest) (*response, error) {
 	fc := &stac.FeatureCollection{
 		Type:     "FeatureCollection",
-		Features: []stac.Item{},
+		Features: []*stac.Item{},
 		Context: &stac.SearchContext{
 			Returned: 0,
 			Matched:  0,
@@ -582,6 +1040,95 @@ func (h *Handler) emptySearchResponse(req *stac.SearchRequest) (*response, error
 		},
 		Body: body,
 	}, nil
+}
+
+// buildPaginatedSearchResponse builds the HTTP response for a
+// federated, cursor-aware search. The proxy's signed cursor is exposed
+// as a `rel: next` link in the FeatureCollection — GET requests carry
+// it as ?token=, POST requests carry it in the link's `body.token`
+// AdditionalField per STAC API §8.3.
+func (h *Handler) buildPaginatedSearchResponse(result *SearchResult,
+	searchReq *stac.SearchRequest, req *request) (*response, error) {
+
+	items := result.Items
+	if items == nil {
+		items = []*stac.Item{}
+	}
+
+	sc := &stac.SearchContext{Returned: len(items)}
+	if result.Context != nil {
+		sc.Limit = result.Context.Limit
+		sc.Matched = result.Context.Matched
+	}
+	if sc.Limit == 0 && searchReq.Limit > 0 {
+		sc.Limit = searchReq.Limit
+	}
+
+	fc := &stac.FeatureCollection{
+		Type:     "FeatureCollection",
+		Features: items,
+		Context:  sc,
+	}
+
+	if result.NextCursor != "" {
+		fc.Links = append(fc.Links, h.nextSearchLink(req.Request, result.NextCursor))
+	}
+
+	body, err := json.Marshal(fc)
+	if err != nil {
+		return nil, err
+	}
+
+	return &response{
+		StatusCode: http.StatusOK,
+		Headers: http.Header{
+			"Content-Type": []string{"application/geo+json"},
+		},
+		Body: body,
+	}, nil
+}
+
+// nextSearchLink builds a "next" Link carrying the proxy's signed
+// pagination cursor. The href is rooted at proxyBaseURL when
+// configured; otherwise it stays relative so callers behind path-only
+// reverse proxies still produce usable links.
+func (h *Handler) nextSearchLink(orig *http.Request, cursor string) *stac.Link {
+	base := strings.TrimRight(h.proxyBaseURL, "/")
+	path := "/search"
+	if orig != nil && orig.URL != nil && orig.URL.Path != "" {
+		path = orig.URL.Path
+	}
+
+	if orig != nil && orig.Method == http.MethodPost {
+		return &stac.Link{
+			Rel:  "next",
+			Href: base + path,
+			Type: "application/json",
+			AdditionalFields: map[string]any{
+				"method": "POST",
+				"body":   map[string]any{"token": cursor},
+			},
+		}
+	}
+
+	// Default: GET style — preserve existing query params, swap the
+	// token. Drop any incoming cursor= so the canonical form is
+	// ?token=... (matching STAC API §8.3 GET pagination).
+	q := url.Values{}
+	if orig != nil && orig.URL != nil {
+		q = orig.URL.Query()
+	}
+	q.Set("token", cursor)
+	q.Del("cursor")
+
+	return &stac.Link{
+		Rel:  "next",
+		Href: base + path + "?" + q.Encode(),
+		Type: "application/geo+json",
+		AdditionalFields: map[string]any{
+			"method": "GET",
+		},
+	}
 }
 
 // buildSearchResponse builds the HTTP response for search results.
@@ -733,10 +1280,29 @@ func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient
 	// Accept-Encoding, conditional GET headers (If-None-Match), and
 	// downstream-meaningful trace headers propagate.
 	if req.Request != nil {
+		stripAuth := !client.Origin().ForwardUserIdentity
+		originAuthHeader := http.CanonicalHeaderKey(client.Origin().Auth.APIKeyHeader)
 		for k, vs := range req.Request.Header {
 			// Skip hop-by-hop; ReverseProxy strips them again at
 			// dispatch, but starting clean keeps the trace simple.
 			if isHopByHop(k) {
+				continue
+			}
+			// Strip inbound client credentials before fan-out. The
+			// proxy holds its own per-origin credentials and applies
+			// them via authRoundTripper; the end user's credentials
+			// (intended for the proxy) MUST NOT leak to upstreams.
+			// Operators who specifically want OIDC-token-pass-through
+			// must set Origin.ForwardUserIdentity=true.
+			if stripAuth && isInboundAuthHeader(k) {
+				continue
+			}
+			// Always strip a header that collides with this origin's
+			// own configured API key header — letting the inbound
+			// version through would override what authRoundTripper
+			// injects (or, if not configured, leak something
+			// unrelated upstream).
+			if originAuthHeader != "" && http.CanonicalHeaderKey(k) == originAuthHeader {
 				continue
 			}
 			for _, v := range vs {
@@ -754,6 +1320,20 @@ func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient
 
 	middleware.ForwardRequestID(ctx, outReq)
 	return outReq, nil
+}
+
+// isInboundAuthHeader reports whether name is an end-user credential
+// header that the proxy strips before fan-out (unless the origin opts
+// in via ForwardUserIdentity). These are credentials the client sent
+// to the proxy; passing them to upstreams turns the proxy into a
+// confused deputy and can leak tokens to untrusted origins.
+func isInboundAuthHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Authorization", "Cookie", "Set-Cookie",
+		"Proxy-Authorization", "X-Api-Key":
+		return true
+	}
+	return false
 }
 
 // transformResponse rewrites links pointing to the upstream origin so
@@ -784,6 +1364,19 @@ func (h *Handler) transformResponse(client *OriginClient, resp *response) *respo
 }
 
 // rewriteLinks recursively rewrites href values in the data structure.
+//
+// Two link rewrite passes happen here:
+//
+//   - `links[*].href` is always rebased onto the proxy when it points
+//     into the upstream origin's base URL — this is the standard STAC
+//     navigation rewrite so downstream clients keep following the
+//     proxy.
+//
+//   - `assets[*].href` is rewritten according to the origin's
+//     RewriteAssets mode (never/sign/proxy). Asset hrefs typically
+//     point at object storage that the proxy does not front, so the
+//     default ("never") is intentional. Operators who need authz
+//     gating or audit on asset access opt into "sign" or "proxy".
 func (h *Handler) rewriteLinks(client *OriginClient, data interface{}) {
 	switch v := data.(type) {
 	case map[string]interface{}:
@@ -796,6 +1389,15 @@ func (h *Handler) rewriteLinks(client *OriginClient, data interface{}) {
 				}
 			}
 		}
+		if assets, ok := v["assets"].(map[string]interface{}); ok {
+			for _, a := range assets {
+				if am, ok := a.(map[string]interface{}); ok {
+					if href, ok := am["href"].(string); ok {
+						am["href"] = h.rewriteAssetHref(client, href)
+					}
+				}
+			}
+		}
 		for _, val := range v {
 			h.rewriteLinks(client, val)
 		}
@@ -803,6 +1405,35 @@ func (h *Handler) rewriteLinks(client *OriginClient, data interface{}) {
 		for _, val := range v {
 			h.rewriteLinks(client, val)
 		}
+	}
+}
+
+// rewriteAssetHref dispatches on the origin's RewriteAssets mode.
+// `never` (the default) preserves backwards compatibility.
+func (h *Handler) rewriteAssetHref(client *OriginClient, href string) string {
+	origin := client.Origin()
+	switch origin.RewriteAssets {
+	case "sign":
+		if h.assetSigner == nil {
+			// Signer is not wired — fall back to passthrough rather
+			// than silently leaking unsigned URLs while pretending we
+			// gated them.
+			return href
+		}
+		ttl := origin.AssetSignTTL
+		if ttl <= 0 {
+			ttl = 15 * time.Minute
+		}
+		return h.assetSigner.Sign(context.Background(), href, ttl)
+	case "proxy":
+		if h.proxyBaseURL == "" {
+			return href
+		}
+		ref := base64.RawURLEncoding.EncodeToString([]byte(href))
+		return strings.TrimRight(h.proxyBaseURL, "/") + "/assets/" + origin.ID + "/" + ref
+	default:
+		// "" or "never": pass through unchanged.
+		return href
 	}
 }
 
@@ -839,23 +1470,207 @@ func isHopByHop(name string) bool {
 	return false
 }
 
-// injectOriginMetadata adds stac_proxy:origin to a JSON STAC document's
-// properties (Collection.properties or Item.properties). No-op on
-// parse errors — best-effort metadata.
-func injectOriginMetadata(resp *response, propertiesKey, originID string) {
+// injectOriginMetadata appends a stac_proxy:origin link to a JSON
+// STAC document's `links` array. Best-effort: a no-op on parse
+// errors. Idempotent: if a link with the same rel + title is already
+// present, it is left untouched.
+//
+// The link shape matches stac.OriginLink — kept in lockstep with the
+// merger's links so federated-merge and single-origin-passthrough
+// responses are indistinguishable to clients.
+func injectOriginMetadata(resp *response, originID, originURL string) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(resp.Body, &obj); err != nil {
 		return
 	}
-	props, _ := obj[propertiesKey].(map[string]interface{})
-	if props == nil {
-		props = make(map[string]interface{})
-		obj[propertiesKey] = props
+
+	links, _ := obj["links"].([]interface{})
+	for _, l := range links {
+		if lm, ok := l.(map[string]interface{}); ok {
+			rel, _ := lm["rel"].(string)
+			title, _ := lm["title"].(string)
+			if rel == stac.OriginLinkRel && title == originID {
+				return
+			}
+		}
 	}
-	props["stac_proxy:origin"] = originID
+
+	links = append(links, map[string]interface{}{
+		"href":  originURL,
+		"rel":   stac.OriginLinkRel,
+		"type":  "application/json",
+		"title": originID,
+	})
+	obj["links"] = links
+
 	if b, err := json.Marshal(obj); err == nil {
 		resp.Body = b
 	}
+}
+
+// Asset-streaming headers we forward in either direction.
+var (
+	assetRequestPassthroughHeaders = []string{
+		"Range",
+		"If-Match",
+		"If-None-Match",
+		"If-Modified-Since",
+		"If-Unmodified-Since",
+		"Accept",
+		"Accept-Encoding",
+		"User-Agent",
+	}
+	assetResponsePassthroughHeaders = []string{
+		"Content-Type",
+		"Content-Length",
+		"Content-Range",
+		"Content-Encoding",
+		"Content-Disposition",
+		"Accept-Ranges",
+		"ETag",
+		"Last-Modified",
+		"Cache-Control",
+		"Expires",
+		"Vary",
+	}
+)
+
+// ServeAssetHTTP handles GET /assets/{originId}/{ref}. The handler:
+//
+//   - validates `originId` is a configured, enabled origin
+//   - base64-url-decodes `ref` into an absolute upstream URL
+//   - verifies that the decoded URL starts with the origin's configured
+//     base URL (so this endpoint cannot be coerced into proxying
+//     arbitrary internet URLs — defense against using us as a relay)
+//   - issues an authenticated, retry-wrapped request via the origin's
+//     RoundTripper chain (so upstream auth is applied)
+//   - streams the response body back via io.Copy, forwarding the
+//     standard byte-range/conditional-GET headers in both directions
+//
+// Per-request authz/ratelimit gating happens in the chi middleware
+// chain wrapping this handler; STACInfo carries RequestType=Asset and
+// the originID so policies can key off them.
+//
+// The router is expected to be the caller; tests and direct callers
+// must populate `STACInfo` on the request context.
+func (h *Handler) ServeAssetHTTP(w http.ResponseWriter, r *http.Request, originID, ref string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	client, ok := h.origins[originID]
+	if !ok {
+		http.Error(w, "unknown origin", http.StatusNotFound)
+		return
+	}
+	if client.Origin().RewriteAssets != "proxy" {
+		// We only route through this endpoint when the origin opts in.
+		// Treating other modes as 404 avoids leaking which origins
+		// exist via differential responses.
+		http.Error(w, "asset proxying not enabled for this origin", http.StatusNotFound)
+		return
+	}
+
+	hrefBytes, err := base64.RawURLEncoding.DecodeString(ref)
+	if err != nil {
+		http.Error(w, "invalid asset reference", http.StatusBadRequest)
+		return
+	}
+	upstreamHref := string(hrefBytes)
+
+	// Defense: the decoded URL MUST live under the origin's configured
+	// base URL host+path. Without this check the endpoint could be
+	// used to fetch arbitrary internet URLs through the proxy's
+	// network position.
+	if !assetHrefUnderOrigin(upstreamHref, client.BaseURL()) {
+		http.Error(w, "asset reference does not belong to origin", http.StatusBadRequest)
+		return
+	}
+
+	upstreamURL, err := url.Parse(upstreamHref)
+	if err != nil {
+		http.Error(w, "invalid asset url", http.StatusBadRequest)
+		return
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL.String(), nil)
+	if err != nil {
+		http.Error(w, "build upstream request failed", http.StatusInternalServerError)
+		return
+	}
+	// Forward range / conditional-GET / negotiation headers verbatim.
+	for _, name := range assetRequestPassthroughHeaders {
+		if v := r.Header.Get(name); v != "" {
+			outReq.Header.Set(name, v)
+		}
+	}
+	middleware.ForwardRequestID(r.Context(), outReq)
+
+	// Use the origin's RoundTripper chain (auth + retry are layered in).
+	resp, err := client.transport.RoundTrip(outReq)
+	if err != nil {
+		// Distinguish a client disconnect from a real upstream error
+		// for cleaner logs; both are surfaced as 502 to the caller
+		// because the proxy cannot meaningfully serve the bytes.
+		if errors.Is(err, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
+			// Client went away mid-flight; nothing to write.
+			return
+		}
+		slog.Error("asset upstream request failed",
+			"origin", originID,
+			"href", upstreamHref,
+			"error", err,
+		)
+		http.Error(w, "upstream asset fetch failed", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Forward upstream response headers (after stripping hop-by-hop).
+	for _, name := range assetResponsePassthroughHeaders {
+		if v := resp.Header.Get(name); v != "" {
+			w.Header().Set(name, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	// Stream the bytes. io.Copy honors r.Context() cancellation via
+	// the http.Transport's read path, so a client disconnect aborts
+	// the upstream read rather than buffering forever.
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		// Best-effort log; the response is already partially written.
+		slog.Warn("asset stream interrupted",
+			"origin", originID,
+			"error", err,
+		)
+	}
+}
+
+// assetHrefUnderOrigin reports whether href is a valid URL whose
+// scheme+host+path-prefix matches the origin's base URL. We compare
+// scheme+host case-insensitively and require the path of the asset
+// to start with the origin's base path so origins cannot accidentally
+// open the relay endpoint up to other hosts they happen to share a
+// hostname suffix with.
+func assetHrefUnderOrigin(href, originBase string) bool {
+	hu, err := url.Parse(href)
+	if err != nil {
+		return false
+	}
+	ou, err := url.Parse(originBase)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(hu.Scheme, ou.Scheme) {
+		return false
+	}
+	if !strings.EqualFold(hu.Host, ou.Host) {
+		return false
+	}
+	basePath := strings.TrimSuffix(ou.Path, "/")
+	if basePath == "" {
+		return true
+	}
+	return hu.Path == basePath || strings.HasPrefix(hu.Path, basePath+"/")
 }
 
 // adaptRequestStripCollectionPrefix returns a shallow copy of req with

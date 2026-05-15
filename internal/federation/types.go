@@ -74,6 +74,39 @@ type Origin struct {
 	// instead of post-filtering. When false (default), the post-filter
 	// remains responsible.
 	SupportsFilterExtension bool
+
+	// RewriteAssets controls how assets[*].href is rewritten in
+	// responses from this origin. One of:
+	//   ""      — same as "never" (default).
+	//   "never" — asset hrefs pass through unchanged.
+	//   "sign"  — the asset href is HMAC-signed via the remap signer
+	//             so direct fetches require a valid signature.
+	//   "proxy" — the asset href is replaced with a proxy URL of the
+	//             form {proxyBaseURL}/assets/{originId}/{base64url-href}
+	//             that streams the upstream asset through the proxy's
+	//             authz + ratelimit chain.
+	RewriteAssets string
+
+	// AssetSignTTL is the TTL applied when RewriteAssets=="sign".
+	// Defaults to 15 minutes when zero.
+	AssetSignTTL time.Duration
+
+	// ForwardUserIdentity controls whether the inbound request's
+	// Authorization / Cookie / X-API-Key headers are forwarded to
+	// this origin. The DEFAULT is false: those headers are stripped
+	// before fan-out so end-user credentials never leak to upstreams
+	// the proxy talks to on its own behalf. Set to true ONLY when
+	// the origin specifically wants OIDC-token-pass-through and the
+	// operator understands the confused-deputy risk that creates.
+	ForwardUserIdentity bool
+
+	// MaxResponseBytes caps the size of an upstream response body
+	// that this origin will decode in a single call (Search,
+	// GetCollections, etc.). Zero or negative falls back to the
+	// per-package default (32 MiB). Useful to keep one buggy or
+	// malicious origin from OOMing the proxy by streaming a multi-GB
+	// response into memory.
+	MaxResponseBytes int64
 }
 
 // RetryPolicy defines retry behavior for an origin.
@@ -203,19 +236,27 @@ const (
 )
 
 // OriginSearchResult contains search results from a single origin.
+//
+// OriginURL is the origin's configured BaseURL, surfaced here so the
+// merger can attach a stac_proxy:origin link (href = OriginURL,
+// title = OriginID) to each merged item without having to look the
+// origin up in a separate registry.
 type OriginSearchResult struct {
-	OriginID string
-	Priority int
-	Items    []stac.Item
-	Context  *stac.SearchContext
-	Links    []stac.Link
-	Error    error
+	OriginID  string
+	OriginURL string
+	Priority  int
+	Items     []*stac.Item
+	Context   *stac.SearchContext
+	Links     []*stac.Link
+	Error     error
 }
 
 // OriginCollectionsResult contains collections from a single origin.
+// OriginURL has the same role as in OriginSearchResult.
 type OriginCollectionsResult struct {
 	OriginID    string
-	Collections []stac.Collection
+	OriginURL   string
+	Collections []*stac.Collection
 	Error       error
 }
 
