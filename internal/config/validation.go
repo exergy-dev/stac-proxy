@@ -4,8 +4,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -140,12 +142,20 @@ func (v *Validator) validateUpstream(cfg UpstreamConfig) {
 		return
 	}
 
-	if _, err := url.Parse(cfg.URL); err != nil {
+	if u, err := url.Parse(cfg.URL); err != nil {
 		v.addError("upstream.url is not a valid URL: %v", err)
+	} else {
+		v.validateOriginURL("upstream", u, cfg.AllowPrivateOrigin)
 	}
 
 	if cfg.Timeout < 0 {
 		v.addError("upstream.timeout cannot be negative")
+	}
+
+	if cfg.MaxResponseBytes < 0 {
+		v.addError("upstream.max_response_bytes cannot be negative")
+	} else if cfg.MaxResponseBytes > 1<<30 {
+		v.addWarning("upstream.max_response_bytes is very large (%d bytes; over 1 GiB)", cfg.MaxResponseBytes)
 	}
 }
 
@@ -157,7 +167,7 @@ func (v *Validator) validateFederation(cfg FederationConfig) {
 
 	seenIDs := make(map[string]bool)
 	for i, origin := range cfg.Origins {
-		v.validateOrigin(i, origin, seenIDs)
+		v.validateOrigin(i, origin, seenIDs, cfg.AllowPrivateOrigins)
 	}
 
 	// Validate conflict strategy
@@ -168,9 +178,18 @@ func (v *Validator) validateFederation(cfg FederationConfig) {
 	if cfg.ConflictStrategy != "" && !validConflict[cfg.ConflictStrategy] {
 		v.addError("federation.conflict_strategy must be one of: first_wins, priority, merge, namespace, reject_duplicates")
 	}
+
+	// Federated pagination cursors are HMAC-signed. When the cursor
+	// path is wired (PaginatedSearcher), NewPaginatedSearcher itself
+	// errors out on an empty secret — that's the authoritative gate.
+	// Here we only warn so the operator gets a startup-time signal
+	// without breaking existing single-page-only deployments.
+	if cfg.CursorSecret == "" {
+		v.addWarning("federation.cursor_secret is empty; paginated search will be unavailable. Inject a secret from your secrets manager for production.")
+	}
 }
 
-func (v *Validator) validateOrigin(index int, origin OriginConfig, seenIDs map[string]bool) {
+func (v *Validator) validateOrigin(index int, origin OriginConfig, seenIDs map[string]bool, allowPrivate bool) {
 	prefix := fmt.Sprintf("federation.origins[%d]", index)
 
 	if origin.ID == "" {
@@ -188,17 +207,74 @@ func (v *Validator) validateOrigin(index int, origin OriginConfig, seenIDs map[s
 
 	if origin.BaseURL == "" {
 		v.addError("%s.base_url is required", prefix)
-	} else if _, err := url.Parse(origin.BaseURL); err != nil {
+	} else if u, err := url.Parse(origin.BaseURL); err != nil {
 		v.addError("%s.base_url is not a valid URL: %v", prefix, err)
+	} else {
+		v.validateOriginURL(prefix+".base_url", u, allowPrivate)
 	}
 
 	if origin.Timeout < 0 {
 		v.addError("%s.timeout cannot be negative", prefix)
 	}
 
+	if origin.MaxResponseBytes < 0 {
+		v.addError("%s.max_response_bytes cannot be negative", prefix)
+	} else if origin.MaxResponseBytes > 1<<30 {
+		v.addWarning("%s.max_response_bytes is very large (%d bytes; over 1 GiB)", prefix, origin.MaxResponseBytes)
+	}
+
+	// Validate rewrite_assets enum. The empty string is treated as
+	// "never" (default) and accepted; everything else must match one
+	// of the three modes documented on OriginConfig.RewriteAssets.
+	switch origin.RewriteAssets {
+	case "", "never", "sign", "proxy":
+	default:
+		v.addError("%s.rewrite_assets %q is not one of: never, sign, proxy",
+			prefix, origin.RewriteAssets)
+	}
+	if origin.AssetSignTTL < 0 {
+		v.addError("%s.asset_sign_ttl cannot be negative", prefix)
+	}
+
 	// Validate auth if present
 	if origin.Auth != nil {
 		v.validateOriginAuth(prefix, origin.Auth)
+	}
+}
+
+// validateOriginURL enforces scheme (http/https only) and rejects
+// loopback / RFC 1918 / link-local hosts unless allowPrivate is true.
+// Hostnames that are not literal IPs (e.g. example.com) are accepted
+// as-is; operators are trusted to manage their DNS.
+func (v *Validator) validateOriginURL(field string, u *url.URL, allowPrivate bool) {
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		v.addError("%s scheme must be http or https, got %q", field, u.Scheme)
+		return
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return
+	}
+
+	if !allowPrivate {
+		lowerHost := strings.ToLower(host)
+		if lowerHost == "localhost" {
+			v.addError("%s host %q is loopback; set allow_private_origin(s) = true for dev/test", field, host)
+			return
+		}
+
+		if ip := net.ParseIP(host); ip != nil {
+			switch {
+			case ip.IsLoopback():
+				v.addError("%s host %q is loopback; set allow_private_origin(s) = true for dev/test", field, host)
+			case ip.IsPrivate():
+				v.addError("%s host %q is in a private RFC 1918 range; set allow_private_origin(s) = true for dev/test", field, host)
+			case ip.IsLinkLocalUnicast():
+				v.addError("%s host %q is link-local; set allow_private_origin(s) = true for dev/test", field, host)
+			}
+		}
 	}
 }
 

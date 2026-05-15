@@ -512,6 +512,7 @@ func TestValidate(t *testing.T) {
 		cfg := &Config{
 			Mode: "federation",
 			Federation: &FederationConfig{
+				CursorSecret: "test-secret",
 				Origins: []OriginConfig{},
 			},
 		}
@@ -687,7 +688,8 @@ func TestGetOrigin(t *testing.T) {
 
 		cfg := &Config{
 			Mode:       "federation",
-			Federation: &FederationConfig{Origins: []OriginConfig{}},
+			Federation: &FederationConfig{
+				CursorSecret: "test-secret",Origins: []OriginConfig{}},
 		}
 
 		origin := cfg.GetOrigin("origin1")
@@ -2051,7 +2053,6 @@ func TestEdgeCases(t *testing.T) {
 		}
 	})
 
-
 	t.Run("valid conflict strategies", func(t *testing.T) {
 		t.Parallel()
 
@@ -2204,4 +2205,213 @@ func containsValidationError(err error, substring string) bool {
 	}
 
 	return false
+}
+func TestValidateOrigin_NegativeMaxResponseBytesRejected(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Mode: "federation",
+		Server: ServerConfig{Port: 8080},
+		Federation: &FederationConfig{
+			Origins: []OriginConfig{
+				{
+					ID:               "origin1",
+					BaseURL:          "https://origin1.com",
+					MaxResponseBytes: -1,
+				},
+			},
+		},
+	}
+	cfg.setDefaults()
+
+	err := NewValidator().Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for negative max_response_bytes")
+	}
+	if !containsValidationError(err, "max_response_bytes cannot be negative") {
+		t.Errorf("expected max_response_bytes error, got: %v", err)
+	}
+}
+
+// TestValidateOrigin_RejectsNonHTTPScheme covers H8: only http/https
+// origin schemes are accepted.
+func TestValidateOrigin_RejectsNonHTTPScheme(t *testing.T) {
+	t.Parallel()
+
+	schemes := []string{
+		"file:///etc/passwd",
+		"gopher://example.com",
+		"ftp://example.com",
+	}
+	for _, base := range schemes {
+		cfg := &Config{
+			Mode: "federation",
+			Server: ServerConfig{Port: 8080},
+			Federation: &FederationConfig{
+				Origins: []OriginConfig{{ID: "origin1", BaseURL: base}},
+			},
+		}
+		cfg.setDefaults()
+
+		err := NewValidator().Validate(cfg)
+		if err == nil {
+			t.Errorf("scheme %q: expected validation error, got nil", base)
+			continue
+		}
+		if !containsValidationError(err, "scheme must be http or https") {
+			t.Errorf("scheme %q: expected scheme error, got: %v", base, err)
+		}
+	}
+}
+
+// TestValidateOrigin_RejectsLoopbackByDefault: H8.
+func TestValidateOrigin_RejectsLoopbackByDefault(t *testing.T) {
+	t.Parallel()
+
+	hosts := []string{
+		"https://127.0.0.1",
+		"https://localhost",
+		"https://[::1]",
+	}
+	for _, base := range hosts {
+		cfg := &Config{
+			Mode: "federation",
+			Server: ServerConfig{Port: 8080},
+			Federation: &FederationConfig{
+				Origins: []OriginConfig{{ID: "origin1", BaseURL: base}},
+			},
+		}
+		cfg.setDefaults()
+
+		err := NewValidator().Validate(cfg)
+		if err == nil {
+			t.Errorf("host %q: expected validation error, got nil", base)
+			continue
+		}
+		if !containsValidationError(err, "loopback") {
+			t.Errorf("host %q: expected loopback error, got: %v", base, err)
+		}
+	}
+}
+
+// TestValidateOrigin_RejectsRFC1918ByDefault: H8.
+func TestValidateOrigin_RejectsRFC1918ByDefault(t *testing.T) {
+	t.Parallel()
+
+	hosts := []string{
+		"https://10.0.0.1",
+		"https://172.16.0.1",
+		"https://192.168.1.1",
+	}
+	for _, base := range hosts {
+		cfg := &Config{
+			Mode: "federation",
+			Server: ServerConfig{Port: 8080},
+			Federation: &FederationConfig{
+				Origins: []OriginConfig{{ID: "origin1", BaseURL: base}},
+			},
+		}
+		cfg.setDefaults()
+
+		err := NewValidator().Validate(cfg)
+		if err == nil {
+			t.Errorf("host %q: expected validation error, got nil", base)
+			continue
+		}
+		if !containsValidationError(err, "private") {
+			t.Errorf("host %q: expected private-range error, got: %v", base, err)
+		}
+	}
+}
+
+// TestValidateOrigin_AcceptsLoopbackWhenAllowed: H8.
+func TestValidateOrigin_AcceptsLoopbackWhenAllowed(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Mode: "federation",
+		Server: ServerConfig{Port: 8080},
+		Federation: &FederationConfig{
+			AllowPrivateOrigins: true,
+			CursorSecret:        "test-secret",
+			Origins: []OriginConfig{
+				{ID: "origin1", BaseURL: "https://127.0.0.1"},
+			},
+		},
+	}
+	cfg.setDefaults()
+
+	if err := NewValidator().Validate(cfg); err != nil {
+		t.Errorf("unexpected validation error: %v", err)
+	}
+}
+
+// TestValidateUpstream_AcceptsLoopbackWhenAllowed verifies the
+// single-origin equivalent of the federation flag.
+func TestValidateUpstream_AcceptsLoopbackWhenAllowed(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Mode:   "single",
+		Server: ServerConfig{Port: 8080},
+		Upstream: &UpstreamConfig{
+			URL:                "https://127.0.0.1",
+			AllowPrivateOrigin: true,
+		},
+	}
+	cfg.setDefaults()
+
+	if err := NewValidator().Validate(cfg); err != nil {
+		t.Errorf("unexpected validation error: %v", err)
+	}
+}
+
+// TestValidateUpstream_RejectsLoopbackByDefault: H8 single-origin.
+func TestValidateUpstream_RejectsLoopbackByDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Mode:   "single",
+		Server: ServerConfig{Port: 8080},
+		Upstream: &UpstreamConfig{
+			URL: "https://127.0.0.1",
+		},
+	}
+	cfg.setDefaults()
+
+	err := NewValidator().Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for loopback upstream")
+	}
+	if !containsValidationError(err, "loopback") {
+		t.Errorf("expected loopback error, got: %v", err)
+	}
+}
+
+// TestValidateOrigin_AcceptsPublicAlways: H8.
+func TestValidateOrigin_AcceptsPublicAlways(t *testing.T) {
+	t.Parallel()
+
+	hosts := []string{
+		"https://example.com",
+		"https://earth-search.aws.element84.com",
+	}
+	for _, base := range hosts {
+		for _, allow := range []bool{false, true} {
+			cfg := &Config{
+				Mode: "federation",
+				Server: ServerConfig{Port: 8080},
+				Federation: &FederationConfig{
+					AllowPrivateOrigins: allow,
+					CursorSecret:        "test-secret",
+					Origins:             []OriginConfig{{ID: "origin1", BaseURL: base}},
+				},
+			}
+			cfg.setDefaults()
+
+			if err := NewValidator().Validate(cfg); err != nil {
+				t.Errorf("host %q (allow=%v): unexpected validation error: %v", base, allow, err)
+			}
+		}
+	}
 }

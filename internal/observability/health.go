@@ -10,10 +10,17 @@ import (
 )
 
 // HealthChecker manages health checks for the proxy.
+//
+// When Verbose is false (the default), the JSON returned by the
+// HTTP handlers strips per-check `message` and `details` fields so
+// upstream URLs, error strings, and other topology hints don't leak
+// to whoever can reach `/health`. Operators inside trusted networks
+// can flip Verbose=true via config to get the full payload.
 type HealthChecker struct {
 	checks       map[string]Check
 	mu           sync.RWMutex
 	checkTimeout time.Duration
+	Verbose      bool
 }
 
 // Check defines a single health check.
@@ -152,6 +159,7 @@ func (h *HealthChecker) RunChecks(ctx context.Context) HealthResponse {
 func (h *HealthChecker) HealthHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		response := h.RunChecks(r.Context())
+		h.redact(&response)
 
 		w.Header().Set("Content-Type", "application/json")
 		if response.Status == StatusUnhealthy {
@@ -161,6 +169,18 @@ func (h *HealthChecker) HealthHandler() http.HandlerFunc {
 		}
 
 		json.NewEncoder(w).Encode(response)
+	}
+}
+
+// redact strips per-check Message and Details fields when Verbose is
+// off so the public response carries only the overall + per-check
+// status enum, not upstream URLs / 4xx/5xx specifics / etc.
+func (h *HealthChecker) redact(r *HealthResponse) {
+	if h.Verbose {
+		return
+	}
+	for name, c := range r.Checks {
+		r.Checks[name] = CheckResult{Status: c.Status, Latency: c.Latency}
 	}
 }
 
@@ -177,6 +197,7 @@ func (h *HealthChecker) LivenessHandler() http.HandlerFunc {
 func (h *HealthChecker) ReadinessHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		response := h.RunChecks(r.Context())
+		h.redact(&response)
 
 		w.Header().Set("Content-Type", "application/json")
 		if response.Status == StatusUnhealthy {

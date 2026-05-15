@@ -84,7 +84,7 @@ func newUpstream(t *testing.T) (*httptest.Server, *capturedUpstream) {
 // OPA policy that emits a CQL2 filter constraint.
 type fixedEnforcer struct{ d *authz.AuthzDecision }
 
-func (e *fixedEnforcer) Name() string                                            { return "fixed" }
+func (e *fixedEnforcer) Name() string { return "fixed" }
 func (e *fixedEnforcer) Authorize(_ context.Context, _ *authz.AuthzInput) (*authz.AuthzDecision, error) {
 	return e.d, nil
 }

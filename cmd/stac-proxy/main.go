@@ -3,9 +3,11 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -111,20 +113,30 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 
 	// Initialize health checker
 	healthChecker := observability.NewHealthChecker()
+	healthChecker.Verbose = cfg.Health.Verbose
 
 	// Build the federation handler. Single-origin mode is modeled as a
 	// federation-of-1 — the single-origin code path collapses into
 	// reverseProxyOnce against the synthetic "primary" origin.
-	handler, err := buildFederationHandler(cfg, logger, healthChecker, metrics)
+	handler, err := buildFederationHandler(ctx, cfg, logger, healthChecker, metrics)
 	if err != nil {
 		return fmt.Errorf("failed to build handler: %w", err)
 	}
 
-	// Create router. Stateless middlewares (logging, auth, ratelimit)
-	// are wired at the chi router level rather than inside the buffered
-	// Chain so they sit at the request boundary without per-iteration
-	// overhead. Order matters: logging → auth → ratelimit so that
-	// rate-limit decisions can key off the authenticated principal.
+	// Create router. Stateless middlewares are wired at the chi
+	// router level rather than inside the buffered Chain so they sit
+	// at the request boundary without per-iteration overhead.
+	//
+	// Order matters:
+	//   logging → auth → ratelimit → authz → cache → remap
+	//
+	// auth before ratelimit so the rate-limit key can include the
+	// authenticated principal. authz BEFORE cache so the cache key
+	// can be informed by the authz decision — specifically, when the
+	// decision attaches a row-level constraint (CQL2 filter, geofence,
+	// narrowed collection allow-list, etc.), the cache layer bypasses
+	// itself entirely, since the same URL legitimately produces
+	// different responses for different principals.
 	httpMiddlewares := []func(http.Handler) http.Handler{
 		logging.NewHTTPMiddleware(logging.Config{Logger: logger}),
 	}
@@ -134,20 +146,25 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if rlMW := buildRateLimitHTTPMiddleware(cfg); rlMW != nil {
 		httpMiddlewares = append(httpMiddlewares, rlMW)
 	}
-	if cMW, err := buildCacheHTTPMiddleware(cfg); err != nil {
-		return fmt.Errorf("failed to build cache middleware: %w", err)
-	} else if cMW != nil {
-		httpMiddlewares = append(httpMiddlewares, cMW)
-	}
 	if azMW, err := buildAuthzHTTPMiddleware(cfg, logger); err != nil {
 		return fmt.Errorf("failed to build authz middleware: %w", err)
 	} else if azMW != nil {
 		httpMiddlewares = append(httpMiddlewares, azMW)
 	}
+	if cMW, err := buildCacheHTTPMiddleware(cfg); err != nil {
+		return fmt.Errorf("failed to build cache middleware: %w", err)
+	} else if cMW != nil {
+		httpMiddlewares = append(httpMiddlewares, cMW)
+	}
 	if rmMW, err := buildRemapHTTPMiddleware(cfg); err != nil {
 		return fmt.Errorf("failed to build remap middleware: %w", err)
 	} else if rmMW != nil {
 		httpMiddlewares = append(httpMiddlewares, rmMW)
+	}
+	if len(cfg.Server.TrustedProxies) == 0 && !isLoopbackAddr(cfg.Server.Host) {
+		logger.Info("XFF will be ignored; set Server.TrustedProxies if behind a load balancer",
+			"host", cfg.Server.Host,
+		)
 	}
 	router := server.NewRouter(server.RouterConfig{
 		Handler:         handler,
@@ -155,6 +172,13 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		Metrics:         metrics,
 		MaxBodyBytes:    cfg.Server.MaxBodyBytes,
 		HTTPMiddlewares: httpMiddlewares,
+		TrustedProxies:  cfg.Server.TrustedProxies,
+		// The federation handler implements both http.Handler (catalog
+		// routes) and server.AssetHandler (the streaming proxy
+		// endpoint). Mounting the asset endpoint is gated on the
+		// router seeing a non-nil AssetHandler — single-origin
+		// pass-through deployments leave it nil.
+		AssetHandler: handler,
 	})
 
 	// Create and start HTTP server
@@ -362,6 +386,37 @@ func buildRemapHTTPMiddleware(cfg *config.Config) (func(http.Handler) http.Handl
 	return remap.NewFromConfig(rawCfg)
 }
 
+// buildAssetSigner returns the HMAC signer used to sign asset hrefs
+// when an origin has `rewrite_assets: sign`. Reuses the secret from
+// the `url_remap` middleware config so deployments don't have to
+// configure two secrets to do the same thing. Returns nil when no
+// origin opts into "sign" and no signing secret is configured —
+// federation.rewriteAssetHref falls back to passthrough in that case.
+func buildAssetSigner(cfg *config.Config) federation.AssetSigner {
+	// Only build a signer when at least one origin asks for signing,
+	// to avoid materializing keys we won't use.
+	needsSigner := false
+	if cfg.Federation != nil {
+		for _, o := range cfg.Federation.Origins {
+			if o.RewriteAssets == "sign" {
+				needsSigner = true
+				break
+			}
+		}
+	}
+	if !needsSigner {
+		return nil
+	}
+	for _, mw := range cfg.Middleware {
+		if mw.Name == "url_remap" {
+			if secret, ok := mw.Config["secret"].(string); ok && secret != "" {
+				return remap.NewHMACSigner(secret)
+			}
+		}
+	}
+	return nil
+}
+
 // buildRateLimitHTTPMiddleware builds the chi-style rate-limit middleware
 // from the `rate_limit` block of the middleware config list. Returns nil
 // when no `rate_limit` block is configured.
@@ -405,10 +460,10 @@ func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Ha
 // single-origin mode (cfg.Mode != "federation") it synthesizes a
 // single-element Origins list from cfg.Upstream, so the same code
 // path handles both deployment shapes.
-func buildFederationHandler(cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker, metrics *observability.Metrics) (*federation.Handler, error) {
+func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker, metrics *observability.Metrics) (*federation.Handler, error) {
 	// Single-origin → federation-of-1 translation.
 	if !cfg.IsFederation() {
-		return buildSingleOriginAsFederation(cfg, logger, health)
+		return buildSingleOriginAsFederation(ctx, cfg, logger, health)
 	}
 
 	var origins []*federation.Origin
@@ -446,6 +501,8 @@ func buildFederationHandler(cfg *config.Config, logger *slog.Logger, health *obs
 			CollectionMapping:       originCfg.CollectionMapping,
 			StripPathPrefix:         originCfg.StripPathPrefix,
 			SupportsFilterExtension: supportsFilter,
+			RewriteAssets:           originCfg.RewriteAssets,
+			AssetSignTTL:            originCfg.AssetSignTTL,
 			Auth:                    originAuthConfig(originCfg.Auth),
 		}
 		origins = append(origins, origin)
@@ -474,6 +531,8 @@ func buildFederationHandler(cfg *config.Config, logger *slog.Logger, health *obs
 		conflictStrategy = federation.ConflictNamespace
 	}
 
+	caps := computeConformanceCaps(cfg, origins)
+
 	return federation.NewHandler(federation.HandlerConfig{
 		Origins:          origins,
 		ConflictStrategy: conflictStrategy,
@@ -481,7 +540,37 @@ func buildFederationHandler(cfg *config.Config, logger *slog.Logger, health *obs
 		AggregateTimeout: cfg.Federation.AggregateTimeout,
 		DefaultPageSize:  cfg.Federation.DefaultPageSize,
 		MaxPageSize:      cfg.Federation.MaxPageSize,
+		ConformanceCaps:  caps,
+		LifetimeCtx:      ctx,
+		Logger:           logger,
+		AssetSigner:      buildAssetSigner(cfg),
+		CursorSecret:     []byte(cfg.Federation.CursorSecret),
 	})
+}
+
+// computeConformanceCaps derives the proxy's runtime conformance
+// capabilities from the loaded config and the origin list. In
+// particular, the filter extension is only advertised when CQL2
+// injection is enabled AND every routed origin supports it.
+func computeConformanceCaps(cfg *config.Config, origins []*federation.Origin) stac.ConformanceCaps {
+	cql2Enabled := false
+	if cfg.Authz != nil && cfg.Authz.CQL2Injection != nil {
+		cql2Enabled = cfg.Authz.CQL2Injection.Enabled
+	}
+	allFilter := false
+	if len(origins) > 0 {
+		allFilter = true
+		for _, o := range origins {
+			if !o.SupportsFilterExtension {
+				allFilter = false
+				break
+			}
+		}
+	}
+	return stac.ConformanceCaps{
+		CQL2InjectionEnabled:    cql2Enabled,
+		AllOriginsSupportFilter: allFilter,
+	}
 }
 
 // originAuthConfig converts the YAML-bound config to the
@@ -514,7 +603,7 @@ func originAuthConfig(c *config.OriginAuthConfig) federation.AuthConfig {
 // buildSingleOriginAsFederation builds a federation handler from a
 // single-origin cfg.Upstream — i.e. the "single" mode collapses to a
 // federation-of-1 so we only carry one request pipeline.
-func buildSingleOriginAsFederation(cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker) (*federation.Handler, error) {
+func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker) (*federation.Handler, error) {
 	if cfg.Upstream == nil {
 		return nil, fmt.Errorf("single mode requires upstream config")
 	}
@@ -549,24 +638,62 @@ func buildSingleOriginAsFederation(cfg *config.Config, logger *slog.Logger, heal
 		"filter_extension", supportsFilter,
 	)
 
+	caps := computeConformanceCaps(cfg, []*federation.Origin{origin})
+
 	return federation.NewHandler(federation.HandlerConfig{
 		Origins:          []*federation.Origin{origin},
 		ConflictStrategy: federation.ConflictPriorityWins,
 		ProxyBaseURL:     "",
+		ConformanceCaps:  caps,
+		LifetimeCtx:      ctx,
+		Logger:           logger,
 	})
 }
 
-// startMetricsServer starts the Prometheus metrics server.
+// startMetricsServer starts the Prometheus metrics server. The metrics
+// listener defaults to 127.0.0.1:9090 so /metrics is not reachable
+// from the public network; operators wanting cross-host scrape must
+// explicitly set Metrics.BindAddr (and ideally Metrics.AuthToken).
 func startMetricsServer(cfg config.MetricsConfig, metrics *observability.Metrics, logger *slog.Logger) {
-	addr := fmt.Sprintf(":%d", cfg.Port)
-	logger.Info("Starting metrics server", "address", addr)
+	addr := cfg.BindAddr
+	if addr == "" {
+		port := cfg.Port
+		if port == 0 {
+			port = 9090
+		}
+		addr = fmt.Sprintf("127.0.0.1:%d", port)
+	}
+	logger.Info("Starting metrics server",
+		"address", addr,
+		"auth_required", cfg.AuthToken != "",
+	)
+
+	path := cfg.Path
+	if path == "" {
+		path = "/metrics"
+	}
+
+	handler := metrics.Handler()
+	if cfg.AuthToken != "" {
+		token := "Bearer " + cfg.AuthToken
+		inner := handler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(token)) != 1 {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
+	}
 
 	mux := http.NewServeMux()
-	mux.Handle(cfg.Path, metrics.Handler())
+	mux.Handle(path, handler)
 
 	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -660,4 +787,17 @@ func runHealthcheck(url string) int {
 		return 1
 	}
 	return 0
+}
+
+// isLoopbackAddr reports whether host is loopback (empty string,
+// "localhost", 127.0.0.0/8, ::1). Used to decide whether to nag the
+// operator about missing TrustedProxies — silent for dev binds.
+func isLoopbackAddr(host string) bool {
+	if host == "" || host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

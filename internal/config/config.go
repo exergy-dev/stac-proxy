@@ -32,6 +32,13 @@ type ServerConfig struct {
 	// (1 MiB); negative disables the cap. Set higher when expecting
 	// large GeoJSON intersects polygons on /search.
 	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+	// TrustedProxies lists the CIDRs from which the proxy will honor
+	// X-Forwarded-For when deriving the client IP for rate limiting,
+	// logging, etc. The default empty list means XFF is ignored and
+	// client IPs come from the TCP RemoteAddr — the safe default for
+	// an internet-exposed listener. Deployments behind a load
+	// balancer / CDN must list the immediate-upstream CIDRs here.
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 // TLSConfig contains TLS settings.
@@ -58,12 +65,31 @@ type LoggingConfig struct {
 type MetricsConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Path    string `yaml:"path"`
-	Port    int    `yaml:"port"`
+	// BindAddr is the host:port the metrics server listens on. The
+	// default `127.0.0.1:9090` keeps metrics on the loopback interface
+	// so they aren't reachable from the public network. Operators
+	// wanting LAN-wide scrape must set it explicitly (e.g.
+	// `0.0.0.0:9090`) — typically only safe when the proxy runs in a
+	// private subnet behind a firewall, or when paired with an
+	// `auth_token` below.
+	BindAddr string `yaml:"bind_addr"`
+	// Port is retained for backward-compat config shape but is only
+	// consulted when BindAddr is empty.
+	Port int `yaml:"port"`
+	// AuthToken, when set, is required as a Bearer token on /metrics
+	// requests. Combined with a non-loopback BindAddr this gives a
+	// minimum gate for cross-host scrape.
+	AuthToken string `yaml:"auth_token"`
 }
 
 // HealthConfig contains health check settings.
 type HealthConfig struct {
 	Path string `yaml:"path"`
+	// Verbose controls whether per-check `message` and `details`
+	// fields are included in the JSON response. The default false
+	// keeps `/health` responses generic so upstream URLs and error
+	// strings don't leak topology to whoever can reach the endpoint.
+	Verbose bool `yaml:"verbose"`
 }
 
 // MiddlewareConfig contains configuration for a single middleware.
@@ -82,6 +108,16 @@ type UpstreamConfig struct {
 	// authz CQL2 filters and geofence S_INTERSECTS predicates are pushed
 	// down to the upstream rather than enforced via response post-filter.
 	SupportsFilterExtension bool `yaml:"supports_filter_extension"`
+
+	// MaxResponseBytes caps the size in bytes of an upstream response
+	// body consumed by the proxy. <= 0 means the default 32 MiB.
+	MaxResponseBytes int64 `yaml:"max_response_bytes"`
+
+	// AllowPrivateOrigin must be true to use a loopback / RFC 1918 /
+	// link-local host in URL. Default false — required for dev/test
+	// setups using httptest on 127.0.0.1; production deployments
+	// should leave this unset to prevent SSRF-style misconfigurations.
+	AllowPrivateOrigin bool `yaml:"allow_private_origin"`
 }
 
 // FederationConfig contains multi-origin federation settings.
@@ -92,6 +128,19 @@ type FederationConfig struct {
 	ConflictStrategy string         `yaml:"conflict_strategy"` // first_wins, priority, merge, namespace
 	DefaultPageSize  int            `yaml:"default_page_size"`
 	MaxPageSize      int            `yaml:"max_page_size"`
+
+	// AllowPrivateOrigins must be true to register origins whose
+	// BaseURL hosts resolve to loopback / RFC 1918 / link-local
+	// addresses. Default false. Required for dev/test deployments
+	// with httptest origins; production deployments should leave
+	// this unset to prevent SSRF-style misconfigurations.
+	AllowPrivateOrigins bool `yaml:"allow_private_origins"`
+
+	// CursorSecret is the HMAC key used to sign federation cursors.
+	// Required in federation mode — minted cursors are unsigned (and
+	// therefore tamperable) without it. Inject from a secrets manager
+	// rather than checking in the YAML.
+	CursorSecret string `yaml:"cursor_secret"`
 }
 
 // OriginConfig contains configuration for a single upstream STAC server.
@@ -134,6 +183,34 @@ type OriginConfig struct {
 	// search request; when false, the post-filter path stays responsible
 	// for enforcement.
 	SupportsFilterExtension bool `yaml:"supports_filter_extension"`
+
+	// MaxResponseBytes caps the size in bytes of an upstream response
+	// body consumed by the federation origin client. <= 0 means the
+	// default 32 MiB.
+	MaxResponseBytes int64 `yaml:"max_response_bytes"`
+
+	// ForwardUserIdentity controls whether the inbound client's
+	// Authorization / Cookie / X-API-Key headers are forwarded to
+	// this origin. Default false (strip). Set to true ONLY for
+	// origins that specifically expect OIDC-token-pass-through, and
+	// only when the confused-deputy risk is understood.
+	ForwardUserIdentity bool `yaml:"forward_user_identity"`
+
+	// RewriteAssets controls how `assets[*].href` is rewritten in
+	// responses from this origin. One of:
+	//   ""      — same as "never" (default; current behavior).
+	//   "never" — asset hrefs pass through unchanged.
+	//   "sign"  — the asset href is HMAC-signed via the remap signer
+	//             so direct fetches must carry a valid signature.
+	//   "proxy" — the asset href is replaced with a proxy URL of the
+	//             form {proxy_base_url}/assets/{origin_id}/{base64url-href}
+	//             that streams the asset bytes through the proxy with
+	//             the same auth/authz/ratelimit chain as STAC requests.
+	RewriteAssets string `yaml:"rewrite_assets"`
+
+	// AssetSignTTL is the TTL applied when RewriteAssets == "sign".
+	// Defaults to 15 minutes when zero.
+	AssetSignTTL time.Duration `yaml:"asset_sign_ttl"`
 }
 
 // RetryConfig contains retry policy settings.
@@ -200,7 +277,7 @@ type ClientCertConfig struct {
 
 // AuthConfig contains client-facing authentication settings.
 type AuthConfig struct {
-	AllowAnonymous bool              `yaml:"allow_anonymous"`
+	AllowAnonymous bool                 `yaml:"allow_anonymous"`
 	Providers      []AuthProviderConfig `yaml:"providers"`
 }
 
