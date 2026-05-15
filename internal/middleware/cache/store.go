@@ -41,12 +41,21 @@ type Strategy interface {
 }
 
 // CacheableRequest contains request information for cache decisions.
+//
+// PrincipalClass is an opaque per-principal namespace that the cache
+// middleware derives from the request's authenticated principal (see
+// principalClass in middleware.go). It is folded into the cache key
+// digest so that responses cached for one principal class can never be
+// served to a different one — closing the anonymous-vs-authenticated
+// (and per-principal) cross-pollution path. Strategies MUST include
+// PrincipalClass in their key derivation; the BasicStrategy below does.
 type CacheableRequest struct {
-	Method      string
-	Path        string
-	Query       string
-	RequestType string // collection, item, search, etc.
-	Collection  string
+	Method         string
+	Path           string
+	Query          string
+	RequestType    string // collection, item, search, etc.
+	Collection     string
+	PrincipalClass string
 }
 
 // Stats contains cache statistics.

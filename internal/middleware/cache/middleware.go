@@ -20,9 +20,38 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
+
+// principalClass returns a stable per-principal namespace string used as
+// part of the cache key digest. The literal "anonymous" is returned for
+// requests without a principal in context (or with the synthetic
+// anonymous principal). For any other principal the principal's stable
+// ID is returned, prefixed with "principal:" so it cannot collide with
+// the anonymous bucket.
+//
+// CRITICAL (C3): the returned value MUST be hashed into the cache key
+// digest. Without it, a response cached for one principal class can be
+// served back to a different principal class — including the anonymous
+// vs. authenticated cross-pollination case. Two distinct principals
+// also occupy distinct cache buckets so that, e.g., admin-user-A and
+// admin-user-B (both unconstrained but with potentially different
+// upstream auth context) never share an entry.
+func principalClass(ctx context.Context) string {
+	p := auth.PrincipalFromContext(ctx)
+	if p == nil || p.IsAnonymous() {
+		return "anonymous"
+	}
+	if p.ID == "" {
+		// Defensive: an authenticated principal with no stable ID is
+		// treated as its own opaque bucket so it can never share with
+		// either the anonymous bucket or another principal.
+		return "principal:_unknown"
+	}
+	return "principal:" + p.ID
+}
 
 // cacheableResponseHeaders is the whitelist of upstream response
 // headers that may be stored in a cache entry and re-emitted on a
@@ -115,11 +144,12 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 			cacheReq := CacheableRequest{
-				Method:      r.Method,
-				Path:        r.URL.Path,
-				Query:       r.URL.RawQuery,
-				RequestType: info.RequestType.String(),
-				Collection:  info.Collection,
+				Method:         r.Method,
+				Path:           r.URL.Path,
+				Query:          r.URL.RawQuery,
+				RequestType:    info.RequestType.String(),
+				Collection:     info.Collection,
+				PrincipalClass: principalClass(r.Context()),
 			}
 			if !strategy.ShouldCache(cacheReq) {
 				next.ServeHTTP(w, r)
@@ -247,8 +277,17 @@ func (s *BasicStrategy) ShouldCache(req CacheableRequest) bool {
 }
 
 // CacheKey generates a cache key from the request.
+//
+// PrincipalClass is folded into the digest so cache entries are
+// partitioned by principal — see CacheableRequest.PrincipalClass for
+// the security rationale (CRITICAL C3). The principal class is hashed
+// (not concatenated raw into a logged key) so cache stats / metrics
+// labels never leak principal IDs. A separator that cannot appear
+// inside any of the components is used between fields so two distinct
+// inputs cannot produce the same pre-hash byte sequence.
 func (s *BasicStrategy) CacheKey(req CacheableRequest) string {
-	data := fmt.Sprintf("%s:%s:%s", req.Method, req.Path, req.Query)
+	data := fmt.Sprintf("%s\x00%s\x00%s\x00%s",
+		req.PrincipalClass, req.Method, req.Path, req.Query)
 	hash := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(hash[:16])
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
 )
 
@@ -214,5 +215,93 @@ func TestCache_FiltersSensitiveHeadersFromEntry(t *testing.T) {
 	// ETag is in the allowlist — should survive.
 	if got := rr2.Header().Get("ETag"); got != `"v1"` {
 		t.Errorf("ETag dropped from cache: %q", got)
+	}
+}
+
+// TestCache_DoesNotMixAnonymousAndAuthenticated (C3): the cache key
+// must include a principal-class component so an anonymous response
+// can never be served back to an authenticated caller (or vice
+// versa), and so two different authenticated principals occupy
+// distinct cache buckets.
+//
+// The test exercises four sequential requests against the same URL,
+// alternating principal class. Each principal class should see its
+// own body on first miss, then HIT on subsequent visits — without
+// any cross-pollination.
+func TestCache_DoesNotMixAnonymousAndAuthenticated(t *testing.T) {
+	store := NewMemoryStore(MemoryConfig{MaxSize: 100})
+
+	// The "upstream" handler returns a body that depends on which
+	// principal class is in context. If the cache is correctly
+	// partitioned by principal, the first MISS for each class records
+	// that class's body and subsequent HITs serve the same.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := "anon-body"
+		if p := auth.PrincipalFromContext(r.Context()); p != nil && !p.IsAnonymous() {
+			body = p.ID + "-body"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	})
+	mw := NewHTTPMiddleware(Config{Store: store})(inner)
+
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch}
+
+	newReq := func(principalID string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/search?bbox=1,2,3,4", nil)
+		ctx := middleware.WithSTACInfo(r.Context(), info)
+		if principalID != "" {
+			ctx = context.WithValue(ctx, middleware.PrincipalKey, &auth.Principal{
+				ID:   principalID,
+				Type: "user",
+			})
+		}
+		return r.WithContext(ctx)
+	}
+
+	// 1. Anonymous: MISS, body "anon-body" cached under anon bucket.
+	rr1 := httptest.NewRecorder()
+	mw.ServeHTTP(rr1, newReq(""))
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("anon first request: status=%d", rr1.Code)
+	}
+	if got := rr1.Body.String(); got != "anon-body" {
+		t.Fatalf("anon first request body: want anon-body, got %q", got)
+	}
+	if got := rr1.Header().Get("X-Cache-Status"); got != "MISS" {
+		t.Fatalf("anon first request X-Cache-Status: want MISS, got %q", got)
+	}
+
+	// 2. Authenticated as "alice", same URL/method: must NOT see
+	//    "anon-body". Should MISS its own bucket and get "alice-body".
+	rr2 := httptest.NewRecorder()
+	mw.ServeHTTP(rr2, newReq("alice"))
+	if got := rr2.Body.String(); got != "alice-body" {
+		t.Fatalf("alice first request body: want alice-body (cache MUST be partitioned by principal class), got %q", got)
+	}
+	if got := rr2.Header().Get("X-Cache-Status"); got != "MISS" {
+		t.Fatalf("alice first request X-Cache-Status: want MISS, got %q", got)
+	}
+
+	// 3. Anonymous again: MUST hit the anon bucket, not Alice's.
+	//    The anon entry must NOT have been overwritten by step 2.
+	rr3 := httptest.NewRecorder()
+	mw.ServeHTTP(rr3, newReq(""))
+	if got := rr3.Body.String(); got != "anon-body" {
+		t.Fatalf("anon second request body: want anon-body (anon entry must be preserved), got %q", got)
+	}
+	if got := rr3.Header().Get("X-Cache-Status"); got != "HIT" {
+		t.Fatalf("anon second request X-Cache-Status: want HIT, got %q", got)
+	}
+
+	// 4. Alice again: hits Alice's bucket from step 2.
+	rr4 := httptest.NewRecorder()
+	mw.ServeHTTP(rr4, newReq("alice"))
+	if got := rr4.Body.String(); got != "alice-body" {
+		t.Fatalf("alice second request body: want alice-body (alice entry must be preserved), got %q", got)
+	}
+	if got := rr4.Header().Get("X-Cache-Status"); got != "HIT" {
+		t.Fatalf("alice second request X-Cache-Status: want HIT, got %q", got)
 	}
 }
