@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/open-policy-agent/opa/rego"
 )
@@ -18,6 +20,11 @@ type EmbeddedOPAEnforcer struct {
 	name        string
 	policyPath  string
 	queryString string
+
+	// missingAllowWarned latches the WARN about a missing `allow` key
+	// to once per enforcer lifetime. The error path always returns a
+	// useful Reason, so the log is purely operator hygiene.
+	missingAllowWarned atomic.Bool
 }
 
 // EmbeddedOPAConfig configures the embedded OPA enforcer.
@@ -178,20 +185,47 @@ func (e *EmbeddedOPAEnforcer) Authorize(ctx context.Context, input *AuthzInput) 
 	}
 
 	// Parse result
-	return parseEmbeddedResult(results[0])
+	decision, err := parseEmbeddedResult(results[0], e.queryString)
+	if err != nil {
+		// Latch the WARN to the first occurrence per enforcer so a
+		// continuously-misconfigured policy doesn't spam the log.
+		if e.missingAllowWarned.CompareAndSwap(false, true) {
+			slog.Warn("OPA policy returned a structured result with no `allow` key",
+				"enforcer", e.name, "query", e.queryString, "err", err)
+		}
+		return nil, err
+	}
+	return decision, nil
 }
 
 // parseEmbeddedResult parses the OPA evaluation result.
-func parseEmbeddedResult(result rego.Result) (*AuthzDecision, error) {
+//
+// M-authz-6: a policy that returns a structured map without an
+// `allow` key (e.g. `{"reasons": [...]}`) is malformed — we can't
+// tell allow from deny. Previously the parser treated that as a
+// silent deny with reason "denied by policy", making misconfiguration
+// effectively invisible. Now we return a non-nil error; the caller
+// surfaces it as 500 InternalError so operators see exactly what's
+// wrong (which policy, which query). A bare boolean expression value
+// or a wrapper that does carry `allow` keeps working as before.
+//
+// queryString is the rego query the enforcer ran (e.g.
+// `data.stac.authz`); included in the error for traceability.
+func parseEmbeddedResult(result rego.Result, queryString string) (*AuthzDecision, error) {
 	decision := &AuthzDecision{
 		Allowed: false,
 	}
+
+	sawAllowKey := false
 
 	// Handle different result structures
 	for _, expr := range result.Expressions {
 		switch v := expr.Value.(type) {
 		case bool:
+			// Bare boolean (e.g. query was `data.x.allow` directly)
+			// carries the allow signal directly.
 			decision.Allowed = v
+			sawAllowKey = true
 		case map[string]interface{}:
 			// When the query was `data.stac.authz` (the default), the
 			// value is the whole package and the structured response
@@ -203,6 +237,7 @@ func parseEmbeddedResult(result rego.Result) (*AuthzDecision, error) {
 			}
 			if allow, ok := v["allow"].(bool); ok {
 				decision.Allowed = allow
+				sawAllowKey = true
 			}
 			if reasons, ok := v["reasons"].([]interface{}); ok {
 				for _, r := range reasons {
@@ -215,6 +250,17 @@ func parseEmbeddedResult(result rego.Result) (*AuthzDecision, error) {
 				decision.Constraints = parseOPAConstraints(constraints)
 			}
 		}
+	}
+
+	if !sawAllowKey {
+		// No `allow` key anywhere in the result map nor a bare bool
+		// expression — policy is malformed. Return an error so the
+		// chi-style middleware writes 500 InternalError; surface the
+		// query in Reasons so an operator parsing the audit log can
+		// see *which* module is at fault.
+		msg := fmt.Sprintf("OPA policy result for query %q is missing the `allow` key; treat as 500 InternalError, not silent deny", queryString)
+		decision.Reasons = append(decision.Reasons, msg)
+		return decision, fmt.Errorf("opa: %s", msg)
 	}
 
 	if len(decision.Reasons) == 0 {

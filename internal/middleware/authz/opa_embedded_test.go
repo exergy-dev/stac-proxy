@@ -38,6 +38,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/open-policy-agent/opa/rego"
 )
 
 // Test Rego policies
@@ -1901,5 +1903,94 @@ other_rule { input.principal.id == "x" }
 	}
 	if !contains(err.Error(), "multiple default rules") {
 		t.Fatalf("error must mention duplicate default rules; got %q", err.Error())
+	}
+}
+
+// TestParseEmbeddedResult_NoAllowKey_ReturnsError verifies M-authz-6:
+// a structured OPA result without an `allow` key is malformed and
+// must surface as an error (the caller turns it into 500
+// InternalError) rather than the previous silent deny with a
+// generic "denied by policy" reason. The error/decision must name
+// the query so operators can locate the offending policy module.
+func TestParseEmbeddedResult_NoAllowKey_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	result := rego.Result{
+		Expressions: []*rego.ExpressionValue{{
+			Value: map[string]interface{}{
+				"reasons": []interface{}{"because"},
+			},
+		}},
+	}
+
+	dec, err := parseEmbeddedResult(result, "data.stac.authz")
+	if err == nil {
+		t.Fatal("want error for missing allow key; got nil")
+	}
+	if !contains(err.Error(), "missing the `allow` key") {
+		t.Fatalf("error must mention missing allow key; got %q", err.Error())
+	}
+	if dec == nil {
+		t.Fatal("decision must be non-nil so caller can surface Reasons")
+	}
+	if len(dec.Reasons) == 0 || !contains(dec.Reasons[len(dec.Reasons)-1], "data.stac.authz") {
+		t.Fatalf("decision reasons must name the query; got %v", dec.Reasons)
+	}
+}
+
+// TestParseEmbeddedResult_AllowFalse_DenyWithReason ensures a
+// well-formed `{"allow": false, "reasons": [...]}` keeps producing
+// a normal deny — the fix above only tightens the "no allow key"
+// path.
+func TestParseEmbeddedResult_AllowFalse_DenyWithReason(t *testing.T) {
+	t.Parallel()
+
+	result := rego.Result{
+		Expressions: []*rego.ExpressionValue{{
+			Value: map[string]interface{}{
+				"allow":   false,
+				"reasons": []interface{}{"role lacks admin"},
+			},
+		}},
+	}
+
+	dec, err := parseEmbeddedResult(result, "data.stac.authz")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dec == nil || dec.Allowed {
+		t.Fatalf("want deny decision, got %+v", dec)
+	}
+	if len(dec.Reasons) != 1 || dec.Reasons[0] != "role lacks admin" {
+		t.Fatalf("want reason from policy, got %v", dec.Reasons)
+	}
+}
+
+// TestEmbeddedOPA_Authorize_NoAllowKey_Returns500 wires the
+// fix through Authorize: the enforcer must surface the error so the
+// chi-style middleware writes 500. We exercise this with a tiny
+// rego policy whose query value is a map without `allow`.
+func TestEmbeddedOPA_Authorize_NoAllowKey_Returns500(t *testing.T) {
+	t.Parallel()
+
+	const policy = `
+package stac.authz
+
+# Deliberately wrong: returns reasons without an allow key.
+result = {"reasons": ["missing allow"]}
+`
+	enf, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+		Name:    "no-allow",
+		Modules: map[string]string{"p.rego": policy},
+	})
+	if err != nil {
+		t.Fatalf("NewEmbeddedOPAEnforcer: %v", err)
+	}
+
+	_, err = enf.Authorize(context.Background(), &AuthzInput{
+		Request: &RequestInfo{Method: "GET", Path: "/"},
+	})
+	if err == nil {
+		t.Fatal("want error from Authorize when policy result lacks allow key")
 	}
 }
