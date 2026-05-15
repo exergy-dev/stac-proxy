@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1494,4 +1495,104 @@ func getTypeName(provider AuthProvider) string {
 func parseQueryString(query string) url.Values {
 	values, _ := url.ParseQuery(query)
 	return values
+}
+
+// TestOAuth2AuthProvider_FirstCallReturnsPopulatedToken guards Fix C5
+// part 1: previously getToken returned `p.token` which was read BEFORE
+// refreshToken executed, so the very first authenticated request
+// shipped with `Authorization: Bearer ` (empty bearer). The fix
+// returns the freshly-fetched token directly.
+func TestOAuth2AuthProvider_FirstCallReturnsPopulatedToken(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "first-call-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer server.Close()
+
+	provider, err := NewOAuth2AuthProvider(&OAuth2Config{
+		TokenURL:     server.URL,
+		ClientID:     "first-call-client",
+		ClientSecret: "secret",
+	})
+	if err != nil {
+		t.Fatalf("NewOAuth2AuthProvider: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/x", nil)
+	if err := provider.ApplyAuth(context.Background(), req); err != nil {
+		t.Fatalf("ApplyAuth: %v", err)
+	}
+
+	got := req.Header.Get("Authorization")
+	if got != "Bearer first-call-token" {
+		t.Fatalf("first-call Authorization = %q, want %q", got, "Bearer first-call-token")
+	}
+}
+
+// TestOAuth2AuthProvider_ConcurrentRefreshUsesSingleflight guards Fix
+// C5 part 2: concurrent fan-out callers hitting the token endpoint at
+// the same time must collapse onto a single in-flight HTTP request via
+// singleflight, rather than each acquiring the write lock and issuing
+// their own POST one after another.
+func TestOAuth2AuthProvider_ConcurrentRefreshUsesSingleflight(t *testing.T) {
+	t.Parallel()
+
+	var calls int64
+	// Hold each token request open for a short window so concurrent
+	// callers actually overlap on the singleflight slot. Without the
+	// delay the first call could finish before the others arrive,
+	// allowing the test to pass even without singleflight.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&calls, 1)
+		time.Sleep(150 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "sf-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer server.Close()
+
+	provider, err := NewOAuth2AuthProvider(&OAuth2Config{
+		TokenURL:     server.URL,
+		ClientID:     "sf-client",
+		ClientSecret: "secret",
+	})
+	if err != nil {
+		t.Fatalf("NewOAuth2AuthProvider: %v", err)
+	}
+
+	const N = 50
+	var wg sync.WaitGroup
+	wg.Add(N)
+	start := make(chan struct{})
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			req := httptest.NewRequest(http.MethodGet, "https://example.com/x", nil)
+			if err := provider.ApplyAuth(context.Background(), req); err != nil {
+				t.Errorf("ApplyAuth: %v", err)
+				return
+			}
+			if req.Header.Get("Authorization") != "Bearer sf-token" {
+				t.Errorf("unexpected Authorization: %q", req.Header.Get("Authorization"))
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	got := atomic.LoadInt64(&calls)
+	// Two is the practical upper bound: one in-flight singleflight
+	// fetch plus, in the worst case, a second one if a goroutine
+	// scheduled in just after the first refresh published the token.
+	if got > 2 {
+		t.Fatalf("token endpoint hit %d times, want <= 2 (singleflight collapse expected)", got)
+	}
 }

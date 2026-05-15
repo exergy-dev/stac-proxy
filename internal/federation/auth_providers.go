@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // authRoundTripper applies an AuthProvider to every outbound request
@@ -33,12 +35,19 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 // OAuth2AuthProvider handles OAuth2 client credentials flow.
+//
+// Concurrency: token reads/writes are protected by mu, and concurrent
+// refreshes collapse onto a single in-flight request via the
+// singleflight group keyed by client_id. The HTTP POST runs WITHOUT
+// holding mu so other callers (e.g. requests with a still-valid cached
+// token) are not serialised behind the network round-trip.
 type OAuth2AuthProvider struct {
 	config      *OAuth2Config
 	token       string
 	tokenExpiry time.Time
 	mu          sync.RWMutex
 	httpClient  *http.Client
+	refreshSF   singleflight.Group
 }
 
 // NewOAuth2AuthProvider creates a new OAuth2 auth provider.
@@ -68,14 +77,15 @@ func (p *OAuth2AuthProvider) ApplyAuth(ctx context.Context, req *http.Request) e
 	return nil
 }
 
-// Refresh forces a token refresh.
+// Refresh forces a token refresh. Concurrent Refresh / getToken callers
+// share a single in-flight HTTP round-trip via singleflight.
 func (p *OAuth2AuthProvider) Refresh(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.refreshToken(ctx)
+	_, err := p.refreshOnce(ctx)
+	return err
 }
 
-// getToken returns a valid token, refreshing if necessary.
+// getToken returns a valid token, refreshing if necessary. Returns the
+// freshly-published token (never an empty string with a nil error).
 func (p *OAuth2AuthProvider) getToken(ctx context.Context) (string, error) {
 	p.mu.RLock()
 	if p.token != "" && time.Now().Before(p.tokenExpiry.Add(-30*time.Second)) {
@@ -85,19 +95,46 @@ func (p *OAuth2AuthProvider) getToken(ctx context.Context) (string, error) {
 	}
 	p.mu.RUnlock()
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	if p.token != "" && time.Now().Before(p.tokenExpiry.Add(-30*time.Second)) {
-		return p.token, nil
+	// Trigger (or join) a single in-flight refresh. The fetched token is
+	// returned directly so the caller cannot race a concurrent Refresh
+	// that overwrites p.token before we read it back.
+	tok, err := p.refreshOnce(ctx)
+	if err != nil {
+		return "", err
 	}
-
-	return p.token, p.refreshToken(ctx)
+	return tok, nil
 }
 
-// refreshToken fetches a new token from the OAuth2 server.
-func (p *OAuth2AuthProvider) refreshToken(ctx context.Context) error {
+// refreshOnce coalesces concurrent refreshes into a single HTTP fetch
+// keyed by client_id. The HTTP round-trip runs WITHOUT holding p.mu so
+// requests with a still-valid token are not serialised behind it. On
+// success the new token is published under the write lock.
+func (p *OAuth2AuthProvider) refreshOnce(ctx context.Context) (string, error) {
+	v, err, _ := p.refreshSF.Do(p.config.ClientID, func() (interface{}, error) {
+		// Re-check under read lock — another caller may have just
+		// published a fresh token while we were waiting to enter the
+		// singleflight slot.
+		p.mu.RLock()
+		if p.token != "" && time.Now().Before(p.tokenExpiry.Add(-30*time.Second)) {
+			tok := p.token
+			p.mu.RUnlock()
+			return tok, nil
+		}
+		p.mu.RUnlock()
+		return p.fetchToken(ctx)
+	})
+	if err != nil {
+		return "", err
+	}
+	tok, _ := v.(string)
+	return tok, nil
+}
+
+// fetchToken performs the HTTP token request without holding any lock,
+// then publishes the result under the write lock. Callers must already
+// be inside the singleflight group so only one fetchToken runs at a
+// time per client.
+func (p *OAuth2AuthProvider) fetchToken(ctx context.Context) (string, error) {
 	data := url.Values{}
 	data.Set("grant_type", "client_credentials")
 	data.Set("client_id", p.config.ClientID)
@@ -113,19 +150,19 @@ func (p *OAuth2AuthProvider) refreshToken(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, "POST", p.config.TokenURL,
 		bytes.NewBufferString(data.Encode()))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp struct {
@@ -135,17 +172,20 @@ func (p *OAuth2AuthProvider) refreshToken(ctx context.Context) error {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return fmt.Errorf("failed to parse token response: %w", err)
+		return "", fmt.Errorf("failed to parse token response: %w", err)
 	}
 
-	p.token = tokenResp.AccessToken
+	expiry := time.Now().Add(1 * time.Hour)
 	if tokenResp.ExpiresIn > 0 {
-		p.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	} else {
-		p.tokenExpiry = time.Now().Add(1 * time.Hour)
+		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
 
-	return nil
+	p.mu.Lock()
+	p.token = tokenResp.AccessToken
+	p.tokenExpiry = expiry
+	p.mu.Unlock()
+
+	return tokenResp.AccessToken, nil
 }
 
 // AWSSigV4Provider handles AWS Signature V4 signing.
