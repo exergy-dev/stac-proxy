@@ -3,6 +3,7 @@ package federation
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1459,6 +1460,40 @@ func TestMergeSearchResults_NilAssets(t *testing.T) {
 	// Should have the asset from the second item
 	if len(fc.Features[0].Assets) != 1 {
 		t.Errorf("Assets length = %d, want 1", len(fc.Features[0].Assets))
+	}
+}
+
+// TestMerger_RejectDuplicates_ErrorsOnConflict verifies that the
+// ConflictRejectDuplicates strategy errors out (rather than silently
+// picking one) when two origins return items with the same key
+// (HIGH H-config-2). Previously the validation layer accepted
+// "reject_duplicates" as a string but main.go's switch did not map
+// it, so callers asking for the strict mode silently got
+// PriorityWins instead.
+func TestMerger_RejectDuplicates_ErrorsOnConflict(t *testing.T) {
+	t.Parallel()
+
+	merger := NewResultMerger(ConflictRejectDuplicates)
+
+	results := []*OriginSearchResult{
+		{
+			OriginID: "origin-a",
+			Priority: 1,
+			Items:    []*stac.Item{testItem("dup-1", "collection-1")},
+		},
+		{
+			OriginID: "origin-b",
+			Priority: 2,
+			Items:    []*stac.Item{testItem("dup-1", "collection-1")},
+		},
+	}
+
+	_, err := merger.MergeSearchResults(results, &stac.SearchRequest{Limit: 10})
+	if err == nil {
+		t.Fatal("expected error from RejectDuplicates strategy on duplicate item, got nil")
+	}
+	if !strings.Contains(err.Error(), "dup-1") {
+		t.Errorf("error should mention duplicate item ID; got: %v", err)
 	}
 }
 

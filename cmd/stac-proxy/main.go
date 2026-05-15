@@ -549,7 +549,12 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		)
 	}
 
-	// Create handler
+	// Create handler. The "priority" string maps to the default
+	// (ConflictPriorityWins); other strings map to their typed
+	// counterparts. validateFederation accepts the same set, so a
+	// validated config never falls through the default — but we
+	// keep PriorityWins as the safe default for forward compat in
+	// case the validator gets relaxed.
 	conflictStrategy := federation.ConflictPriorityWins
 	switch cfg.Federation.ConflictStrategy {
 	case "first_wins":
@@ -558,6 +563,8 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		conflictStrategy = federation.ConflictMerge
 	case "namespace":
 		conflictStrategy = federation.ConflictNamespace
+	case "reject_duplicates":
+		conflictStrategy = federation.ConflictRejectDuplicates
 	}
 
 	caps := computeConformanceCaps(cfg, origins)
