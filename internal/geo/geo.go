@@ -101,12 +101,21 @@ func (g *Geometry) Intersects(other *Geometry) bool {
 	return ok
 }
 
-// BboxToGeometry converts a STAC bbox value into a WGS84 Polygon. Accepts
-// the canonical decoded form ([]float64) plus the shapes produced by
-// json.Unmarshal into interface{} ([]interface{} of numeric types). Both
-// 2D [minX,minY,maxX,maxY] and 3D [minX,minY,minZ,maxX,maxY,maxZ] are
-// recognized; the Z dimension is dropped because the library's planar
-// predicates ignore it.
+// BboxToGeometry converts a STAC bbox value into a WGS84 geometry.
+// Accepts the canonical decoded form ([]float64) plus the shapes
+// produced by json.Unmarshal into interface{} ([]interface{} of numeric
+// types). Both 2D [minX,minY,maxX,maxY] and 3D
+// [minX,minY,minZ,maxX,maxY,maxZ] are recognized; the Z dimension is
+// dropped because the library's planar predicates ignore it.
+//
+// Antimeridian convention (per the STAC API spec, which inherits from
+// OGC): a bbox with `minX > maxX` is interpreted as crossing the
+// antimeridian. We split such a bbox into two polygons —
+// [minX,minY,180,maxY] and [-180,minY,maxX,maxY] — and return them as
+// a single MultiPolygon rather than a GeometryCollection so downstream
+// predicates (Covers / Intersects) treat the two sides as one region.
+//
+// `minY > maxY` is still an error: latitude doesn't wrap.
 func BboxToGeometry(data interface{}) (*Geometry, error) {
 	bbox, err := coerceBBox(data)
 	if err != nil {
@@ -121,9 +130,36 @@ func BboxToGeometry(data interface{}) (*Geometry, error) {
 	default:
 		return nil, fmt.Errorf("geo: bbox needs 4 or 6 elements, got %d", len(bbox))
 	}
-	if minX > maxX || minY > maxY {
+	if minY > maxY {
 		return nil, fmt.Errorf("geo: invalid bbox order [%v %v %v %v]", minX, minY, maxX, maxY)
 	}
+
+	// Antimeridian-crossing bbox: split at ±180 into two polygons and
+	// return a MultiPolygon. The west half spans [minX, 180]; the
+	// east half spans [-180, maxX].
+	if minX > maxX {
+		multi := map[string]interface{}{
+			"type": "MultiPolygon",
+			"coordinates": [][][][]float64{
+				{{
+					{minX, minY},
+					{180, minY},
+					{180, maxY},
+					{minX, maxY},
+					{minX, minY},
+				}},
+				{{
+					{-180, minY},
+					{maxX, minY},
+					{maxX, maxY},
+					{-180, maxY},
+					{-180, minY},
+				}},
+			},
+		}
+		return ParseGeoJSON(multi)
+	}
+
 	poly := map[string]interface{}{
 		"type": "Polygon",
 		"coordinates": [][][]float64{{

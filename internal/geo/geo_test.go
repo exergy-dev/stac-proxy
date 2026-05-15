@@ -328,3 +328,64 @@ func TestRoundTrip_Polygon(t *testing.T) {
 		t.Fatalf("expected round-tripped polygon to be mutually contained with original")
 	}
 }
+
+// --- BboxToGeometry ----------------------------------------------------------
+
+// TestBboxToGeometry_NormalBbox_StillSinglePolygon locks in that a
+// non-antimeridian bbox produces a single Polygon (the historical
+// shape) and not a MultiPolygon.
+func TestBboxToGeometry_NormalBbox_StillSinglePolygon(t *testing.T) {
+	g, err := geo.BboxToGeometry([]float64{0, 0, 10, 10})
+	if err != nil {
+		t.Fatalf("BboxToGeometry: %v", err)
+	}
+	gj := g.ToGeoJSON()
+	m, ok := gj.(map[string]interface{})
+	if !ok {
+		t.Fatalf("ToGeoJSON returned %T, want map[string]interface{}", gj)
+	}
+	if m["type"] != "Polygon" {
+		t.Fatalf("type = %v, want Polygon", m["type"])
+	}
+}
+
+// TestBboxToGeometry_AntimeridianSplit verifies that a bbox with
+// `minX > maxX` is interpreted as antimeridian-crossing and split into
+// a MultiPolygon with two polygons (one per side of ±180).
+func TestBboxToGeometry_AntimeridianSplit(t *testing.T) {
+	g, err := geo.BboxToGeometry([]float64{170, -10, -170, 10})
+	if err != nil {
+		t.Fatalf("BboxToGeometry: %v", err)
+	}
+	gj := g.ToGeoJSON()
+	// The library may emit the geometry as either a MultiPolygon (if it
+	// preserves the input shape) or as a GeometryCollection. We only
+	// require that it round-trip *as* a MultiPolygon since that is the
+	// shape we constructed.
+	raw, err := json.Marshal(gj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var probe struct {
+		Type        string          `json:"type"`
+		Coordinates [][][][]float64 `json:"coordinates"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("unmarshal: %v; raw=%s", err, raw)
+	}
+	if probe.Type != "MultiPolygon" {
+		t.Fatalf("type = %q, want MultiPolygon; raw=%s", probe.Type, raw)
+	}
+	if got := len(probe.Coordinates); got != 2 {
+		t.Fatalf("expected 2 polygons in MultiPolygon, got %d; raw=%s", got, raw)
+	}
+}
+
+// TestBboxToGeometry_LatitudeStillRejected ensures we don't accidentally
+// also "wrap" latitude — minY > maxY remains an error.
+func TestBboxToGeometry_LatitudeStillRejected(t *testing.T) {
+	_, err := geo.BboxToGeometry([]float64{0, 10, 10, -10})
+	if err == nil {
+		t.Fatal("expected error for minY > maxY, got nil")
+	}
+}
