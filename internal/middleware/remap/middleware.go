@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/httpx"
@@ -82,8 +83,16 @@ func NewHTTPMiddleware(cfg Config) (func(http.Handler) http.Handler, error) {
 			cap := httpx.NewResponseCapture()
 			next.ServeHTTP(cap, r)
 			body := cap.BodyBytes()
-			if mutated, ok := tryRemap(r.Context(), rules, body); ok {
-				body = mutated
+			// M-remap-1: only attempt to decode JSON when the
+			// upstream Content-Type advertises JSON. Asset bytes
+			// (image/png, application/octet-stream) that slipped
+			// through the cache/route layer would otherwise be
+			// buffered AND parsed, wasting memory and adding
+			// latency for no benefit (no href to rewrite).
+			if isJSONContentType(cap.HeadersOut().Get("Content-Type")) {
+				if mutated, ok := tryRemap(r.Context(), rules, body); ok {
+					body = mutated
+				}
 			}
 			for k, vs := range cap.HeadersOut() {
 				for _, v := range vs {
@@ -123,6 +132,29 @@ func strFromMap(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+// isJSONContentType reports whether ct names a JSON payload.
+//
+// Recognises the canonical "application/json" plus the +json suffix
+// family (application/geo+json, application/vnd.* +json, …) that STAC
+// uses heavily. Comparison is case-insensitive; charset and other
+// parameters after a ; are tolerated.
+func isJSONContentType(ct string) bool {
+	if ct == "" {
+		return false
+	}
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	ct = strings.TrimSpace(strings.ToLower(ct))
+	if ct == "application/json" {
+		return true
+	}
+	if strings.HasPrefix(ct, "application/") && strings.HasSuffix(ct, "+json") {
+		return true
+	}
+	return false
 }
 
 // tryRemap returns mutated bytes + true on success; returns nil + false
