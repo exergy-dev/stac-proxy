@@ -599,3 +599,30 @@ func TestAuthz_Geofence_NonFeatureCollection200_PassesThrough(t *testing.T) {
 		t.Fatalf("body mutated; got %q want %q", rr.Body.String(), string(body))
 	}
 }
+
+// TestAuthz_UnparseableUserFilter_Returns400 verifies that a syntactically
+// invalid client-supplied CQL2 filter is rejected with a 400 BadRequest
+// (InvalidParameterValue), not an opaque 500. Prior to M-authz-1 the
+// parse error from parseUserCQL2 was discarded, so the broken filter
+// silently dropped out of the merged predicate and the upstream saw
+// only the policy filter — masking the client mistake.
+func TestAuthz_UnparseableUserFilter_Returns400(t *testing.T) {
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed:     true,
+			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
+		}},
+		AllowAnonymous:       true,
+		CQL2InjectionEnabled: true,
+	})
+	sr := &stac.SearchRequest{Filter: "this is not cql2 syntax %%%"}
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
+	rr := runMW(mw, r)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 BadRequest, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "InvalidParameterValue") {
+		t.Fatalf("want InvalidParameterValue code, got body=%s", rr.Body.String())
+	}
+}

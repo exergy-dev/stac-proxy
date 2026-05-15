@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/yourorg/stac-proxy/internal/geo"
@@ -103,6 +104,15 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 					spatialOK := cfg.SpatialFilterCheck == nil || cfg.SpatialFilterCheck(r, info)
 					updated, err := injectCQL2Filter(info.SearchReq, decision.Constraints, spatialOK)
 					if err != nil {
+						// A user-supplied CQL2 filter that fails to parse
+						// is a client error, not an internal one. Surface
+						// it as 400 with a STAC-style error code so callers
+						// can correct their request.
+						if isUserCQL2ParseError(err) {
+							writeError(w, http.StatusBadRequest, "InvalidParameterValue",
+								"invalid filter: "+err.Error())
+							return
+						}
 						writeError(w, http.StatusInternalServerError, "InternalError", "cql2 injection failed")
 						return
 					}
@@ -283,6 +293,23 @@ type constraintError struct{ msg string }
 
 func (e *constraintError) Error() string { return e.msg }
 
+// userCQL2ParseError wraps a parse failure on the *client-supplied*
+// filter so the chi-style middleware can return 400 BadRequest
+// (InvalidParameterValue) instead of an opaque 500. Policy-side parse
+// failures (operator misconfiguration) keep returning 500 — the
+// distinction is made at the call site that wraps the error.
+type userCQL2ParseError struct{ err error }
+
+func (e *userCQL2ParseError) Error() string { return e.err.Error() }
+func (e *userCQL2ParseError) Unwrap() error { return e.err }
+
+// isUserCQL2ParseError reports whether err originated from a malformed
+// client filter (vs. a policy-side or encoding failure).
+func isUserCQL2ParseError(err error) bool {
+	var u *userCQL2ParseError
+	return errors.As(err, &u)
+}
+
 // intersectCollections returns the elements of a that also appear in b,
 // preserving the order of a. Comparison is exact-match (case-sensitive)
 // to match STAC collection-id semantics.
@@ -347,7 +374,13 @@ func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints, spa
 	if err != nil {
 		return updated, err
 	}
-	userExpr, _ := parseUserCQL2(sr.Filter)
+	userExpr, err := parseUserCQL2(sr.Filter)
+	if err != nil {
+		// Wrap so the chi-style middleware can distinguish a
+		// client-side filter syntax error (return 400) from a
+		// server-side encoding/policy failure (return 500).
+		return updated, &userCQL2ParseError{err: err}
+	}
 	merged := andNonNil(userExpr, policyExpr)
 	if merged == nil {
 		return updated, nil
