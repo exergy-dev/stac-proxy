@@ -226,18 +226,69 @@ func deriveClientIP(r *http.Request) string {
 	return host
 }
 
-// extractHeaders extracts headers for authorization context.
+// defaultHeaderAllowlist is the set of HTTP request header names
+// surfaced to authz policy input by extractHeaders. M-authz-5 — the
+// previous denylist (`Authorization`, `Cookie`, `X-Api-Key`) leaked
+// every other sensitive token (Proxy-Authorization, X-Auth-Token,
+// X-Amz-Security-Token, custom bearer-like headers, etc.) into the
+// policy/audit surface. An allowlist covers benign descriptive
+// headers operators actually want for routing/logging decisions and
+// fails closed on anything novel. Header names are matched
+// case-insensitively after canonicalization.
+var defaultHeaderAllowlist = map[string]struct{}{
+	"User-Agent":      {},
+	"Accept":          {},
+	"Accept-Language": {},
+	"Accept-Encoding": {},
+	"Content-Type":    {},
+	"Origin":          {},
+	"Referer":         {},
+}
+
+// authzHeaderAllowlist is the active allowlist; tests / operators may
+// extend it via ConfigureHeaderAllowlist. We snapshot the default at
+// init so the package always has a sane baseline.
+var authzHeaderAllowlist = func() map[string]struct{} {
+	out := make(map[string]struct{}, len(defaultHeaderAllowlist))
+	for k := range defaultHeaderAllowlist {
+		out[k] = struct{}{}
+	}
+	return out
+}()
+
+// ConfigureHeaderAllowlist replaces the active authz header allowlist
+// with the supplied set. Callers (typically the config loader) pass
+// canonical header names; an empty/nil slice resets to the default.
+// Intended to run once at startup.
+func ConfigureHeaderAllowlist(extra []string) {
+	allow := make(map[string]struct{}, len(defaultHeaderAllowlist)+len(extra))
+	for k := range defaultHeaderAllowlist {
+		allow[k] = struct{}{}
+	}
+	for _, h := range extra {
+		if h == "" {
+			continue
+		}
+		allow[http.CanonicalHeaderKey(h)] = struct{}{}
+	}
+	authzHeaderAllowlist = allow
+}
+
+// extractHeaders extracts headers for authorization context using an
+// allowlist. Non-allowlisted headers are dropped — including unknown
+// authentication tokens — so the policy/audit surface never sees a
+// secret the operator hasn't explicitly opted in.
 func extractHeaders(headers map[string][]string) map[string]string {
 	result := make(map[string]string)
 	for key, values := range headers {
-		if len(values) > 0 {
-			// Skip sensitive headers
-			switch key {
-			case "Authorization", "Cookie", "X-Api-Key":
-				continue
-			}
-			result[key] = values[0]
+		if len(values) == 0 {
+			continue
 		}
+		canonical := http.CanonicalHeaderKey(key)
+		if _, ok := authzHeaderAllowlist[canonical]; !ok {
+			continue
+		}
+		result[canonical] = values[0]
 	}
 	return result
 }
