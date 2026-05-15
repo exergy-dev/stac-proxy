@@ -993,28 +993,16 @@ func (h *Handler) primaryOrigin() *Origin {
 }
 
 // parseSearchRequest parses a search request from the STAC request.
+//
+// Defensive fallback only: the server-level searchParserMiddleware
+// populates req.SearchReq before federation runs, so this code path is
+// only exercised by tests / alternate routings that bypass the
+// middleware. We delegate to stac.Parser so the parsing rules
+// (collections split on `,`, bbox/limit strict parse, ids, filter,
+// intersects, fields, sortby, etc.) match the inbound parser exactly
+// instead of re-implementing a subset that drops most parameters.
 func (h *Handler) parseSearchRequest(req *request) (*stac.SearchRequest, error) {
-	searchReq := &stac.SearchRequest{}
-
-	if req.Request.Method == http.MethodPost && req.Request.Body != nil {
-		if err := json.NewDecoder(req.Request.Body).Decode(searchReq); err != nil {
-			return nil, err
-		}
-	} else {
-		// Parse from query parameters
-		q := req.Request.URL.Query()
-		if colls := q.Get("collections"); colls != "" {
-			searchReq.Collections = []string{colls} // Simplified
-		}
-		if bbox := q.Get("bbox"); bbox != "" {
-			// Parse bbox - simplified
-		}
-		if datetime := q.Get("datetime"); datetime != "" {
-			searchReq.Datetime = datetime
-		}
-	}
-
-	return searchReq, nil
+	return stac.NewParser().ParseSearchRequestFromHTTP(req.Request)
 }
 
 // emptySearchResponse returns an empty feature collection.

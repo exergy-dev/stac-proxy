@@ -1073,6 +1073,56 @@ func TestParseSearchRequest(t *testing.T) {
 	}
 }
 
+// TestParseSearchRequest_GET_ParsesAllParams is a regression test for
+// H-federation-2: the hand-rolled GET parser dropped most query
+// parameters (collections wasn't comma-split, bbox/limit/filter/ids
+// were ignored). After delegating to stac.Parser, every documented
+// search parameter round-trips through the federation parser.
+func TestParseSearchRequest_GET_ParsesAllParams(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{}
+	httpReq := httptest.NewRequest(http.MethodGet,
+		"/search?collections=a,b&bbox=0,0,10,10&limit=5&filter=foo", nil)
+	req := &request{
+		Request:     httpReq,
+		Context:     httpReq.Context(),
+		RequestType: middleware.RequestTypeSearch,
+	}
+
+	got, err := h.parseSearchRequest(req)
+	if err != nil {
+		t.Fatalf("parseSearchRequest: %v", err)
+	}
+
+	wantCollections := []string{"a", "b"}
+	if len(got.Collections) != len(wantCollections) {
+		t.Fatalf("Collections = %v, want %v", got.Collections, wantCollections)
+	}
+	for i, c := range wantCollections {
+		if got.Collections[i] != c {
+			t.Errorf("Collections[%d] = %q, want %q", i, got.Collections[i], c)
+		}
+	}
+
+	wantBBox := []float64{0, 0, 10, 10}
+	if len(got.BBox) != len(wantBBox) {
+		t.Fatalf("BBox = %v, want %v", got.BBox, wantBBox)
+	}
+	for i, v := range wantBBox {
+		if got.BBox[i] != v {
+			t.Errorf("BBox[%d] = %v, want %v", i, got.BBox[i], v)
+		}
+	}
+
+	if got.Limit != 5 {
+		t.Errorf("Limit = %d, want 5", got.Limit)
+	}
+	if got.Filter != "foo" {
+		t.Errorf("Filter = %q, want %q", got.Filter, "foo")
+	}
+}
+
 // TestEmptySearchResponse tests empty search response generation
 func TestEmptySearchResponse(t *testing.T) {
 	t.Parallel()
