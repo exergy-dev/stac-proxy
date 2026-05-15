@@ -2118,3 +2118,47 @@ func TestRewriteAssetHref_RespectsRequestCancellation(t *testing.T) {
 		t.Fatal("rewriteAssetHref did not return after request cancellation")
 	}
 }
+
+// TestTransformResponse_SkipsDecodeWhenNoRewriteNeeded is the
+// M-federation-1 regression: a JSON body with no "links" or "assets"
+// keys must not be unmarshaled+remarshaled. We assert the body bytes
+// pass through *unchanged*, which proves the JSON round-trip was
+// avoided (any round-trip would re-key in unspecified order and lose
+// formatting whitespace).
+func TestTransformResponse_SkipsDecodeWhenNoRewriteNeeded(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewOriginClient(&Origin{
+		ID:      "a",
+		BaseURL: "https://upstream.example",
+		Enabled: true,
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+
+	h := &Handler{proxyBaseURL: "https://proxy.example"}
+
+	// A "large" body with no top-level links/assets — pretend it's a
+	// JSON shape we don't recognize. Whitespace formatting is
+	// preserved so we can detect any re-marshal.
+	body := []byte(`{
+    "type":  "SomeOtherShape",
+    "data":  ["a", "b", "c"],
+    "stats": {"count": 3, "bytes": 12345}
+}`)
+	original := append([]byte(nil), body...)
+
+	resp := &response{
+		StatusCode: 200,
+		Headers:    http.Header{"Content-Type": []string{"application/json"}},
+		Body:       body,
+	}
+
+	out := h.transformResponse(context.Background(), client, resp)
+
+	if !bytes.Equal(out.Body, original) {
+		t.Fatalf("body was mutated; expected pass-through.\n got: %s\nwant: %s", out.Body, original)
+	}
+}

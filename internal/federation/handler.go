@@ -1389,6 +1389,12 @@ func isInboundAuthHeader(name string) bool {
 // inbound request context — it is forwarded to the asset signer so that
 // signing observes client cancellation, deadlines, and any
 // request-scoped values (request-id, principal, etc.).
+//
+// Performance (M-federation-1): the decode/re-encode round-trip
+// is skipped entirely when the response body has no top-level "links"
+// AND no "assets" tokens — for those bodies there's nothing to
+// rewrite, and large feature collections see a dramatic speedup by
+// avoiding per-item map allocation.
 func (h *Handler) transformResponse(ctx context.Context, client *OriginClient, resp *response) *response {
 	if h.proxyBaseURL == "" {
 		return resp
@@ -1396,6 +1402,14 @@ func (h *Handler) transformResponse(ctx context.Context, client *OriginClient, r
 
 	contentType := resp.Headers.Get("Content-Type")
 	if !strings.Contains(contentType, "json") {
+		return resp
+	}
+
+	// Cheap byte-scan: if the body contains no "links" or "assets"
+	// JSON keys, there is nothing for rewriteLinks to do — pass the
+	// bytes through unchanged. This avoids a full unmarshal/marshal
+	// round-trip on bodies that don't reference the upstream origin.
+	if !bodyMayContainRewritableKeys(resp.Body) {
 		return resp
 	}
 
@@ -1412,6 +1426,16 @@ func (h *Handler) transformResponse(ctx context.Context, client *OriginClient, r
 	}
 	resp.Body = newBody
 	return resp
+}
+
+// bodyMayContainRewritableKeys reports whether the JSON body contains a
+// top-level key the rewriter cares about. False positives are
+// acceptable (the unmarshal then no-ops); false negatives would skip
+// rewriting and are not. The two byte-strings we look for are the
+// quoted JSON keys for "links" and "assets".
+func bodyMayContainRewritableKeys(body []byte) bool {
+	return bytes.Contains(body, []byte(`"links"`)) ||
+		bytes.Contains(body, []byte(`"assets"`))
 }
 
 // rewriteLinks recursively rewrites href values in the data structure.
