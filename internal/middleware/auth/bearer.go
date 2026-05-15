@@ -105,6 +105,11 @@ func NewBearerProvider(cfg BearerConfig) (*BearerProvider, error) {
 			jwt.SigningMethodES384.Name,
 			jwt.SigningMethodES512.Name,
 		}
+		// p.keyFunc is set to the context-less variant for backward
+		// compatibility with callers that exercise keyFunc directly
+		// (tests, debugging). Authenticate replaces it per-call with
+		// jwksKeyFuncFor(req.Context()) so the JWKS fetch honours the
+		// request deadline.
 		p.keyFunc = p.jwksKeyFunc
 	} else {
 		return nil, fmt.Errorf("either Secret or JWKSURL must be provided")
@@ -155,13 +160,22 @@ func (p *BearerProvider) Authenticate(ctx context.Context, req *http.Request) (*
 		return nil, fmt.Errorf("empty bearer token")
 	}
 
+	// Select the keyFunc. For the JWKS path we build a per-call closure
+	// that captures req.Context(), so a slow JWKS fetch honours the
+	// caller's deadline instead of running against a fresh
+	// context.Background() that outlives the request.
+	keyFunc := p.keyFunc
+	if p.jwks != nil {
+		keyFunc = p.jwksKeyFuncFor(req.Context())
+	}
+
 	// Parse and validate the token. The valid-methods allowlist was
 	// narrowed at construction time to match the configured key
 	// source (HMAC for static secret, RS*/ES* for JWKS) so we never
 	// accept an algorithm that's incompatible with the key material.
 	token, err := jwt.Parse(
 		tokenString,
-		p.keyFunc,
+		keyFunc,
 		jwt.WithValidMethods(p.validMethods),
 		jwt.WithLeeway(p.leeway),
 	)
@@ -225,25 +239,36 @@ func (p *BearerProvider) Authenticate(ctx context.Context, req *http.Request) (*
 	return principal, nil
 }
 
-// jwksKeyFunc resolves a token's signing key against the JWKS
-// endpoint. Returns the matching public key (RSA or EC) for the
-// token's `kid` header. A cache miss triggers a single coalesced
-// refresh of the JWKS document so key rotation works transparently.
+// jwksKeyFuncFor returns a jwt.Keyfunc closure that performs the JWKS
+// lookup using the supplied context. Authenticate uses this so a slow
+// JWKS fetch honours the inbound request's deadline / cancellation
+// instead of detaching to context.Background() (which would outlive
+// the caller).
+func (p *BearerProvider) jwksKeyFuncFor(ctx context.Context) jwt.Keyfunc {
+	return func(token *jwt.Token) (interface{}, error) {
+		if p.jwks == nil {
+			return nil, fmt.Errorf("jwks client not initialised")
+		}
+		kid, _ := token.Header["kid"].(string)
+		if kid == "" {
+			return nil, fmt.Errorf("token missing kid header")
+		}
+		switch token.Method.(type) {
+		case *jwt.SigningMethodRSA, *jwt.SigningMethodRSAPSS, *jwt.SigningMethodECDSA:
+			// ok — JWKS keys are RSA or EC.
+		default:
+			return nil, fmt.Errorf("unexpected signing method for JWKS: %v", token.Header["alg"])
+		}
+		return p.jwks.Key(ctx, kid)
+	}
+}
+
+// jwksKeyFunc is a context-less convenience wrapper retained for
+// tests that need to exercise the keyFunc shape directly (it uses
+// context.Background()). Production traffic flows through
+// jwksKeyFuncFor with the request context.
 func (p *BearerProvider) jwksKeyFunc(token *jwt.Token) (interface{}, error) {
-	if p.jwks == nil {
-		return nil, fmt.Errorf("jwks client not initialised")
-	}
-	kid, _ := token.Header["kid"].(string)
-	if kid == "" {
-		return nil, fmt.Errorf("token missing kid header")
-	}
-	switch token.Method.(type) {
-	case *jwt.SigningMethodRSA, *jwt.SigningMethodRSAPSS, *jwt.SigningMethodECDSA:
-		// ok — JWKS keys are RSA or EC.
-	default:
-		return nil, fmt.Errorf("unexpected signing method for JWKS: %v", token.Header["alg"])
-	}
-	return p.jwks.Key(context.Background(), kid)
+	return p.jwksKeyFuncFor(context.Background())(token)
 }
 
 // defaultClaimsFunc extracts a Principal from standard JWT claims.

@@ -1087,6 +1087,73 @@ func TestBearer_SecretAndJWKSMutuallyExclusive(t *testing.T) {
 	}
 }
 
+// TestBearer_JWKSFetchRespectsRequestContext verifies the per-request
+// context-threading contract (HIGH H-auth-5): when the inbound
+// request's context is cancelled, an in-flight JWKS fetch must abort
+// rather than running to completion against a detached
+// context.Background().
+func TestBearer_JWKSFetchRespectsRequestContext(t *testing.T) {
+	t.Parallel()
+
+	// JWKS endpoint that blocks for 1 second before responding,
+	// honouring the inbound request's context (httptest hands the
+	// server's request through; we observe r.Context().Done()).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(time.Second):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"keys":[]}`))
+		case <-r.Context().Done():
+			// Client gave up; just close.
+			return
+		}
+	}))
+	defer srv.Close()
+
+	provider, err := NewBearerProvider(BearerConfig{
+		JWKSURL:               srv.URL,
+		AllowInsecureHTTPJWKS: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBearerProvider: %v", err)
+	}
+
+	// Mint a syntactically-valid RS256 token (the keyFunc path is
+	// what we're exercising, so signature validity is irrelevant).
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"sub": "ctx-test",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	tok.Header["kid"] = "missing-kid"
+	// Sign with garbage so the keyFunc is reached at least once. We
+	// don't actually need a real signature because the JWKS server
+	// hangs before returning any keys — the parser will block in
+	// keyFunc waiting for the key, and that block must respect ctx.
+	tokenString, err := tok.SigningString()
+	if err != nil {
+		t.Fatalf("SigningString: %v", err)
+	}
+	tokenString = tokenString + ".bm9wZQ" // dummy signature; we won't get this far
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenString)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	start := time.Now()
+	_, err = provider.Authenticate(req.Context(), req)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("Authenticate did not honour request context: took %v (want < 500ms)", elapsed)
+	}
+}
+
 // Helper function to check if a string contains a substring
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
