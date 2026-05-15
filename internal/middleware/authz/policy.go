@@ -49,10 +49,10 @@ const (
 
 // PrincipalMatcher defines which principals a policy applies to.
 type PrincipalMatcher struct {
-	IDs        []string `json:"ids,omitempty"`
-	Roles      []string `json:"roles,omitempty"`
-	Groups     []string `json:"groups,omitempty"`
-	Types      []string `json:"types,omitempty"`
+	IDs        []string               `json:"ids,omitempty"`
+	Roles      []string               `json:"roles,omitempty"`
+	Groups     []string               `json:"groups,omitempty"`
+	Types      []string               `json:"types,omitempty"`
 	Attributes map[string]interface{} `json:"attributes,omitempty"`
 }
 

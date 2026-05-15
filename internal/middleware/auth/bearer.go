@@ -3,6 +3,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,15 +12,21 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// defaultLeeway is the clock-skew tolerance applied to JWT temporal
+// claims (exp/nbf/iat) when BearerConfig.Leeway is zero.
+const defaultLeeway = 30 * time.Second
+
 // BearerProvider authenticates requests using Bearer tokens (JWT).
 type BearerProvider struct {
-	name       string
-	issuer     string
-	audience   string
-	jwksURL    string
-	jwks       *JWKSClient // nil when using static Secret
-	keyFunc    jwt.Keyfunc
-	claimsFunc func(claims jwt.MapClaims) (*Principal, error)
+	name         string
+	issuer       string
+	audience     string
+	jwksURL      string
+	jwks         *JWKSClient // nil when using static Secret
+	keyFunc      jwt.Keyfunc
+	claimsFunc   func(claims jwt.MapClaims) (*Principal, error)
+	leeway       time.Duration
+	validMethods []string
 }
 
 // BearerConfig contains configuration for the Bearer provider.
@@ -32,24 +39,45 @@ type BearerConfig struct {
 	ClaimsFunc func(claims jwt.MapClaims) (*Principal, error)
 	// Optional static secret for HMAC tokens
 	Secret []byte
+	// Leeway is the clock-skew tolerance for exp/nbf/iat validation.
+	// Zero selects the default (30s).
+	Leeway time.Duration
+	// AllowInsecureHTTPJWKS bypasses the https-only check on JWKSURL.
+	// Test-only.
+	AllowInsecureHTTPJWKS bool
 }
 
 // NewBearerProvider creates a new Bearer token authentication provider.
 func NewBearerProvider(cfg BearerConfig) (*BearerProvider, error) {
+	if cfg.Secret != nil && cfg.JWKSURL != "" {
+		return nil, errors.New("bearer: Secret and JWKSURL are mutually exclusive")
+	}
+
 	p := &BearerProvider{
 		name:       cfg.Name,
 		issuer:     cfg.Issuer,
 		audience:   cfg.Audience,
 		jwksURL:    cfg.JWKSURL,
 		claimsFunc: cfg.ClaimsFunc,
+		leeway:     cfg.Leeway,
 	}
 
 	if p.name == "" {
 		p.name = "bearer"
 	}
+	if p.leeway <= 0 {
+		p.leeway = defaultLeeway
+	}
 
 	if cfg.Secret != nil {
-		// Use static HMAC secret
+		// Use static HMAC secret. Restrict the algorithm allowlist to
+		// HMAC variants so an attacker can't smuggle in an asymmetric
+		// algorithm and pass our shared-secret key off as a public key.
+		p.validMethods = []string{
+			jwt.SigningMethodHS256.Name,
+			jwt.SigningMethodHS384.Name,
+			jwt.SigningMethodHS512.Name,
+		}
 		p.keyFunc = func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -59,7 +87,24 @@ func NewBearerProvider(cfg BearerConfig) (*BearerProvider, error) {
 	} else if cfg.JWKSURL != "" {
 		// Use JWKS for key lookup. The JWKSClient caches keys and
 		// refreshes on cache miss (covers the key-rotation case).
-		p.jwks = NewJWKSClient(cfg.JWKSURL, nil, time.Hour)
+		// Restrict to asymmetric algorithms — HMAC must never be
+		// accepted alongside JWKS-published public keys.
+		jwks, err := NewJWKSClientFromConfig(cfg.JWKSURL, JWKSClientConfig{
+			TTL:               time.Hour,
+			AllowInsecureHTTP: cfg.AllowInsecureHTTPJWKS,
+		})
+		if err != nil {
+			return nil, err
+		}
+		p.jwks = jwks
+		p.validMethods = []string{
+			jwt.SigningMethodRS256.Name,
+			jwt.SigningMethodRS384.Name,
+			jwt.SigningMethodRS512.Name,
+			jwt.SigningMethodES256.Name,
+			jwt.SigningMethodES384.Name,
+			jwt.SigningMethodES512.Name,
+		}
 		p.keyFunc = p.jwksKeyFunc
 	} else {
 		return nil, fmt.Errorf("either Secret or JWKSURL must be provided")
@@ -94,18 +139,16 @@ func (p *BearerProvider) Authenticate(ctx context.Context, req *http.Request) (*
 		return nil, fmt.Errorf("empty bearer token")
 	}
 
-	// Parse and validate the token
-	token, err := jwt.Parse(tokenString, p.keyFunc, jwt.WithValidMethods([]string{
-		jwt.SigningMethodRS256.Name,
-		jwt.SigningMethodRS384.Name,
-		jwt.SigningMethodRS512.Name,
-		jwt.SigningMethodHS256.Name,
-		jwt.SigningMethodHS384.Name,
-		jwt.SigningMethodHS512.Name,
-		jwt.SigningMethodES256.Name,
-		jwt.SigningMethodES384.Name,
-		jwt.SigningMethodES512.Name,
-	}))
+	// Parse and validate the token. The valid-methods allowlist was
+	// narrowed at construction time to match the configured key
+	// source (HMAC for static secret, RS*/ES* for JWKS) so we never
+	// accept an algorithm that's incompatible with the key material.
+	token, err := jwt.Parse(
+		tokenString,
+		p.keyFunc,
+		jwt.WithValidMethods(p.validMethods),
+		jwt.WithLeeway(p.leeway),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
@@ -223,12 +266,11 @@ func defaultClaimsFunc(claims jwt.MapClaims) (*Principal, error) {
 		}
 	}
 
-	// Handle expiration
+	// Record expiration on the principal. Validation of exp (with the
+	// configured leeway) happens in jwt.Parse — re-checking here would
+	// short-circuit the leeway tolerance.
 	if exp, ok := claims["exp"].(float64); ok {
 		principal.ExpiresAt = int64(exp)
-		if time.Now().Unix() > principal.ExpiresAt {
-			return nil, fmt.Errorf("token has expired")
-		}
 	}
 
 	return principal, nil

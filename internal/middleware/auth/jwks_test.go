@@ -91,7 +91,10 @@ func TestJWKSClient_CachesAndRotates(t *testing.T) {
 		}{"k1", &priv1.PublicKey})
 	})
 
-	c := NewJWKSClient(srv.URL, nil, time.Hour)
+	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{TTL: time.Hour, AllowInsecureHTTP: true})
+	if err != nil {
+		t.Fatalf("NewJWKSClient: %v", err)
+	}
 	ctx := context.Background()
 
 	// First fetch populates the cache.
@@ -126,10 +129,11 @@ func TestBearerProvider_VerifiesJWTAgainstJWKS(t *testing.T) {
 	})
 
 	p, err := NewBearerProvider(BearerConfig{
-		Name:     "bearer",
-		Issuer:   "https://issuer.example.com",
-		Audience: "stac-proxy",
-		JWKSURL:  srv.URL,
+		Name:                  "bearer",
+		Issuer:                "https://issuer.example.com",
+		Audience:              "stac-proxy",
+		JWKSURL:               srv.URL,
+		AllowInsecureHTTPJWKS: true,
 	})
 	if err != nil {
 		t.Fatalf("NewBearerProvider: %v", err)
@@ -166,9 +170,10 @@ func TestBearerProvider_RejectsExpiredToken(t *testing.T) {
 	})
 
 	p, _ := NewBearerProvider(BearerConfig{
-		Name:    "bearer",
-		Issuer:  "https://issuer.example.com",
-		JWKSURL: srv.URL,
+		Name:                  "bearer",
+		Issuer:                "https://issuer.example.com",
+		JWKSURL:               srv.URL,
+		AllowInsecureHTTPJWKS: true,
 	})
 
 	token := mintRS256(t, priv, "primary", jwt.MapClaims{

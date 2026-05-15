@@ -600,13 +600,13 @@ func TestEmbeddedOPAEnforcer_Authorize(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		policy          string
-		input           *AuthzInput
-		expectedAllowed bool
-		expectedReasons []string
+		name             string
+		policy           string
+		input            *AuthzInput
+		expectedAllowed  bool
+		expectedReasons  []string
 		checkConstraints func(*testing.T, *AuthzConstraints)
-		wantErr         bool
+		wantErr          bool
 	}{
 		{
 			name:   "allow all policy - allow",
@@ -1301,10 +1301,10 @@ func TestEmbeddedOPAEnforcer_Authorize_ComplexInput(t *testing.T) {
 				"bbox":  {"-180,-90,180,90"},
 			},
 			Headers: map[string]string{
-				"Content-Type":  "application/json",
-				"Accept":        "application/geo+json",
-				"User-Agent":    "test-client/1.0",
-				"X-Request-ID":  "req-123",
+				"Content-Type": "application/json",
+				"Accept":       "application/geo+json",
+				"User-Agent":   "test-client/1.0",
+				"X-Request-ID": "req-123",
 			},
 			Body: map[string]interface{}{
 				"type": "Feature",

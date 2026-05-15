@@ -60,6 +60,41 @@ type AuthzDecision struct {
 	Constraints *AuthzConstraints `json:"constraints,omitempty"`
 }
 
+// HasConstraints reports whether the decision carries any
+// row-level or content-filtering constraint that would make the
+// response specific to this principal. The response cache uses this
+// to bypass caching entirely when constraints are present, since the
+// same URL can produce different filtered responses for different
+// principals.
+func (d *AuthzDecision) HasConstraints() bool {
+	if d == nil || d.Constraints == nil {
+		return false
+	}
+	c := d.Constraints
+	if len(c.AllowedCollections) > 0 {
+		return true
+	}
+	if len(c.DeniedCollections) > 0 {
+		return true
+	}
+	if c.Geofence != nil && c.Geofence.AllowedArea != nil {
+		return true
+	}
+	if c.MaxResults > 0 {
+		return true
+	}
+	if len(c.RequiredFilters) > 0 {
+		return true
+	}
+	if c.CQL2Filter != "" {
+		return true
+	}
+	if c.CQL2FilterJSON != nil {
+		return true
+	}
+	return false
+}
+
 // AuthzConstraints provides optional restrictions on allowed requests.
 type AuthzConstraints struct {
 	// Collections the user is allowed to access

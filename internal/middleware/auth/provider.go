@@ -102,4 +102,3 @@ func AnonymousPrincipal() *Principal {
 		Attributes: make(map[string]string),
 	}
 }
-

@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -16,6 +17,13 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// discoveryDoc is the subset of an OIDC discovery document we care
+// about (RFC 8414 / OIDC Discovery 1.0 §4).
+type discoveryDoc struct {
+	Issuer  string `json:"issuer"`
+	JWKSURI string `json:"jwks_uri"`
+}
 
 // OIDCProvider validates tokens using OIDC/JWKS.
 type OIDCProvider struct {
@@ -28,13 +36,25 @@ type OIDCProvider struct {
 
 // OIDCConfig configures the OIDC provider.
 type OIDCConfig struct {
-	Name       string
-	Issuer     string
-	Audience   string
+	Name string
+	// IssuerURL is the canonical OIDC issuer. When set, the
+	// constructor fetches {IssuerURL}/.well-known/openid-configuration
+	// to discover the jwks_uri and validates the document's `issuer`
+	// field matches.
+	IssuerURL string
+	// Issuer is the value compared against the JWT `iss` claim. If
+	// empty and IssuerURL is set, IssuerURL is used.
+	Issuer   string
+	Audience string
+	// JWKSURL, when set, overrides any jwks_uri discovered via
+	// IssuerURL. When IssuerURL is empty, JWKSURL is required.
 	JWKSURL    string
 	HTTPClient *http.Client
 	ClaimsFunc func(claims jwt.MapClaims) (*Principal, error)
 	CacheTTL   time.Duration
+	// AllowInsecureHTTP relaxes the https-only check on IssuerURL and
+	// the resulting JWKS URL. Test-only.
+	AllowInsecureHTTP bool
 }
 
 // JWKSResponse represents the JWKS response.
@@ -55,18 +75,87 @@ type JWK struct {
 }
 
 // NewOIDCProvider creates a new OIDC authentication provider.
+//
+// When IssuerURL is set, the constructor performs OIDC discovery
+// against {IssuerURL}/.well-known/openid-configuration. The discovered
+// `issuer` field MUST match IssuerURL (defense against a hostile
+// metadata document); the `jwks_uri` is used unless an explicit
+// JWKSURL overrides it.
 func NewOIDCProvider(cfg OIDCConfig) (*OIDCProvider, error) {
-	if cfg.JWKSURL == "" {
+	jwksURL := cfg.JWKSURL
+	issuer := cfg.Issuer
+
+	if cfg.IssuerURL != "" {
+		if !cfg.AllowInsecureHTTP {
+			if !strings.HasPrefix(strings.ToLower(cfg.IssuerURL), "https://") {
+				return nil, fmt.Errorf("oidc: IssuerURL must use https scheme, got %q", cfg.IssuerURL)
+			}
+		}
+		doc, err := fetchDiscovery(cfg.IssuerURL, cfg.HTTPClient)
+		if err != nil {
+			return nil, fmt.Errorf("oidc: discovery: %w", err)
+		}
+		if doc.Issuer != cfg.IssuerURL {
+			return nil, fmt.Errorf("oidc: discovery issuer mismatch: doc=%q config=%q", doc.Issuer, cfg.IssuerURL)
+		}
+		if jwksURL == "" {
+			jwksURL = doc.JWKSURI
+		}
+		if issuer == "" {
+			issuer = cfg.IssuerURL
+		}
+	}
+
+	if jwksURL == "" {
 		return nil, errors.New("JWKS URL is required")
+	}
+
+	jwks, err := NewJWKSClientFromConfig(jwksURL, JWKSClientConfig{
+		HTTPClient:        cfg.HTTPClient,
+		TTL:               cfg.CacheTTL,
+		AllowInsecureHTTP: cfg.AllowInsecureHTTP,
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return &OIDCProvider{
 		name:       cfg.Name,
-		issuer:     cfg.Issuer,
+		issuer:     issuer,
 		audience:   cfg.Audience,
-		jwks:       NewJWKSClient(cfg.JWKSURL, cfg.HTTPClient, cfg.CacheTTL),
+		jwks:       jwks,
 		claimsFunc: cfg.ClaimsFunc,
 	}, nil
+}
+
+// fetchDiscovery retrieves and decodes an OIDC discovery document
+// from {issuerURL}/.well-known/openid-configuration. A short request
+// timeout is enforced regardless of the caller's HTTP client config —
+// discovery must not hang at startup.
+func fetchDiscovery(issuerURL string, httpClient *http.Client) (*discoveryDoc, error) {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+	url := strings.TrimRight(issuerURL, "/") + "/.well-known/openid-configuration"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
+	}
+	var doc discoveryDoc
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return nil, fmt.Errorf("decode discovery: %w", err)
+	}
+	return &doc, nil
 }
 
 // Name returns the provider name.

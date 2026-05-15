@@ -5,11 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 )
+
+// JWKSClientConfig is the optional configuration for NewJWKSClientFromConfig.
+// Prefer NewJWKSClient unless you specifically need to override the safe
+// defaults (e.g. tests that need to talk to a plain-HTTP httptest server).
+type JWKSClientConfig struct {
+	HTTPClient *http.Client
+	TTL        time.Duration
+	// AllowInsecureHTTP bypasses the https-only check. Test-only —
+	// production deployments MUST use https://.
+	AllowInsecureHTTP bool
+}
 
 // JWKSClient fetches and caches a JWKS (JSON Web Key Set) document
 // keyed by the JWT `kid` header. Behaviour:
@@ -35,15 +47,29 @@ type JWKSClient struct {
 
 // NewJWKSClient constructs a client for the given JWKS URL. httpClient
 // may be nil (a 10s-timeout default is used); ttl may be zero (1h
-// default).
-func NewJWKSClient(url string, httpClient *http.Client, ttl time.Duration) *JWKSClient {
+// default). The URL MUST use the https scheme — plaintext JWKS fetches
+// are a credential-substitution risk. For tests that need plain HTTP,
+// use NewJWKSClientFromConfig with AllowInsecureHTTP=true.
+func NewJWKSClient(url string, httpClient *http.Client, ttl time.Duration) (*JWKSClient, error) {
+	return NewJWKSClientFromConfig(url, JWKSClientConfig{HTTPClient: httpClient, TTL: ttl})
+}
+
+// NewJWKSClientFromConfig is the all-knobs constructor.
+func NewJWKSClientFromConfig(url string, cfg JWKSClientConfig) (*JWKSClient, error) {
+	if !cfg.AllowInsecureHTTP {
+		if !strings.HasPrefix(strings.ToLower(url), "https://") {
+			return nil, fmt.Errorf("jwks: URL must use https scheme, got %q", url)
+		}
+	}
+	httpClient := cfg.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
+	ttl := cfg.TTL
 	if ttl <= 0 {
 		ttl = time.Hour
 	}
-	return &JWKSClient{url: url, http: httpClient, ttl: ttl, keys: map[string]interface{}{}}
+	return &JWKSClient{url: url, http: httpClient, ttl: ttl, keys: map[string]interface{}{}}, nil
 }
 
 // Key returns the public key for the given `kid`, fetching and

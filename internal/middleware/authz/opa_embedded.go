@@ -25,9 +25,9 @@ type EmbeddedOPAEnforcer struct {
 // EmbeddedOPAConfig configures the embedded OPA enforcer.
 type EmbeddedOPAConfig struct {
 	Name        string
-	PolicyPath  string   // Path to .rego file
-	PolicyPaths []string // Multiple policy files
-	Query       string   // e.g., "data.stac.authz.allow"
+	PolicyPath  string            // Path to .rego file
+	PolicyPaths []string          // Multiple policy files
+	Query       string            // e.g., "data.stac.authz.allow"
 	Modules     map[string]string // Inline policy modules
 }
 

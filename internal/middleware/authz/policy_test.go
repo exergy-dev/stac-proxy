@@ -266,11 +266,11 @@ func TestPolicyEnforcer_Authorize(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		policies    []Policy
-		input       *AuthzInput
-		wantAllowed bool
-		wantReasons []string
+		name            string
+		policies        []Policy
+		input           *AuthzInput
+		wantAllowed     bool
+		wantReasons     []string
 		wantConstraints bool
 	}{
 		{

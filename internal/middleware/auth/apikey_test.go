@@ -303,9 +303,9 @@ func TestNewAPIKeyProvider_WithKeysFile(t *testing.T) {
 			},
 		},
 		{
-			name:      "invalid YAML file",
-			fileData:  `invalid: yaml: content: [[[`,
-			config:    APIKeyConfig{},
+			name:        "invalid YAML file",
+			fileData:    `invalid: yaml: content: [[[`,
+			config:      APIKeyConfig{},
 			wantErr:     true,
 			errContains: "failed to load keys file",
 		},
@@ -446,13 +446,13 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		config    APIKeyConfig
-		setupReq  func() *http.Request
-		wantNil   bool // true if we expect nil principal (not applicable)
-		wantErr   bool
+		name        string
+		config      APIKeyConfig
+		setupReq    func() *http.Request
+		wantNil     bool // true if we expect nil principal (not applicable)
+		wantErr     bool
 		errContains string
-		validate  func(*testing.T, *Principal)
+		validate    func(*testing.T, *Principal)
 	}{
 		{
 			name: "valid API key from header",
@@ -605,7 +605,7 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 				req.Header.Set("X-API-Key", "invalid-key")
 				return req
 			},
-			wantErr:   true,
+			wantErr:     true,
 			errContains: "invalid API key",
 		},
 		{
@@ -653,7 +653,7 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 				req.Header.Set("X-API-Key", "disabled-key")
 				return req
 			},
-			wantErr:   true,
+			wantErr:     true,
 			errContains: "invalid API key",
 		},
 		{
@@ -702,7 +702,7 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 				req.Header.Set("X-API-Key", "casesensitivekey")
 				return req
 			},
-			wantErr:   true,
+			wantErr:     true,
 			errContains: "invalid API key",
 		},
 		{
@@ -721,7 +721,7 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 				req.Header.Set("X-API-Key", "exact-key-plus-extra")
 				return req
 			},
-			wantErr:   true,
+			wantErr:     true,
 			errContains: "invalid API key",
 		},
 		{

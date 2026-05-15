@@ -14,11 +14,11 @@ import (
 
 // APIKeyProvider authenticates requests using API keys.
 type APIKeyProvider struct {
-	name      string
-	header    string
+	name       string
+	header     string
 	queryParam string
-	keys      map[string]*APIKeyEntry
-	mu        sync.RWMutex
+	keys       map[string]*APIKeyEntry
+	mu         sync.RWMutex
 }
 
 // APIKeyEntry represents a single API key and its associated principal.
@@ -35,9 +35,9 @@ type APIKeyEntry struct {
 // APIKeyConfig contains configuration for the API key provider.
 type APIKeyConfig struct {
 	Name       string
-	Header     string // Header to check (e.g., "X-API-Key")
-	QueryParam string // Query parameter to check (e.g., "api_key")
-	KeysFile   string // Path to YAML file containing keys
+	Header     string                  // Header to check (e.g., "X-API-Key")
+	QueryParam string                  // Query parameter to check (e.g., "api_key")
+	KeysFile   string                  // Path to YAML file containing keys
 	Keys       map[string]*APIKeyEntry // Direct key configuration
 }
 

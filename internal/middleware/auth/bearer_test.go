@@ -671,13 +671,21 @@ func TestDefaultClaimsFunc(t *testing.T) {
 			},
 		},
 		{
-			name: "expired token in claims func",
+			// defaultClaimsFunc no longer validates expiration —
+			// jwt.Parse (with leeway) is the canonical validator.
+			// This case now just confirms the extractor still
+			// records the exp value on the principal.
+			name: "expired token recorded but not rejected",
 			claims: jwt.MapClaims{
 				"sub": "user123",
 				"exp": float64(time.Now().Add(-time.Hour).Unix()),
 			},
-			wantErr:   true,
-			errSubstr: "expired",
+			wantErr: false,
+			validate: func(t *testing.T, p *Principal) {
+				if p.ExpiresAt == 0 {
+					t.Error("expected ExpiresAt to be recorded")
+				}
+			},
 		},
 		{
 			name: "roles with non-string values - filtered out",
@@ -988,6 +996,94 @@ func TestBearerProvider_MultipleTokenFormats(t *testing.T) {
 				t.Errorf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+// TestBearer_LeewayHonored verifies that the default 30s leeway lets
+// a token that expired a few seconds ago through, while one that
+// expired well outside the leeway window is still rejected.
+func TestBearer_LeewayHonored(t *testing.T) {
+	t.Parallel()
+
+	provider, err := NewBearerProvider(BearerConfig{Secret: testSecret})
+	if err != nil {
+		t.Fatalf("NewBearerProvider: %v", err)
+	}
+
+	// Expired 5s ago — inside the 30s default leeway, should pass.
+	insideTok := createTestToken(jwt.MapClaims{
+		"sub": "user",
+		"exp": time.Now().Add(-5 * time.Second).Unix(),
+	}, testSecret, false, false)
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+insideTok)
+	if _, err := provider.Authenticate(context.Background(), req); err != nil {
+		t.Fatalf("expected token within leeway to pass, got: %v", err)
+	}
+
+	// Expired 60s ago — outside the 30s default leeway, should fail.
+	outsideTok := createTestToken(jwt.MapClaims{
+		"sub": "user",
+		"exp": time.Now().Add(-60 * time.Second).Unix(),
+	}, testSecret, false, false)
+	req2 := httptest.NewRequest("GET", "/", nil)
+	req2.Header.Set("Authorization", "Bearer "+outsideTok)
+	if _, err := provider.Authenticate(context.Background(), req2); err == nil {
+		t.Fatal("expected token outside leeway to be rejected")
+	}
+}
+
+// TestBearer_HSAlgorithmWithJWKSConfigRejected verifies that when the
+// provider is configured for JWKS (asymmetric), an HS256 token is
+// rejected by the algorithm allowlist before any signature check.
+func TestBearer_HSAlgorithmWithJWKSConfigRejected(t *testing.T) {
+	t.Parallel()
+
+	// Serve a minimal (empty-keys) JWKS document. We don't expect
+	// the parser to ever reach signature verification.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	defer srv.Close()
+
+	provider, err := NewBearerProvider(BearerConfig{
+		JWKSURL:               srv.URL,
+		AllowInsecureHTTPJWKS: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBearerProvider: %v", err)
+	}
+
+	// Mint an HS256 token with a known secret.
+	hsTok := createTestToken(jwt.MapClaims{
+		"sub": "attacker",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}, testSecret, false, false)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+hsTok)
+	_, err = provider.Authenticate(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected HS256 token to be rejected under JWKS config")
+	}
+}
+
+// TestBearer_SecretAndJWKSMutuallyExclusive ensures NewBearerProvider
+// rejects a config that sets both a static Secret and a JWKSURL — the
+// algorithm allowlist depends on knowing which key source applies.
+func TestBearer_SecretAndJWKSMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewBearerProvider(BearerConfig{
+		Secret:  testSecret,
+		JWKSURL: "https://example.com/jwks.json",
+	})
+	if err == nil {
+		t.Fatal("expected error when both Secret and JWKSURL are set")
+	}
+	if !containsString(err.Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' in error, got: %v", err)
 	}
 }
 
