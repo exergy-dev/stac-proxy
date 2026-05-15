@@ -208,23 +208,15 @@ func writeError(w http.ResponseWriter, status int, code, description string) {
 	})
 }
 
-// applyConstraints enforces the authz decision against the parsed
-// SearchRequest before it leaves the proxy:
+// applyConstraints enforces collection-scope and result-limit decisions
+// against the parsed SearchRequest, and defaults Geofence.FilterMode
+// when an operator forgot to set it. RequiredFilters are NOT applied
+// here — they're translated and AND-merged inside injectCQL2Filter
+// alongside policy CQL2 + the user filter, which keeps the shared
+// AuthzConstraints object immutable across requests.
 //
-//   - MaxResults: clamp sr.Limit when smaller.
-//   - AllowedCollections: intersect with sr.Collections; if the request
-//     supplied no collections, scope it to the allowed set.
-//   - DeniedCollections: remove from sr.Collections.
-//   - RequiredFilters: translate to a cql2-text predicate and AND it
-//     into constraints.CQL2Filter so injectCQL2Filter merges it with
-//     any policy CQL2 + the user filter.
-//   - Geofence.FilterMode: default to true when AllowedArea is set
-//     and FilterMode is unspecified, so an operator can't accidentally
-//     ship a geofence policy that does nothing.
-//
-// Returns an error when the surviving collections list is empty after
-// intersection/scrub *and* the request originally specified collections
-// (or AllowedCollections forced one); the caller writes 403.
+// Returns errCollectionsDenied when no requested collection survives
+// AllowedCollections ∩ ¬DeniedCollections; the caller writes 403.
 //
 // Known limitation: when AllowedCollections is empty, DeniedCollections
 // is non-empty, and the request specifies no collections, this function
@@ -243,11 +235,9 @@ func applyConstraints(sr *stac.SearchRequest, constraints *AuthzConstraints) err
 		}
 	}
 
-	requestSpecifiedCollections := len(sr.Collections) > 0
-
 	if len(constraints.AllowedCollections) > 0 {
-		if requestSpecifiedCollections {
-			sr.Collections = intersectCollections(sr.Collections, constraints.AllowedCollections)
+		if len(sr.Collections) > 0 {
+			sr.Collections = intersectStrings(constraints.AllowedCollections, sr.Collections)
 			if len(sr.Collections) == 0 {
 				return errCollectionsDenied
 			}
@@ -257,23 +247,9 @@ func applyConstraints(sr *stac.SearchRequest, constraints *AuthzConstraints) err
 	}
 
 	if len(constraints.DeniedCollections) > 0 && len(sr.Collections) > 0 {
-		sr.Collections = removeCollections(sr.Collections, constraints.DeniedCollections)
+		sr.Collections = removeStrings(sr.Collections, constraints.DeniedCollections)
 		if len(sr.Collections) == 0 {
 			return errCollectionsDenied
-		}
-	}
-
-	if len(constraints.RequiredFilters) > 0 {
-		extra, err := requiredFiltersToCQL2(constraints.RequiredFilters)
-		if err != nil {
-			return err
-		}
-		if extra != "" {
-			if constraints.CQL2Filter == "" {
-				constraints.CQL2Filter = extra
-			} else {
-				constraints.CQL2Filter = "(" + constraints.CQL2Filter + ") AND (" + extra + ")"
-			}
 		}
 	}
 
@@ -287,11 +263,7 @@ func applyConstraints(sr *stac.SearchRequest, constraints *AuthzConstraints) err
 	return nil
 }
 
-var errCollectionsDenied = &constraintError{msg: "no collections in request are permitted by policy"}
-
-type constraintError struct{ msg string }
-
-func (e *constraintError) Error() string { return e.msg }
+var errCollectionsDenied = errors.New("no collections in request are permitted by policy")
 
 // userCQL2ParseError wraps a parse failure on the *client-supplied*
 // filter so the chi-style middleware can return 400 BadRequest
@@ -308,48 +280,6 @@ func (e *userCQL2ParseError) Unwrap() error { return e.err }
 func isUserCQL2ParseError(err error) bool {
 	var u *userCQL2ParseError
 	return errors.As(err, &u)
-}
-
-// intersectCollections returns the elements of a that also appear in b,
-// preserving the order of a. Comparison is exact-match (case-sensitive)
-// to match STAC collection-id semantics.
-func intersectCollections(a, b []string) []string {
-	if len(a) == 0 || len(b) == 0 {
-		return nil
-	}
-	allowed := make(map[string]struct{}, len(b))
-	for _, c := range b {
-		allowed[c] = struct{}{}
-	}
-	out := make([]string, 0, len(a))
-	for _, c := range a {
-		if _, ok := allowed[c]; ok {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
-// removeCollections returns the elements of a that do not appear in b,
-// preserving the order of a.
-func removeCollections(a, b []string) []string {
-	if len(a) == 0 {
-		return nil
-	}
-	if len(b) == 0 {
-		return append([]string(nil), a...)
-	}
-	denied := make(map[string]struct{}, len(b))
-	for _, c := range b {
-		denied[c] = struct{}{}
-	}
-	out := make([]string, 0, len(a))
-	for _, c := range a {
-		if _, ok := denied[c]; !ok {
-			out = append(out, c)
-		}
-	}
-	return out
 }
 
 // injectCQL2Filter merges policy CQL2 (including any geofence
@@ -374,6 +304,10 @@ func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints, spa
 	if err != nil {
 		return updated, err
 	}
+	requiredExpr, err := requiredFiltersToCQL2(updated.RequiredFilters)
+	if err != nil {
+		return updated, err
+	}
 	userExpr, err := parseUserCQL2(sr.Filter)
 	if err != nil {
 		// Wrap so the chi-style middleware can distinguish a
@@ -381,7 +315,7 @@ func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints, spa
 		// server-side encoding/policy failure (return 500).
 		return updated, &userCQL2ParseError{err: err}
 	}
-	merged := andNonNil(userExpr, policyExpr)
+	merged := andNonNil(userExpr, policyExpr, requiredExpr)
 	if merged == nil {
 		return updated, nil
 	}
@@ -428,10 +362,15 @@ func validateSingleRecord(body []byte, c *AuthzConstraints) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	expr, err := parsePolicyCQL2(updated)
+	policyExpr, err := parsePolicyCQL2(updated)
 	if err != nil {
 		return true, err
 	}
+	requiredExpr, err := requiredFiltersToCQL2(updated.RequiredFilters)
+	if err != nil {
+		return true, err
+	}
+	expr := andNonNil(policyExpr, requiredExpr)
 	if expr == nil {
 		return true, nil
 	}

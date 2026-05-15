@@ -218,6 +218,21 @@ func intersectStrings(a, b []string) []string {
 	return result
 }
 
+// removeStrings returns the elements of a that are not in b.
+func removeStrings(a, b []string) []string {
+	deny := make(map[string]bool, len(b))
+	for _, s := range b {
+		deny[s] = true
+	}
+	out := make([]string, 0, len(a))
+	for _, s := range a {
+		if !deny[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // unionStrings returns the union of two string slices.
 func unionStrings(a, b []string) []string {
 	set := make(map[string]bool)
