@@ -296,9 +296,16 @@ func TestServeAssetHTTP_UnknownOriginIs404(t *testing.T) {
 func TestServeAssetHTTP_ClientCancelAbortsUpstream(t *testing.T) {
 	t.Parallel()
 
-	// Upstream that hangs forever on Read.
+	// Upstream that hangs forever on Read. Signals via `started` when
+	// it has written headers and entered the hang, so the test can
+	// cancel deterministically without a sleep.
+	started := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		close(started)
 		<-r.Context().Done()
 	}))
 	defer upstream.Close()
@@ -324,8 +331,12 @@ func TestServeAssetHTTP_ClientCancelAbortsUpstream(t *testing.T) {
 		close(done)
 	}()
 
-	// Give the upstream a moment to enter the hang, then cancel.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for upstream to enter the hang, then cancel.
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream handler did not start")
+	}
 	cancel()
 
 	select {

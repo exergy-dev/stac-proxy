@@ -170,8 +170,12 @@ func (m *ResultMerger) mergeItems(existing, incoming *stac.Item, incomingOrigin 
 		}
 	}
 
-	// Merge links
-	merged.Links = append(merged.Links, incoming.Links...)
+	// Merge links. Defensively copy existing.Links so the append cannot
+	// mutate the source slice's backing array if it has spare capacity.
+	combined := make([]*stac.Link, 0, len(existing.Links)+len(incoming.Links))
+	combined = append(combined, existing.Links...)
+	combined = append(combined, incoming.Links...)
+	merged.Links = combined
 
 	return &merged
 }

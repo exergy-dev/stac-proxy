@@ -244,14 +244,14 @@ func writeFederationError(w http.ResponseWriter, _ *http.Request, err error) {
 		Description string `json:"description"`
 	}
 	w.Header().Set("Content-Type", "application/json")
-	switch e := err.(type) {
-	case *middleware.InternalError:
+	var ie *middleware.InternalError
+	if errors.As(err, &ie) {
 		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(body{Code: "BadGateway", Description: e.Message})
-	default:
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(body{Code: "InternalError", Description: "internal error"})
+		_ = json.NewEncoder(w).Encode(body{Code: "BadGateway", Description: ie.Message})
+		return
 	}
+	w.WriteHeader(http.StatusInternalServerError)
+	_ = json.NewEncoder(w).Encode(body{Code: "InternalError", Description: "internal error"})
 }
 
 // handleSearch handles federated search requests. When only one origin

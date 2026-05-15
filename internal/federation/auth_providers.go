@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -142,7 +143,7 @@ func (p *OAuth2AuthProvider) fetchToken(ctx context.Context) (string, error) {
 	data.Set("client_secret", p.config.ClientSecret)
 
 	if len(p.config.Scopes) > 0 {
-		data.Set("scope", joinStrings(p.config.Scopes, " "))
+		data.Set("scope", strings.Join(p.config.Scopes, " "))
 	}
 	if p.config.Audience != "" {
 		data.Set("audience", p.config.Audience)
@@ -278,15 +279,3 @@ func (p *AWSSigV4Provider) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// Helper functions
-
-func joinStrings(strs []string, sep string) string {
-	if len(strs) == 0 {
-		return ""
-	}
-	result := strs[0]
-	for _, s := range strs[1:] {
-		result += sep + s
-	}
-	return result
-}
