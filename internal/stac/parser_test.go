@@ -424,7 +424,7 @@ func TestValidateItem(t *testing.T) {
 	}{
 		{"valid", &Item{ID: "x", Geometry: json.RawMessage(`{"type":"Point","coordinates":[0,0]}`)}, ""},
 		{"missing ID", &Item{Geometry: json.RawMessage(`{"type":"Point"}`)}, "item missing ID"},
-		{"missing geometry", &Item{ID: "x"}, "item missing geometry"},
+		{"missing geometry and bbox", &Item{ID: "x"}, "item missing geometry"},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -442,6 +442,30 @@ func TestValidateItem(t *testing.T) {
 				t.Errorf("err %q does not contain %q", gotMsg, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateItem_NullGeometryWithBboxOK covers the RFC 7946 §3.1 +
+// STAC carve-out: an item with `geometry: null` is valid as long as
+// `bbox` is set to retain a coarse spatial extent.
+func TestValidateItem_NullGeometryWithBboxOK(t *testing.T) {
+	t.Parallel()
+	item := &Item{
+		ID:   "x",
+		Bbox: []float64{1, 2, 3, 4},
+	}
+	if err := ValidateItem(item); err != nil {
+		t.Fatalf("ValidateItem with null geometry + bbox: %v", err)
+	}
+}
+
+// TestValidateItem_NullGeometryWithoutBboxFails locks in the rule's
+// other half: missing geometry AND missing bbox is still a hard error.
+func TestValidateItem_NullGeometryWithoutBboxFails(t *testing.T) {
+	t.Parallel()
+	item := &Item{ID: "x"}
+	if err := ValidateItem(item); err == nil {
+		t.Fatal("expected error for item missing both geometry and bbox")
 	}
 }
 

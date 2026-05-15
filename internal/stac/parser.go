@@ -311,12 +311,21 @@ func ExtractNextToken(links []*Link) string {
 }
 
 // ValidateItem validates a STAC item.
+//
+// Per RFC 7946 §3.1 a Feature MAY have a null `geometry`, and the STAC
+// Item spec follows that — but only when a `bbox` is also present so
+// downstream consumers retain a coarse spatial extent. We accept null
+// geometry only when bbox is non-empty; rejecting items that omit both.
 func ValidateItem(item *Item) error {
 	if item.ID == "" {
 		return errors.New("item missing ID")
 	}
 	if len(item.Geometry) == 0 {
-		return errors.New("item missing geometry")
+		// "null" is JSON for an explicit null. Treat it the same as
+		// truly absent: allowed iff bbox carries the spatial extent.
+		if len(item.Bbox) == 0 {
+			return errors.New("item missing geometry (and no bbox to substitute)")
+		}
 	}
 	return nil
 }
