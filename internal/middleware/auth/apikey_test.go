@@ -3,11 +3,14 @@ package auth
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestNewAPIKeyProvider(t *testing.T) {
@@ -515,7 +518,8 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 		{
 			name: "valid API key from query parameter",
 			config: APIKeyConfig{
-				QueryParam: "api_key",
+				QueryParam:      "api_key",
+				AllowQueryParam: true,
 				Keys: map[string]*APIKeyEntry{
 					"query-key-456": {
 						Name:    "query-service",
@@ -541,8 +545,9 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 		{
 			name: "header takes precedence over query parameter",
 			config: APIKeyConfig{
-				Header:     "X-API-Key",
-				QueryParam: "api_key",
+				Header:          "X-API-Key",
+				QueryParam:      "api_key",
+				AllowQueryParam: true,
 				Keys: map[string]*APIKeyEntry{
 					"header-key": {
 						Name:    "header-service",
@@ -569,8 +574,9 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 		{
 			name: "fallback to query parameter when header is empty",
 			config: APIKeyConfig{
-				Header:     "X-API-Key",
-				QueryParam: "api_key",
+				Header:          "X-API-Key",
+				QueryParam:      "api_key",
+				AllowQueryParam: true,
 				Keys: map[string]*APIKeyEntry{
 					"query-key": {
 						Name:    "query-service",
@@ -820,7 +826,8 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 		{
 			name: "custom query parameter name",
 			config: APIKeyConfig{
-				QueryParam: "token",
+				QueryParam:      "token",
+				AllowQueryParam: true,
 				Keys: map[string]*APIKeyEntry{
 					"token-key": {
 						Name:    "token-service",
@@ -1245,10 +1252,11 @@ func TestAPIKeyProvider_Integration(t *testing.T) {
 	}
 
 	provider, err := NewAPIKeyProvider(APIKeyConfig{
-		Name:       "production-api-keys",
-		Header:     "X-API-Key",
-		QueryParam: "api_key",
-		KeysFile:   keysFile,
+		Name:            "production-api-keys",
+		Header:          "X-API-Key",
+		QueryParam:      "api_key",
+		AllowQueryParam: true,
+		KeysFile:        keysFile,
 		Keys: map[string]*APIKeyEntry{
 			"direct-dev-key": {
 				Name:        "development-service",
@@ -1449,6 +1457,166 @@ func TestAPIKey_RejectsWrongKey(t *testing.T) {
 	if princ != nil {
 		t.Fatalf("want nil principal, got %+v", princ)
 	}
+}
+
+// TestAPIKey_QueryParam_DisabledByDefault verifies that query-param
+// authentication is gated behind the explicit AllowQueryParam opt-in
+// (M-auth-5). With the default config a request that places the key in
+// the URL gets no principal and no auth-chain hard-fail.
+func TestAPIKey_QueryParam_DisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	provider, err := NewAPIKeyProvider(APIKeyConfig{
+		QueryParam: "api_key",
+		Keys: map[string]*APIKeyEntry{
+			"q-key": {Name: "svc", Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAPIKeyProvider: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/x?api_key=q-key", nil)
+	princ, err := provider.Authenticate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected nil error when query-param auth is disabled, got %v", err)
+	}
+	if princ != nil {
+		t.Fatalf("expected nil principal when query-param auth is disabled, got %+v", princ)
+	}
+
+	// The chain must NOT treat query-only credentials as a presented
+	// credential when query-param is disabled — otherwise an
+	// invalid-key fall-through becomes a hard 401 against an opt-in
+	// the operator declined.
+	if provider.ClaimsCredential(req) {
+		t.Fatal("ClaimsCredential should ignore the query parameter when disabled")
+	}
+}
+
+// TestAPIKey_QueryParam_WarnsWhenEnabled captures slog output and
+// asserts the construction-time WARN fires when AllowQueryParam=true.
+func TestAPIKey_QueryParam_WarnsWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	var buf apikeyLogBuffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	if _, err := NewAPIKeyProvider(APIKeyConfig{
+		Name:            "test",
+		QueryParam:      "api_key",
+		AllowQueryParam: true,
+		Logger:          logger,
+		Keys: map[string]*APIKeyEntry{
+			"q-key": {Name: "svc", Enabled: true},
+		},
+	}); err != nil {
+		t.Fatalf("NewAPIKeyProvider: %v", err)
+	}
+
+	out := buf.String()
+	if !apiKeyContains(out, `"level":"WARN"`) {
+		t.Errorf("expected WARN-level log, got: %s", out)
+	}
+	if !apiKeyContains(out, `"query_param":"api_key"`) {
+		t.Errorf("expected query_param attribute in warning, got: %s", out)
+	}
+	if !apiKeyContains(out, "query-param authentication enabled") {
+		t.Errorf("expected security-implication wording in warning, got: %s", out)
+	}
+}
+
+// TestAPIKey_QueryParam_AuthEmitsRateLimitedWarn covers the per-auth
+// rate-limited warning path: every successful query-param login bumps
+// the warning, but at most once per minute.
+func TestAPIKey_QueryParam_AuthEmitsRateLimitedWarn(t *testing.T) {
+	t.Parallel()
+
+	var buf apikeyLogBuffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	provider, err := NewAPIKeyProvider(APIKeyConfig{
+		Name:            "test",
+		QueryParam:      "api_key",
+		AllowQueryParam: true,
+		Logger:          logger,
+		Keys: map[string]*APIKeyEntry{
+			"q-key": {Name: "svc", Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAPIKeyProvider: %v", err)
+	}
+	// Pin the clock so the rate-limit window is deterministic.
+	now := time.Now()
+	provider.now = func() time.Time { return now }
+
+	// Drop the construction warning from the buffer for a focused
+	// assertion below.
+	buf.Reset()
+
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest("GET", "/x?api_key=q-key", nil)
+		if _, err := provider.Authenticate(context.Background(), req); err != nil {
+			t.Fatalf("authenticate %d: %v", i, err)
+		}
+	}
+	out1 := buf.String()
+	warnCount := apiKeyCount(out1, "authenticated via query parameter")
+	if warnCount != 1 {
+		t.Fatalf("expected exactly 1 query-auth warning across 5 requests in the same minute, got %d\n%s", warnCount, out1)
+	}
+
+	// Advance past the window — the next request should warn again.
+	now = now.Add(2 * time.Minute)
+	req := httptest.NewRequest("GET", "/x?api_key=q-key", nil)
+	if _, err := provider.Authenticate(context.Background(), req); err != nil {
+		t.Fatalf("authenticate after window: %v", err)
+	}
+	if got := apiKeyCount(buf.String(), "authenticated via query parameter"); got != 2 {
+		t.Fatalf("expected 2 warnings across two windows, got %d", got)
+	}
+}
+
+// apikeyLogBuffer is a tiny io.Writer for collecting slog JSON output.
+type apikeyLogBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (b *apikeyLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	b.buf = append(b.buf, p...)
+	b.mu.Unlock()
+	return len(p), nil
+}
+
+func (b *apikeyLogBuffer) Reset() {
+	b.mu.Lock()
+	b.buf = nil
+	b.mu.Unlock()
+}
+
+func (b *apikeyLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+func apiKeyCount(s, sub string) int {
+	if sub == "" {
+		return 0
+	}
+	n := 0
+	for i := 0; i+len(sub) <= len(s); {
+		if s[i:i+len(sub)] == sub {
+			n++
+			i += len(sub)
+			continue
+		}
+		i++
+	}
+	return n
 }
 
 // apiKeyContains checks if s contains substr

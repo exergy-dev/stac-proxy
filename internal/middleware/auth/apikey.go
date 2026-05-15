@@ -9,9 +9,11 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,13 +28,20 @@ import (
 //     constant-time compare against the digest is a real check (not a
 //     post-hoc no-op as the previous direct-string keying made it).
 type APIKeyProvider struct {
-	name       string
-	header     string
-	queryParam string
-	hmacSecret []byte
+	name            string
+	header          string
+	queryParam      string
+	allowQueryParam bool
+	hmacSecret      []byte
 	// keys is keyed by hex(HMAC-SHA256(hmacSecret, plaintextKey)).
-	keys map[string]*APIKeyEntry
-	mu   sync.RWMutex
+	keys   map[string]*APIKeyEntry
+	mu     sync.RWMutex
+	logger *slog.Logger
+	// queryWarnMu protects queryWarnLast; the rate-limited query-param
+	// warning fires at most once per minute regardless of traffic.
+	queryWarnMu   sync.Mutex
+	queryWarnLast time.Time
+	now           func() time.Time
 }
 
 // APIKeyEntry represents a single API key and its associated principal.
@@ -60,6 +69,16 @@ type APIKeyConfig struct {
 	// Operators SHOULD provide a stable secret in production so the
 	// key store retains its meaning across restarts and across nodes.
 	HMACSecret []byte
+	// AllowQueryParam opts in to accepting the API key from the URL
+	// query string. Default false. Query-param keys leak via referer
+	// headers, proxy access logs and browser history; production
+	// deployments should leave this disabled and rely on the header.
+	// When true a one-time WARN is emitted at construction and a
+	// rate-limited (≤1/min) WARN on every successful query-param
+	// authentication.
+	AllowQueryParam bool
+	// Logger overrides the default slog destination. nil → slog.Default().
+	Logger *slog.Logger
 }
 
 // NewAPIKeyProvider creates a new API key authentication provider.
@@ -77,12 +96,20 @@ func NewAPIKeyProvider(cfg APIKeyConfig) (*APIKeyProvider, error) {
 		}
 	}
 
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	p := &APIKeyProvider{
-		name:       cfg.Name,
-		header:     cfg.Header,
-		queryParam: cfg.QueryParam,
-		hmacSecret: secret,
-		keys:       make(map[string]*APIKeyEntry),
+		name:            cfg.Name,
+		header:          cfg.Header,
+		queryParam:      cfg.QueryParam,
+		allowQueryParam: cfg.AllowQueryParam,
+		hmacSecret:      secret,
+		keys:            make(map[string]*APIKeyEntry),
+		logger:          logger,
+		now:             time.Now,
 	}
 
 	if p.name == "" {
@@ -91,6 +118,16 @@ func NewAPIKeyProvider(cfg APIKeyConfig) (*APIKeyProvider, error) {
 
 	if p.header == "" && p.queryParam == "" {
 		p.header = "X-API-Key"
+	}
+
+	// Emit a one-time WARN at construction so operators see the risk
+	// of accepting query-param keys in startup logs even if no client
+	// ever exercises that path.
+	if p.queryParam != "" && p.allowQueryParam {
+		p.logger.Warn("apikey: query-param authentication enabled — keys will leak via referer headers, proxy logs, and browser history",
+			"provider", p.name,
+			"query_param", p.queryParam,
+		)
 	}
 
 	// Load keys from file if specified
@@ -129,15 +166,15 @@ func (p *APIKeyProvider) Name() string {
 }
 
 // ClaimsCredential reports whether the request bears an API key in the
-// configured header or query parameter. When this returns true, the
-// auth chain treats any Authenticate error as a hard 401 instead of
-// falling through (an invalid API key must not be downgraded to
-// anonymous).
+// configured header or (when AllowQueryParam is true) query parameter.
+// When this returns true, the auth chain treats any Authenticate error
+// as a hard 401 instead of falling through (an invalid API key must
+// not be downgraded to anonymous).
 func (p *APIKeyProvider) ClaimsCredential(req *http.Request) bool {
 	if p.header != "" && req.Header.Get(p.header) != "" {
 		return true
 	}
-	if p.queryParam != "" && req.URL.Query().Get(p.queryParam) != "" {
+	if p.allowQueryParam && p.queryParam != "" && req.URL.Query().Get(p.queryParam) != "" {
 		return true
 	}
 	return false
@@ -145,15 +182,22 @@ func (p *APIKeyProvider) ClaimsCredential(req *http.Request) bool {
 
 // Authenticate validates an API key and returns a Principal.
 func (p *APIKeyProvider) Authenticate(ctx context.Context, req *http.Request) (*Principal, error) {
-	// Extract API key from header or query parameter
+	// Extract API key from header or, when explicitly allowed,
+	// query parameter. The query-param fallback is opt-in because
+	// keys placed in URLs leak via referer headers, intermediary
+	// access logs, and browser history.
 	apiKey := ""
+	fromQuery := false
 
 	if p.header != "" {
 		apiKey = req.Header.Get(p.header)
 	}
 
-	if apiKey == "" && p.queryParam != "" {
+	if apiKey == "" && p.allowQueryParam && p.queryParam != "" {
 		apiKey = req.URL.Query().Get(p.queryParam)
+		if apiKey != "" {
+			fromQuery = true
+		}
 	}
 
 	if apiKey == "" {
@@ -183,6 +227,10 @@ func (p *APIKeyProvider) Authenticate(ctx context.Context, req *http.Request) (*
 		return nil, fmt.Errorf("invalid API key")
 	}
 
+	if fromQuery {
+		p.maybeWarnQueryParamAuth(entry.Name)
+	}
+
 	return &Principal{
 		ID:          fmt.Sprintf("apikey:%s", entry.Name),
 		Type:        "service",
@@ -195,6 +243,28 @@ func (p *APIKeyProvider) Authenticate(ctx context.Context, req *http.Request) (*
 			"key_name":    entry.Name,
 		},
 	}, nil
+}
+
+// maybeWarnQueryParamAuth emits at most one WARN per minute noting the
+// security implication of authenticating via query string. The
+// rate-limit avoids spamming the log on every request while keeping
+// the warning visible across long-lived sessions.
+func (p *APIKeyProvider) maybeWarnQueryParamAuth(keyName string) {
+	const window = time.Minute
+	p.queryWarnMu.Lock()
+	now := p.now()
+	if !p.queryWarnLast.IsZero() && now.Sub(p.queryWarnLast) < window {
+		p.queryWarnMu.Unlock()
+		return
+	}
+	p.queryWarnLast = now
+	p.queryWarnMu.Unlock()
+
+	p.logger.Warn("apikey: authenticated via query parameter — keys leak via referer headers, proxy logs, and browser history",
+		"provider", p.name,
+		"query_param", p.queryParam,
+		"key_name", keyName,
+	)
 }
 
 // loadKeysFromFile loads API keys from a YAML file.
