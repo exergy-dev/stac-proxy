@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -393,8 +394,15 @@ func Load(path string) (*Config, error) {
 	}
 	data = []byte(expanded)
 
+	// KnownFields(true) makes the decoder error on YAML keys that don't
+	// map to a struct field. Without it, typos like `lggging.level` or
+	// keys that document features the proxy does not implement
+	// (search_strategy, check_upstreams, …) silently no-op, leaving the
+	// operator with a config that "loads fine" but does the wrong thing.
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 

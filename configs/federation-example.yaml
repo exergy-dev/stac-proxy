@@ -16,7 +16,6 @@ server:
 logging:
   level: "info"
   format: "json"
-  output: "stdout"
 
 metrics:
   enabled: true
@@ -25,15 +24,12 @@ metrics:
 
 health:
   path: "/health"
-  check_upstreams: true
-  check_interval: 30s
 
 # Operating mode
 mode: federation
 
 # Federation configuration
 federation:
-  search_strategy: parallel
   max_concurrent: 10
   aggregate_timeout: 60s
   conflict_strategy: priority  # first_wins, priority, merge, namespace

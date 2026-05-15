@@ -61,7 +61,6 @@ server:
 logging:
   level: debug
 federation:
-  search_strategy: parallel
   origins:
     - id: origin1
       base_url: https://origin1.example.com
@@ -160,8 +159,7 @@ server:
 mode: federation
 server:
   port: 8080
-federation:
-  search_strategy: parallel
+federation: {}
 `
 		tmpFile := createTempFile(t, yaml)
 		defer os.Remove(tmpFile)
@@ -927,17 +925,13 @@ server:
 logging:
   level: info
   format: json
-  output: stdout
 metrics:
   enabled: true
   path: /metrics
   port: 9090
 health:
   path: /health
-  check_upstreams: true
-  check_interval: 30s
 federation:
-  search_strategy: parallel
   max_concurrent: 20
   aggregate_timeout: 90s
   conflict_strategy: priority
@@ -2273,6 +2267,32 @@ upstream:
 	}
 	if cfg.Upstream.URL != "https://from-env.example.com" {
 		t.Errorf("expected env-set value to win, got %q", cfg.Upstream.URL)
+	}
+}
+
+// TestConfig_RejectsUnknownKeys verifies that the YAML decoder runs
+// with KnownFields(true) so typos and references to undocumented
+// features fail Load instead of silently no-opping. Drift between
+// documented YAML and the config struct (e.g. `search_strategy`,
+// `check_upstreams`) was previously accepted without error.
+func TestConfig_RejectsUnknownKeys(t *testing.T) {
+	t.Parallel()
+
+	yaml := `
+mode: single
+upstream:
+  url: https://example.com/stac
+not_a_real_key: foo
+`
+	tmp := createTempFile(t, yaml)
+	defer os.Remove(tmp)
+
+	_, err := Load(tmp)
+	if err == nil {
+		t.Fatal("expected error for unknown YAML key, got nil")
+	}
+	if !strings.Contains(err.Error(), "not_a_real_key") {
+		t.Errorf("error should mention the unknown key %q; got: %v", "not_a_real_key", err)
 	}
 }
 

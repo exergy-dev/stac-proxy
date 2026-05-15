@@ -12,7 +12,6 @@ server:
 logging:
   level: "info"
   format: "json"
-  output: "stdout"
 
 metrics:
   enabled: true
@@ -21,8 +20,6 @@ metrics:
 
 health:
   path: "/health"
-  check_upstreams: true
-  check_interval: 30s
 
 # Operating mode: "single" or "federation"
 mode: single
