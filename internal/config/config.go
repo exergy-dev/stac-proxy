@@ -243,7 +243,7 @@ type OriginAuthConfig struct {
 	OAuth2 *OAuth2Config `yaml:"oauth2"`
 
 	// AWS Signature V4
-	AWSSigV4 *AWSSigV4Config `yaml:"aws_sig_v4"`
+	AWSSigV4 *AWSSigV4Config `yaml:"aws_sigv4"`
 
 	// Custom header injection
 	CustomHeaders map[string]string `yaml:"custom_headers"`

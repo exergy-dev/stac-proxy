@@ -164,7 +164,7 @@ func BuildAuthProvider(cfg AuthConfig) (AuthProvider, error) {
 			providers = append(providers, oauth2Provider)
 		}
 
-	case "aws_sig_v4":
+	case "aws_sigv4":
 		if cfg.AWSSigV4 != nil {
 			sigv4Provider, err := NewAWSSigV4Provider(cfg.AWSSigV4)
 			if err != nil {

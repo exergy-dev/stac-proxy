@@ -701,7 +701,7 @@ func TestBuildAuthProviderOAuth2(t *testing.T) {
 func TestBuildAuthProviderAWSSigV4(t *testing.T) {
 	t.Run("valid sigv4 config", func(t *testing.T) {
 		config := AuthConfig{
-			Type: "aws_sig_v4",
+			Type: "aws_sigv4",
 			AWSSigV4: &AWSSigV4Config{
 				Region:    "us-east-1",
 				Service:   "execute-api",
@@ -722,7 +722,7 @@ func TestBuildAuthProviderAWSSigV4(t *testing.T) {
 
 	t.Run("sigv4 missing region", func(t *testing.T) {
 		config := AuthConfig{
-			Type: "aws_sig_v4",
+			Type: "aws_sigv4",
 			AWSSigV4: &AWSSigV4Config{
 				Service:   "execute-api",
 				AccessKey: "AKIAIOSFODNN7EXAMPLE",
@@ -738,7 +738,7 @@ func TestBuildAuthProviderAWSSigV4(t *testing.T) {
 
 	t.Run("sigv4 nil config defaults to no-op", func(t *testing.T) {
 		config := AuthConfig{
-			Type:     "aws_sig_v4",
+			Type:     "aws_sigv4",
 			AWSSigV4: nil,
 		}
 

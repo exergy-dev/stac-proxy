@@ -119,7 +119,7 @@ type RetryPolicy struct {
 
 // AuthConfig defines authentication for an upstream origin.
 type AuthConfig struct {
-	Type string // none, basic, bearer, api_key, oauth2, aws_sig_v4, custom
+	Type string // none, basic, bearer, api_key, oauth2, aws_sigv4, custom
 
 	// Basic Auth
 	Username string
