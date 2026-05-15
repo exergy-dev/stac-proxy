@@ -119,6 +119,72 @@ func TestLimiter_DefaultMaxEntries(t *testing.T) {
 	}
 }
 
+// TestLimiter_RemainingIsPreReservation (M-ratelimit-2): Info.Remaining
+// reports the capacity the caller had *before* this Allow consumed a
+// token. With a fresh bucket of burst=10, the first call sees
+// Remaining=10 (not 9).
+func TestLimiter_RemainingIsPreReservation(t *testing.T) {
+	lim := NewTokenBucketLimiter(10)
+	defer lim.Stop()
+
+	q := Quota{Requests: 100, Window: time.Minute, Burst: 10}
+	allowed, info, err := lim.Allow(context.Background(), "k", q)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("first Allow should succeed")
+	}
+	if info.Remaining != 10 {
+		t.Errorf("first Allow Remaining: want 10 (pre-reservation), got %d", info.Remaining)
+	}
+	// Second call: bucket had 9 tokens before this consumed one.
+	_, info2, err := lim.Allow(context.Background(), "k", q)
+	if err != nil {
+		t.Fatalf("Allow #2: %v", err)
+	}
+	if info2.Remaining != 9 {
+		t.Errorf("second Allow Remaining: want 9 (pre-reservation), got %d", info2.Remaining)
+	}
+}
+
+// TestLimiter_ResetAtReflectsBucketState (M-ratelimit-2): ResetAt
+// shrinks back toward "now" as the bucket refills, not a constant
+// derived from the quota shape. After fully draining the bucket the
+// reset time should be roughly `burst / rate` seconds in the future;
+// a fresh full bucket should reset essentially "now".
+func TestLimiter_ResetAtReflectsBucketState(t *testing.T) {
+	lim := NewTokenBucketLimiter(10)
+	defer lim.Stop()
+
+	// Choose a coarse rate (1 req/sec, burst 5) so deltas are
+	// observable without flaky timing.
+	q := Quota{Requests: 1, Window: time.Second, Burst: 5}
+
+	// Fresh bucket: ResetAt should be ~now (no deficit to refill).
+	_, info, err := lim.Allow(context.Background(), "k", q)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	now := time.Now().Unix()
+	if info.ResetAt < now-1 || info.ResetAt > now+1 {
+		t.Errorf("fresh-bucket ResetAt: want ~%d, got %d (delta=%ds)", now, info.ResetAt, info.ResetAt-now)
+	}
+
+	// Drain the bucket: 4 more allowed calls (1 already consumed +
+	// 4 = burst 5).
+	for i := 0; i < 4; i++ {
+		_, _, _ = lim.Allow(context.Background(), "k", q)
+	}
+	// Next call should be denied; ResetAt should reflect the time to
+	// refill from ~0 tokens to burst 5 -> 5 seconds at 1 req/sec.
+	_, info2, _ := lim.Allow(context.Background(), "k", q)
+	delta := info2.ResetAt - time.Now().Unix()
+	if delta < 4 || delta > 6 {
+		t.Errorf("drained-bucket ResetAt delta: want ~5s, got %ds", delta)
+	}
+}
+
 // TestLimiter_QuotaChangeRetainsRemainingTokens (M-ratelimit-1):
 // when the per-key quota changes (e.g., role change, config edit,
 // non-deterministic QuotaFunc), the new bucket carries the *remaining*

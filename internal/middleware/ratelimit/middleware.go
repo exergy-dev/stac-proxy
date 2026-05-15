@@ -88,6 +88,17 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 
+			// X-RateLimit-* header semantics (M-ratelimit-2):
+			//  - Limit: the configured Quota.Requests.
+			//  - Remaining: pre-reservation available capacity. The
+			//    caller observes "tokens you had before this call",
+			//    matching GitHub/Twitter convention. A successful
+			//    request that drained the bucket can therefore still
+			//    show Remaining > 0.
+			//  - Reset: unix timestamp at which the bucket refills to
+			//    full given current state — useful for clients
+			//    timing their backoff. Constant for the lifetime of
+			//    a fully-drained bucket only.
 			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(info.Limit))
 			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(info.Remaining))
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(info.ResetAt, 10))

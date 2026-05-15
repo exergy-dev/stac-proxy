@@ -31,10 +31,15 @@ type Quota struct {
 }
 
 // Info contains rate limit information for response headers.
+//
+// See TokenBucketLimiter.Allow for the precise semantics of each
+// field; in particular Remaining is pre-reservation capacity and
+// ResetAt accounts for the bucket's current fill state, not a
+// constant derived from the quota shape.
 type Info struct {
 	Limit      int   // Maximum requests allowed
-	Remaining  int   // Approximate remaining capacity
-	ResetAt    int64 // Unix timestamp when full capacity is restored
+	Remaining  int   // Pre-reservation available capacity (tokens visible to the caller before this Allow consumed any)
+	ResetAt    int64 // Unix timestamp at which the bucket would refill to full from its current state
 	RetryAfter int   // Seconds until retry is allowed (if limited)
 }
 
@@ -101,28 +106,50 @@ func (l *TokenBucketLimiter) Stop() {
 }
 
 // Allow checks if a request is allowed under the rate limit.
+//
+// Info field semantics (M-ratelimit-2):
+//
+//   - Remaining is the *pre-reservation* available capacity at "now"
+//     — the floor of TokensAt(now) before this call has consumed any
+//     token. This matches the X-RateLimit-Remaining convention used
+//     by GitHub, Twitter, etc., where the response header reports
+//     what the caller had before being charged.
+//   - ResetAt is the unix timestamp at which the bucket would refill
+//     to its full burst given the *current* token state, not a
+//     constant derived only from the quota shape. The previous
+//     formula, burst*Window/Requests, ignored the bucket fill and
+//     therefore produced a constant value regardless of usage,
+//     making the X-RateLimit-Reset header useless for clients trying
+//     to back off intelligently.
 func (l *TokenBucketLimiter) Allow(_ context.Context, key string, quota Quota) (bool, Info, error) {
 	b := l.getOrCreate(key, quota)
 
 	now := time.Now()
-	res := b.limiter.ReserveN(now, 1)
-	delay := res.DelayFrom(now)
-
 	burst := quota.Burst
 	if burst == 0 {
 		burst = quota.Requests
 	}
 
-	info := Info{
-		Limit:   quota.Requests,
-		ResetAt: now.Add(time.Duration(burst) * quota.Window / time.Duration(quota.Requests)).Unix(),
+	// Snapshot pre-reservation capacity for the Info report.
+	preTokens := b.limiter.TokensAt(now)
+	preRem := int(math.Floor(preTokens))
+	if preRem < 0 {
+		preRem = 0
 	}
+
+	info := Info{
+		Limit:     quota.Requests,
+		Remaining: preRem,
+		ResetAt:   resetAt(now, preTokens, float64(burst), quota).Unix(),
+	}
+
+	res := b.limiter.ReserveN(now, 1)
+	delay := res.DelayFrom(now)
 
 	if delay > 0 {
 		// Over capacity: cancel the reservation so we don't block the
 		// bucket, then report Retry-After.
 		res.CancelAt(now)
-		info.Remaining = 0
 		info.RetryAfter = int(math.Ceil(delay.Seconds()))
 		if info.RetryAfter < 1 {
 			info.RetryAfter = 1
@@ -130,13 +157,30 @@ func (l *TokenBucketLimiter) Allow(_ context.Context, key string, quota Quota) (
 		return false, info, nil
 	}
 
-	tokens := b.limiter.TokensAt(now)
-	rem := int(math.Floor(tokens))
-	if rem < 0 {
-		rem = 0
-	}
-	info.Remaining = rem
 	return true, info, nil
+}
+
+// resetAt returns the time at which a token bucket holding `tokens`
+// out of `burst`, refilling at quota.Requests/quota.Window per second,
+// will be back to full. When the bucket is already full, returns now.
+//
+// Implements the M-ratelimit-2 contract for Info.ResetAt: the value
+// reflects current bucket state rather than a constant derived only
+// from the quota shape.
+func resetAt(now time.Time, tokens, burst float64, quota Quota) time.Time {
+	if tokens >= burst || quota.Requests <= 0 || quota.Window <= 0 {
+		return now
+	}
+	if tokens < 0 {
+		tokens = 0
+	}
+	deficit := burst - tokens
+	rate := float64(quota.Requests) / quota.Window.Seconds() // tokens / sec
+	if rate <= 0 {
+		return now
+	}
+	secs := deficit / rate
+	return now.Add(time.Duration(secs * float64(time.Second)))
 }
 
 // getOrCreate looks up the per-key bucket or creates one. When the
