@@ -277,21 +277,27 @@ func TestAuthz_SingleRecord_404OnMismatch(t *testing.T) {
 	}
 }
 
-func TestAuthz_SingleRecord_DisabledIsPassthrough(t *testing.T) {
+// TestAuthz_SingleItem_HonorsConstraintsEvenWhenInjectionDisabled
+// is the H-authz-2 regression: CQL2InjectionEnabled gates push-down
+// for searches, but single-item GETs must still honour policy CQL2 +
+// geofence locally regardless. The operator's intent ("don't rewrite
+// outbound queries") must not become "skip enforcement on the way
+// back".
+func TestAuthz_SingleItem_HonorsConstraintsEvenWhenInjectionDisabled(t *testing.T) {
 	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
 			Allowed:     true,
-			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 5"},
+			Constraints: &AuthzConstraints{CQL2Filter: "platform = 'sentinel-2'"},
 		}},
 		AllowAnonymous: true,
-		// CQL2InjectionEnabled: false
+		// CQL2InjectionEnabled left false intentionally.
 	})
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeItem, Collection: "x", ItemID: "abc"}
 	r := withInfo(httptest.NewRequest("GET", "/collections/x/items/abc", nil), info)
-	body := []byte(`{"id":"abc","properties":{"eo:cloud_cover":12.5}}`)
+	body := []byte(`{"id":"abc","collection":"x","properties":{"platform":"landsat-8"}}`)
 	rr := runMWWithBody(mw, r, http.StatusOK, body)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("disabled injection should not gate single-record GETs; got %d", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("want 404 (single-item validation runs without injection), got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

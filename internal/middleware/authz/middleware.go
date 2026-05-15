@@ -133,11 +133,20 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 				}
 			}
 
-			// Single-record GET validation: when the policy emits a
-			// CQL2 filter, evaluate the combined predicate locally
-			// against the response body and convert a non-match into a
-			// 404, hiding existence.
-			if cfg.CQL2InjectionEnabled && info != nil && info.RequestType == middleware.RequestTypeItem &&
+			// Single-record GET validation: when the policy emits any
+			// constraint (CQL2 filter or geofence), evaluate the
+			// combined predicate locally against the response body and
+			// convert a non-match into a 404, hiding existence.
+			//
+			// This is intentionally NOT gated on CQL2InjectionEnabled.
+			// CQL2InjectionEnabled controls whether we push CQL2 down
+			// to the upstream search; for a single-item GET there is no
+			// push-down to do, only local enforcement of an authz
+			// constraint we already received from the policy. Gating
+			// validation on the injection switch caused single-item GETs
+			// to silently bypass policy CQL2 + geofence whenever the
+			// operator preferred response-side filtering for searches.
+			if info != nil && info.RequestType == middleware.RequestTypeItem &&
 				status >= 200 && status < 300 && decision.Constraints != nil {
 				if matched, _ := validateSingleRecord(body, decision.Constraints); !matched {
 					writeError(w, http.StatusNotFound, "NotFound", "item not found")
