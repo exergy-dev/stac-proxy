@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -191,9 +192,19 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
 
-	// Start metrics server if enabled
+	// Start metrics server if enabled. We retain the *http.Server
+	// handle so the shutdown drain can call Shutdown on it in
+	// parallel with the main server — otherwise the metrics
+	// goroutine leaks past SIGTERM and the process never exits
+	// cleanly.
+	var metricsSrv *http.Server
 	if cfg.Metrics.Enabled {
-		go startMetricsServer(cfg.Metrics, metrics, logger)
+		metricsSrv = newMetricsServer(cfg.Metrics, metrics, logger)
+		go func() {
+			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("Metrics server error", "error", err)
+			}
+		}()
 	}
 
 	// Start health checks
@@ -207,16 +218,34 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 
 	// Watch for parent-context cancellation (signal received) and
 	// trigger graceful shutdown. srv.Start() will then return
-	// http.ErrServerClosed and main can exit cleanly.
+	// http.ErrServerClosed and main can exit cleanly. Both the main
+	// and metrics servers shut down in parallel via a small WaitGroup
+	// so neither blocks the other on slow drains.
 	go func() {
 		<-ctx.Done()
 		logger.Info("Shutdown signal received; draining",
 			"timeout", shutdownTimeout)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("Server shutdown error", "error", err)
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				logger.Error("Server shutdown error", "error", err)
+			}
+		}()
+		if metricsSrv != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+					logger.Error("Metrics server shutdown error", "error", err)
+				}
+			}()
 		}
+		wg.Wait()
 	}()
 
 	// Start server (blocks until Shutdown is called)
@@ -650,11 +679,17 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 	})
 }
 
-// startMetricsServer starts the Prometheus metrics server. The metrics
-// listener defaults to 127.0.0.1:9090 so /metrics is not reachable
-// from the public network; operators wanting cross-host scrape must
-// explicitly set Metrics.BindAddr (and ideally Metrics.AuthToken).
-func startMetricsServer(cfg config.MetricsConfig, metrics *observability.Metrics, logger *slog.Logger) {
+// newMetricsServer constructs the Prometheus metrics *http.Server
+// without starting it. The caller is responsible for invoking
+// ListenAndServe in a goroutine and Shutdown during drain — exposing
+// the handle keeps the metrics goroutine joinable on SIGTERM rather
+// than orphaned.
+//
+// The metrics listener defaults to 127.0.0.1:9090 so /metrics is not
+// reachable from the public network; operators wanting cross-host
+// scrape must explicitly set Metrics.BindAddr (and ideally
+// Metrics.AuthToken).
+func newMetricsServer(cfg config.MetricsConfig, metrics *observability.Metrics, logger *slog.Logger) *http.Server {
 	addr := cfg.BindAddr
 	if addr == "" {
 		port := cfg.Port
@@ -690,14 +725,10 @@ func startMetricsServer(cfg config.MetricsConfig, metrics *observability.Metrics
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 
-	server := &http.Server{
+	return &http.Server{
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("Metrics server error", "error", err)
 	}
 }
 
