@@ -302,8 +302,9 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 
 // NewFromConfig constructs a chi-style cache middleware from a raw
 // YAML config block (the shape carried by config.MiddlewareConfig.Config).
-// Currently only the in-memory store is wired; an unrecognized store
-// type yields an error rather than silently falling back so
+// Currently only the in-memory store is wired. The "redis" store type
+// is documented in config but not yet implemented; we reject it here
+// with a clear message rather than silently falling back so
 // misconfiguration is loud.
 func NewFromConfig(cfg map[string]interface{}) (func(http.Handler) http.Handler, error) {
 	storeType := "memory"
@@ -318,6 +319,8 @@ func NewFromConfig(cfg map[string]interface{}) (func(http.Handler) http.Handler,
 			maxSize = v
 		}
 		store = NewMemoryStore(MemoryConfig{MaxSize: maxSize})
+	case "redis":
+		return nil, fmt.Errorf("redis cache backend not yet supported; use memory")
 	default:
 		return nil, fmt.Errorf("unknown cache store type: %s", storeType)
 	}

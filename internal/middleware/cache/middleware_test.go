@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -421,5 +422,30 @@ func TestCache_5xxNotCached(t *testing.T) {
 	}
 	if n := atomic.LoadUint32(&inner); n != 2 {
 		t.Errorf("inner handler invocations: want 2 (5xx must re-fetch), got %d", n)
+	}
+}
+
+func TestNewFromConfig_RejectsRedis(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewFromConfig(map[string]interface{}{"store": "redis"})
+	if err == nil {
+		t.Fatal("NewFromConfig(redis) returned nil error; want explicit rejection")
+	}
+	want := "redis cache backend not yet supported"
+	if got := err.Error(); !strings.Contains(got, want) {
+		t.Errorf("error = %q, want substring %q", got, want)
+	}
+}
+
+func TestNewFromConfig_AcceptsMemory(t *testing.T) {
+	t.Parallel()
+
+	mw, err := NewFromConfig(map[string]interface{}{"store": "memory", "max_size": 100})
+	if err != nil {
+		t.Fatalf("NewFromConfig(memory): %v", err)
+	}
+	if mw == nil {
+		t.Fatal("middleware is nil")
 	}
 }
