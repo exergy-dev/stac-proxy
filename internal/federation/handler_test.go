@@ -2162,3 +2162,109 @@ func TestTransformResponse_SkipsDecodeWhenNoRewriteNeeded(t *testing.T) {
 		t.Fatalf("body was mutated; expected pass-through.\n got: %s\nwant: %s", out.Body, original)
 	}
 }
+
+// TestRewriteLinks_DoesNotRecurseIntoProperties is the M-federation-2
+// regression: STAC items carry arbitrary user data under "properties"
+// and the rewriter must not descend into that subtree. We construct a
+// feature whose properties map contains a key literally named "links"
+// — an attacker-crafted shape that previously would have triggered
+// URL rewriting on user-supplied data. Only top-level links should be
+// rewritten.
+func TestRewriteLinks_DoesNotRecurseIntoProperties(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewOriginClient(&Origin{
+		ID:      "a",
+		BaseURL: "https://upstream.example",
+		Enabled: true,
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+
+	h := &Handler{proxyBaseURL: "https://proxy.example"}
+
+	feature := map[string]interface{}{
+		"type": "Feature",
+		"id":   "x",
+		"links": []interface{}{
+			map[string]interface{}{
+				"rel":  "self",
+				"href": "https://upstream.example/items/x",
+			},
+		},
+		// User-supplied properties — must NOT be touched.
+		"properties": map[string]interface{}{
+			"datetime": "2025-01-01T00:00:00Z",
+			"links": []interface{}{
+				map[string]interface{}{
+					"rel":  "evil",
+					"href": "https://upstream.example/should/not/be/rewritten",
+				},
+			},
+			"nested": map[string]interface{}{
+				"href": "https://upstream.example/also/should/stay",
+			},
+		},
+	}
+
+	h.rewriteLinks(context.Background(), client, feature)
+
+	// Top-level link IS rewritten.
+	topLinks := feature["links"].([]interface{})
+	topHref := topLinks[0].(map[string]interface{})["href"].(string)
+	if topHref != "https://proxy.example/items/x" {
+		t.Errorf("top-level link not rewritten: got %q", topHref)
+	}
+
+	// Properties subtree is untouched.
+	props := feature["properties"].(map[string]interface{})
+	propLinks := props["links"].([]interface{})
+	propHref := propLinks[0].(map[string]interface{})["href"].(string)
+	if propHref != "https://upstream.example/should/not/be/rewritten" {
+		t.Errorf("properties.links was rewritten: got %q", propHref)
+	}
+	nestedHref := props["nested"].(map[string]interface{})["href"].(string)
+	if nestedHref != "https://upstream.example/also/should/stay" {
+		t.Errorf("properties.nested was rewritten: got %q", nestedHref)
+	}
+}
+
+// TestRewriteLinks_RecursesIntoFeatures verifies that the allowlist
+// still descends into the spec-described nesting keys — features in a
+// FeatureCollection must have their links rewritten.
+func TestRewriteLinks_RecursesIntoFeatures(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewOriginClient(&Origin{
+		ID:      "a",
+		BaseURL: "https://upstream.example",
+		Enabled: true,
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	h := &Handler{proxyBaseURL: "https://proxy.example"}
+
+	fc := map[string]interface{}{
+		"type": "FeatureCollection",
+		"features": []interface{}{
+			map[string]interface{}{
+				"type": "Feature",
+				"id":   "x",
+				"links": []interface{}{
+					map[string]interface{}{"rel": "self", "href": "https://upstream.example/items/x"},
+				},
+			},
+		},
+	}
+	h.rewriteLinks(context.Background(), client, fc)
+
+	feature := fc["features"].([]interface{})[0].(map[string]interface{})
+	href := feature["links"].([]interface{})[0].(map[string]interface{})["href"].(string)
+	if href != "https://proxy.example/items/x" {
+		t.Errorf("feature link not rewritten: got %q", href)
+	}
+}

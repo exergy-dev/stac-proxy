@@ -1452,7 +1452,43 @@ func bodyMayContainRewritableKeys(body []byte) bool {
 //     point at object storage that the proxy does not front, so the
 //     default ("never") is intentional. Operators who need authz
 //     gating or audit on asset access opt into "sign" or "proxy".
+//
+// Recursion (M-federation-2): we descend ONLY into keys whose STAC
+// shape is documented to nest more link-bearing objects. STAC items
+// carry arbitrary user data under "properties" (megabytes of payload
+// on dense feature collections), and that subtree by spec contains
+// no proxy-rewritable links — recursing into it was pure cost. The
+// allowlist below is the closed set of nesting keys; anything else
+// (properties, geometry, bbox, individual asset payloads) is skipped.
+// A max-depth guard provides defense-in-depth against pathological
+// JSON.
 func (h *Handler) rewriteLinks(ctx context.Context, client *OriginClient, data interface{}) {
+	h.rewriteLinksDepth(ctx, client, data, 0)
+}
+
+// rewriteLinksMaxDepth caps recursion to defend against deeply-nested
+// attacker JSON. STAC documents in the wild nest at most ~3 levels
+// (catalog → collections[] → items[] → links[]); 16 is comfortably
+// over that.
+const rewriteLinksMaxDepth = 16
+
+// rewriteLinksRecurseKeys is the closed set of map keys whose values
+// the rewriter recurses into. Anything outside this set is left
+// untouched — most importantly, STAC items' "properties" subtree
+// (arbitrary user data) and "geometry"/"bbox" (large payloads with
+// no STAC-meaningful link structure inside).
+var rewriteLinksRecurseKeys = map[string]struct{}{
+	"features":    {}, // FeatureCollection.features[] → each feature has its own links/assets
+	"collections": {}, // /collections envelope
+	"included":    {}, // STAC API includes (rarely seen, but spec-described)
+	"items":       {}, // some catalogs nest items[] under collections in extras
+	"children":    {}, // nested catalog hierarchies
+}
+
+func (h *Handler) rewriteLinksDepth(ctx context.Context, client *OriginClient, data interface{}, depth int) {
+	if depth > rewriteLinksMaxDepth {
+		return
+	}
 	switch v := data.(type) {
 	case map[string]interface{}:
 		if links, ok := v["links"].([]interface{}); ok {
@@ -1473,12 +1509,18 @@ func (h *Handler) rewriteLinks(ctx context.Context, client *OriginClient, data i
 				}
 			}
 		}
-		for _, val := range v {
-			h.rewriteLinks(ctx, client, val)
+		// Only recurse into keys known to nest more link-bearing
+		// STAC objects. Skipping the rest avoids walking megabytes
+		// of opaque user data under "properties".
+		for k, val := range v {
+			if _, ok := rewriteLinksRecurseKeys[k]; !ok {
+				continue
+			}
+			h.rewriteLinksDepth(ctx, client, val, depth+1)
 		}
 	case []interface{}:
 		for _, val := range v {
-			h.rewriteLinks(ctx, client, val)
+			h.rewriteLinksDepth(ctx, client, val, depth+1)
 		}
 	}
 }
