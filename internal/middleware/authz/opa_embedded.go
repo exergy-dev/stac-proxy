@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
-	"sort"
 	"sync"
 
 	"github.com/open-policy-agent/opa/rego"
@@ -111,20 +109,23 @@ constraints = {}
 `
 
 // prepareQuery compiles the Rego modules and prepares the query.
-// When multiple modules declare the same `default <rule>` in the same
-// package, OPA rejects the bundle. Loading multiple .rego files into
-// a single package is a common operator pattern, so we dedupe such
-// declarations textually: the first occurrence wins.
+//
+// Historical note: this used to run a regex-based pass that stripped
+// duplicate `default <rule>` declarations across modules so multi-file
+// policies wouldn't trip OPA's "multiple default rules" error. That
+// silently corrupted multi-line default rules and — worse — silently
+// dropped a `default allow = false`, turning the policy fail-OPEN
+// (H-authz-6). The dedup is gone; OPA's compiler is the source of
+// truth and any duplicate defaults are surfaced as a clear error to
+// the operator. Operators with multi-file policies must consolidate
+// to a single `default` rule per name (e.g. keep the
+// `default allow = false` only in one shared base module).
 func (e *EmbeddedOPAEnforcer) prepareQuery(modules map[string]string) error {
 	ctx := context.Background()
 
-	// Build rego options
-	options := []func(*rego.Rego){
-		rego.Query(e.queryString),
-	}
-
-	cleaned := dedupeDefaultRules(modules)
-	for name, content := range cleaned {
+	options := make([]func(*rego.Rego), 0, 1+len(modules))
+	options = append(options, rego.Query(e.queryString))
+	for name, content := range modules {
 		options = append(options, rego.Module(name, content))
 	}
 
@@ -132,6 +133,10 @@ func (e *EmbeddedOPAEnforcer) prepareQuery(modules map[string]string) error {
 
 	query, err := r.PrepareForEval(ctx)
 	if err != nil {
+		// rego.PrepareForEval already surfaces ast.Compiler errors
+		// (including rego_type_error / "multiple default rules") with
+		// file/line context. Wrap so operators see *which* enforcer
+		// failed to compile.
 		return fmt.Errorf("failed to prepare OPA query: %w", err)
 	}
 
@@ -140,52 +145,6 @@ func (e *EmbeddedOPAEnforcer) prepareQuery(modules map[string]string) error {
 	e.mu.Unlock()
 
 	return nil
-}
-
-// defaultRulePattern matches an entire Rego `default <name> [:=|=] <expr>`
-// line, capturing the rule name. Trailing newline is consumed so
-// removing the line doesn't leave a blank that re-parses oddly.
-var defaultRulePattern = regexp.MustCompile(`(?m)^[ \t]*default[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?::=|=)[^\n]*\n?`)
-
-// dedupeDefaultRules scans every module for `default <rule>`
-// declarations and strips later occurrences so OPA's "multiple
-// default rules" error doesn't fire when operators legitimately split
-// policies across files. Modules are processed in a deterministic
-// (lexicographic by name) order so the outcome is reproducible.
-func dedupeDefaultRules(modules map[string]string) map[string]string {
-	names := make([]string, 0, len(modules))
-	for n := range modules {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
-	seen := make(map[string]bool)
-	out := make(map[string]string, len(modules))
-	for _, name := range names {
-		content := modules[name]
-		// Replace each matched `default <x>` line either by keeping it
-		// (first time we've seen <x>) or by removing it.
-		content = defaultRulePattern.ReplaceAllStringFunc(content, func(line string) string {
-			m := defaultRulePattern.FindStringSubmatch(line)
-			if len(m) < 2 {
-				return line
-			}
-			rule := m[1]
-			if seen[rule] {
-				return "" // drop subsequent default for the same rule
-			}
-			seen[rule] = true
-			return line
-		})
-		// A wholly-stripped line leaves an orphan tail (the RHS).
-		// Strip those lines too: any line that starts with whitespace
-		// and an assignment/operand we can't easily classify is left
-		// alone — but bare `default` removal is captured by the regex.
-		// In practice the trailing `= true` is on the same line, so
-		// ReplaceAllStringFunc removes the entire `default x = y` line.
-		out[name] = content
-	}
-	return out
 }
 
 // Name returns the enforcer name.

@@ -480,7 +480,12 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 			},
 		},
 		{
-			name: "multiple policy files",
+			// H-authz-6: when two modules each declare `default allow`,
+			// OPA's compiler rejects the bundle. Previously a regex
+			// dedup silently stripped one (potentially the
+			// fail-closed `default allow = false`). The new behaviour
+			// is to surface the compile error to the operator.
+			name: "multiple policy files with duplicate default rules",
 			config: EmbeddedOPAConfig{
 				Name: "multi-file",
 				PolicyPaths: []string{
@@ -488,12 +493,8 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 					createTempPolicyFile(t, spatialPolicy),
 				},
 			},
-			wantErr: false,
-			validate: func(t *testing.T, e *EmbeddedOPAEnforcer) {
-				if e.queryString == "" {
-					t.Error("expected policies to be loaded from files")
-				}
-			},
+			wantErr:   true,
+			errString: "multiple default rules",
 		},
 		{
 			name: "nonexistent policy file",
@@ -505,7 +506,11 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 			errString: "failed to read policy file",
 		},
 		{
-			name: "inline modules override file",
+			// H-authz-6: same shape as the multi-file case above —
+			// inline + file modules each carry `default allow`, which
+			// the compiler must reject. The previous regex dedup
+			// silently dropped one declaration.
+			name: "inline modules and file with duplicate default rules",
 			config: EmbeddedOPAConfig{
 				Name:       "override",
 				PolicyPath: createTempPolicyFile(t, denyAllPolicy),
@@ -513,12 +518,8 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 					"override.rego": allowAllPolicy,
 				},
 			},
-			wantErr: false,
-			validate: func(t *testing.T, e *EmbeddedOPAEnforcer) {
-				if e.queryString == "" {
-					t.Error("expected combined policies to be loaded")
-				}
-			},
+			wantErr:   true,
+			errString: "multiple default rules",
 		},
 	}
 
@@ -1862,4 +1863,43 @@ func mustParseURL(rawURL string) *url.URL {
 		panic(err)
 	}
 	return u
+}
+
+
+// TestEmbeddedOPA_DuplicateDefaultRules_ErrorsAtCompile is the
+// H-authz-6 regression: when an operator passes two Rego modules at
+// the same path that each declare `default allow = false`, the
+// constructor must surface OPA's compile error rather than silently
+// dropping one declaration. Previously a regex-based source-text
+// dedup quietly stripped a duplicate, which could turn a
+// fail-closed policy fail-open.
+func TestEmbeddedOPA_DuplicateDefaultRules_ErrorsAtCompile(t *testing.T) {
+	t.Parallel()
+
+	moduleA := `package stac.authz
+
+default allow = false
+
+result = {"allow": allow, "reasons": [], "constraints": {}}
+`
+	moduleB := `package stac.authz
+
+default allow = false
+
+other_rule { input.principal.id == "x" }
+`
+
+	_, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+		Name: "dup-default",
+		Modules: map[string]string{
+			"a.rego": moduleA,
+			"b.rego": moduleB,
+		},
+	})
+	if err == nil {
+		t.Fatal("constructor must fail when two modules declare the same default rule")
+	}
+	if !contains(err.Error(), "multiple default rules") {
+		t.Fatalf("error must mention duplicate default rules; got %q", err.Error())
+	}
 }
