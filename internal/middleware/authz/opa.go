@@ -161,6 +161,9 @@ func parseOPAConstraints(raw map[string]interface{}) *AuthzConstraints {
 		if fm, ok := geofence["filter_mode"].(bool); ok {
 			constraints.Geofence.FilterMode = fm
 		}
+		if gp, ok := geofence["geometry_property"].(string); ok {
+			constraints.Geofence.GeometryProperty = gp
+		}
 	}
 
 	if s, ok := raw["cql2_filter"].(string); ok {

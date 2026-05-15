@@ -35,9 +35,14 @@ func andNonNil(exprs ...*cql2.Expr) *cql2.Expr {
 }
 
 // geofenceToCQL2 builds a CQL2 expression that enforces a geofence:
-//   - AllowedArea (if present) becomes S_INTERSECTS(geometry, allowed).
-//   - DeniedArea (if present) becomes NOT S_INTERSECTS(geometry, denied).
+//   - AllowedArea (if present) becomes S_INTERSECTS(<prop>, allowed).
+//   - DeniedArea (if present) becomes NOT S_INTERSECTS(<prop>, denied).
 //   - When both are set the two predicates are AND-combined.
+//
+// The property name comes from g.GeometryProperty (default "geometry"
+// when empty). STAC items canonically hold geometry under "geometry",
+// but federation targets may expose it as e.g. "the_geom" or
+// "footprint"; the policy can override per geofence.
 //
 // Returns nil if g is nil or has neither an allowed nor a denied area.
 //
@@ -47,6 +52,10 @@ func andNonNil(exprs ...*cql2.Expr) *cql2.Expr {
 func geofenceToCQL2(g *GeofenceConstraint) (*cql2.Expr, error) {
 	if g == nil {
 		return nil, nil
+	}
+	prop := g.GeometryProperty
+	if prop == "" {
+		prop = "geometry"
 	}
 	var allowed, denied *cql2.Expr
 	if g.AllowedArea != nil {
@@ -58,7 +67,7 @@ func geofenceToCQL2(g *GeofenceConstraint) (*cql2.Expr, error) {
 		if err != nil {
 			return nil, fmt.Errorf("geofence: parse allowed area as GeoJSON: %w", err)
 		}
-		e := cql2.SIntersects("geometry", geom)
+		e := cql2.SIntersects(prop, geom)
 		allowed = &e
 	}
 	if g.DeniedArea != nil {
@@ -70,7 +79,7 @@ func geofenceToCQL2(g *GeofenceConstraint) (*cql2.Expr, error) {
 		if err != nil {
 			return nil, fmt.Errorf("geofence: parse denied area as GeoJSON: %w", err)
 		}
-		inter := cql2.SIntersects("geometry", geom)
+		inter := cql2.SIntersects(prop, geom)
 		notExpr := cql2.Not(inter)
 		denied = &notExpr
 	}
@@ -181,17 +190,30 @@ func encodeForLang(expr *cql2.Expr, lang string) (interface{}, error) {
 // was synthesized). When false the original *c is returned unchanged
 // and the post-response geofence filter remains responsible.
 //
+// spatialSupported tells the helper whether the upstream advertises
+// CQL2 spatial-predicate support (e.g. basic-spatial-functions). When
+// false, push-down is skipped — emitting an S_INTERSECTS predicate
+// that the upstream silently ignores would unrestricted-leak data,
+// since GeofencePushedDown=true would also disable the post-filter.
+// Local evaluation paths (validateSingleRecord) should pass true: the
+// in-process evaluator implements S_INTERSECTS regardless of upstream.
+//
 // It is a no-op (returns c, false, nil) when:
 //   - constraints is nil
 //   - the geofence is absent or yields no spatial predicate
 //   - the geofence has already been pushed down on this constraint
+//   - spatialSupported is false (caller signalled the upstream lacks
+//     the CQL2 spatial class)
 //   - encoding fails (the caller will see the error and the post-filter
 //     stays as the safety net)
-func maybePushDownGeofence(c *AuthzConstraints) (*AuthzConstraints, bool, error) {
+func maybePushDownGeofence(c *AuthzConstraints, spatialSupported bool) (*AuthzConstraints, bool, error) {
 	if c == nil || c.Geofence == nil {
 		return c, false, nil
 	}
 	if c.GeofencePushedDown {
+		return c, false, nil
+	}
+	if !spatialSupported {
 		return c, false, nil
 	}
 	geofenceExpr, err := geofenceToCQL2(c.Geofence)

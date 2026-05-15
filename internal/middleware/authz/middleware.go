@@ -43,6 +43,13 @@ type HTTPConfig struct {
 	// tests and simple deployments. In federation, AND across the
 	// candidate origins for this request.
 	FilterExtensionCheck func(r *http.Request, info *middleware.STACInfo) bool
+	// SpatialFilterCheck reports whether the routed upstream(s)
+	// advertise CQL2 spatial-predicate support (basic-spatial-functions
+	// or similar). When false, geofence push-down is skipped and the
+	// response-side post-filter stays responsible. When nil, push-down
+	// is allowed whenever FilterExtensionCheck (or, if also nil,
+	// CQL2InjectionEnabled) permits — the historical behaviour.
+	SpatialFilterCheck func(r *http.Request, info *middleware.STACInfo) bool
 }
 
 // NewHTTPMiddleware returns chi-compatible authorization middleware.
@@ -92,7 +99,8 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 				}
 				if cfg.CQL2InjectionEnabled &&
 					(cfg.FilterExtensionCheck == nil || cfg.FilterExtensionCheck(r, info)) {
-					updated, err := injectCQL2Filter(info.SearchReq, decision.Constraints)
+					spatialOK := cfg.SpatialFilterCheck == nil || cfg.SpatialFilterCheck(r, info)
+					updated, err := injectCQL2Filter(info.SearchReq, decision.Constraints, spatialOK)
 					if err != nil {
 						writeError(w, http.StatusInternalServerError, "InternalError", "cql2 injection failed")
 						return
@@ -298,12 +306,17 @@ func removeCollections(a, b []string) []string {
 // push-down) with the client's filter and writes the combined
 // expression back into sr.Filter in the original lang.
 //
+// spatialSupported gates geofence push-down: when false, the geofence
+// stays out of the upstream filter and the post-response filter
+// remains responsible. The CQL2 portion of the policy filter is still
+// merged regardless.
+//
 // Returns the constraint that should be installed on the decision
 // going forward: maybePushDownGeofence returns a fresh constraint
 // when push-down applies (so we don't mutate the shared decision
 // constraint pointer), and we propagate that here.
-func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints) (*AuthzConstraints, error) {
-	updated, _, err := maybePushDownGeofence(constraints)
+func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints, spatialSupported bool) (*AuthzConstraints, error) {
+	updated, _, err := maybePushDownGeofence(constraints, spatialSupported)
 	if err != nil {
 		return constraints, err
 	}
@@ -353,7 +366,9 @@ func validateSingleRecord(body []byte, c *AuthzConstraints) (bool, error) {
 	if c == nil || len(body) == 0 {
 		return true, nil
 	}
-	updated, _, err := maybePushDownGeofence(c)
+	// Local evaluation always uses spatial predicates regardless of
+	// upstream support — stac.EvalCQL2 implements S_INTERSECTS.
+	updated, _, err := maybePushDownGeofence(c, true)
 	if err != nil {
 		return true, err
 	}

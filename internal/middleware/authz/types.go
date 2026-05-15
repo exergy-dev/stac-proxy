@@ -137,6 +137,13 @@ type GeofenceConstraint struct {
 
 	// Whether to filter results or reject entire requests
 	FilterMode bool `json:"filter_mode"`
+
+	// GeometryProperty is the upstream-facing item geometry field used
+	// when push-down emits S_INTERSECTS predicates. STAC items hold
+	// geometry under the canonical "geometry" key, but federation
+	// targets may expose it as "the_geom", "footprint", etc. Empty
+	// (the default) means "geometry".
+	GeometryProperty string `json:"geometry_property,omitempty"`
 }
 
 // Enforcer is the interface for authorization decision makers.

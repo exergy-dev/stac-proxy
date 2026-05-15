@@ -180,7 +180,7 @@ func TestMaybePushDownGeofence_Polygon(t *testing.T) {
 			},
 		},
 	}
-	out, applied, err := maybePushDownGeofence(c)
+	out, applied, err := maybePushDownGeofence(c, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestMaybePushDownGeofence_CombinesWithExistingPolicyFilter(t *testing.T) {
 			},
 		},
 	}
-	out, applied, err := maybePushDownGeofence(c)
+	out, applied, err := maybePushDownGeofence(c, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestMaybePushDownGeofence_CombinesWithExistingPolicyFilter(t *testing.T) {
 
 func TestMaybePushDownGeofence_NoOpWhenAbsent(t *testing.T) {
 	c := &AuthzConstraints{}
-	out, applied, err := maybePushDownGeofence(c)
+	out, applied, err := maybePushDownGeofence(c, true)
 	if err != nil || applied {
 		t.Fatalf("want no-op for absent geofence, got applied=%v err=%v", applied, err)
 	}
@@ -275,7 +275,7 @@ func TestMaybePushDownGeofence_DoesNotMutateInput(t *testing.T) {
 			},
 		},
 	}
-	out, applied, err := maybePushDownGeofence(in)
+	out, applied, err := maybePushDownGeofence(in, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestMaybePushDownGeofence_DoesNotMutateInput(t *testing.T) {
 	}
 	// A second call on the original input must still apply push-down
 	// (i.e. push-down is not gated by the prior call's mutation).
-	out2, applied2, err := maybePushDownGeofence(in)
+	out2, applied2, err := maybePushDownGeofence(in, true)
 	if err != nil || !applied2 {
 		t.Fatalf("second call should still apply push-down: applied=%v err=%v", applied2, err)
 	}
@@ -360,5 +360,78 @@ func TestGeofenceToCQL2_InvalidGeoJSON(t *testing.T) {
 	}
 	if _, err := geofenceToCQL2(g); err == nil {
 		t.Fatal("want error for invalid GeoJSON, got nil")
+	}
+}
+
+
+// TestGeofenceToCQL2_RespectsConfiguredProperty asserts the emitted
+// S_INTERSECTS uses the configured property name rather than the
+// hardcoded "geometry" — required when federating to backends like
+// PostGIS/STAC that expose the geometry as "the_geom" or "footprint".
+func TestGeofenceToCQL2_RespectsConfiguredProperty(t *testing.T) {
+	g := &GeofenceConstraint{
+		GeometryProperty: "the_geom",
+		AllowedArea: map[string]interface{}{
+			"type": "Polygon",
+			"coordinates": []interface{}{
+				[]interface{}{
+					[]interface{}{0.0, 0.0},
+					[]interface{}{1.0, 0.0},
+					[]interface{}{1.0, 1.0},
+					[]interface{}{0.0, 1.0},
+					[]interface{}{0.0, 0.0},
+				},
+			},
+		},
+	}
+	got, err := geofenceToCQL2(g)
+	if err != nil || got == nil {
+		t.Fatalf("geofenceToCQL2: got=%v err=%v", got, err)
+	}
+	s := encText(t, got)
+	if !strings.Contains(s, "the_geom") {
+		t.Fatalf("want the_geom property reference, got %q", s)
+	}
+	if strings.Contains(s, "geometry") {
+		t.Fatalf("expected configured property to replace 'geometry', got %q", s)
+	}
+}
+
+// TestMaybePushDownGeofence_SkipsPushDownWhenSpatialNotSupported
+// asserts that when the caller signals the upstream lacks CQL2
+// spatial-predicate support, push-down is skipped entirely. The
+// response-side post-filter stays responsible.
+func TestMaybePushDownGeofence_SkipsPushDownWhenSpatialNotSupported(t *testing.T) {
+	c := &AuthzConstraints{
+		Geofence: &GeofenceConstraint{
+			AllowedArea: map[string]interface{}{
+				"type": "Polygon",
+				"coordinates": []interface{}{
+					[]interface{}{
+						[]interface{}{0.0, 0.0},
+						[]interface{}{1.0, 0.0},
+						[]interface{}{1.0, 1.0},
+						[]interface{}{0.0, 1.0},
+						[]interface{}{0.0, 0.0},
+					},
+				},
+			},
+		},
+	}
+	out, applied, err := maybePushDownGeofence(c, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if applied {
+		t.Fatal("push-down must not run when spatialSupported=false")
+	}
+	if out != c {
+		t.Fatal("expected input pointer returned unchanged when push-down is skipped")
+	}
+	if out.GeofencePushedDown {
+		t.Fatal("GeofencePushedDown must remain false so the post-filter stays responsible")
+	}
+	if out.CQL2Filter != "" {
+		t.Fatalf("CQL2Filter must remain empty (no push-down), got %q", out.CQL2Filter)
 	}
 }
