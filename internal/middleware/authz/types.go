@@ -3,6 +3,7 @@ package authz
 
 import (
 	"context"
+	"net"
 	"net/http"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
@@ -173,7 +174,7 @@ func BuildAuthzInput(r *http.Request, info *middleware.STACInfo, principal *auth
 			Path:     r.URL.Path,
 			Query:    r.URL.Query(),
 			Headers:  extractHeaders(r.Header),
-			ClientIP: r.RemoteAddr,
+			ClientIP: deriveClientIP(r),
 		},
 		Resource: &ResourceInfo{},
 	}
@@ -204,6 +205,25 @@ func BuildAuthzInput(r *http.Request, info *middleware.STACInfo, principal *auth
 	}
 
 	return input
+}
+
+// deriveClientIP returns the trusted-proxy-aware client IP from the
+// request context (set by internal/server.NewClientIPMiddleware), or
+// falls back to r.RemoteAddr with the port stripped via
+// net.SplitHostPort. The fallback handles tests / setups that have
+// not installed the client-IP middleware. M-authz-4 — the bare
+// r.RemoteAddr previously used here included the source port and
+// ignored XFF, so any policy ip_range condition that consulted
+// ClientIP saw the wrong value behind a configured trusted proxy.
+func deriveClientIP(r *http.Request) string {
+	if ip := middleware.ClientIPFromContext(r.Context()); ip != "" {
+		return ip
+	}
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return host
 }
 
 // extractHeaders extracts headers for authorization context.
