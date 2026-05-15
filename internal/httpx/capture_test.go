@@ -1,6 +1,8 @@
 package httpx
 
 import (
+	"bytes"
+	"errors"
 	"net/http"
 	"testing"
 )
@@ -74,6 +76,73 @@ func TestResponseCapture_HeadersOutSameAsHeader(t *testing.T) {
 
 func TestResponseCapture_ImplementsResponseWriter(t *testing.T) {
 	var _ http.ResponseWriter = NewResponseCapture()
+}
+
+func TestResponseCapture_RejectsOversize(t *testing.T) {
+	rc := NewResponseCaptureWithLimit(10)
+
+	// First write: 10 bytes, exactly at the cap — must succeed.
+	n, err := rc.Write([]byte("0123456789"))
+	if err != nil {
+		t.Fatalf("first write returned err: %v", err)
+	}
+	if n != 10 {
+		t.Fatalf("first write n = %d, want 10", n)
+	}
+
+	// Second write: 2 more bytes, pushing total to 12. Must error
+	// with ErrResponseTooLarge.
+	n, err = rc.Write([]byte("ab"))
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("second write err = %v, want ErrResponseTooLarge", err)
+	}
+	if n != 0 {
+		t.Fatalf("second write n = %d, want 0", n)
+	}
+
+	// Body must be exactly the 10 successful bytes.
+	if got := rc.BodyBytes(); !bytes.Equal(got, []byte("0123456789")) {
+		t.Fatalf("body = %q, want %q", got, "0123456789")
+	}
+
+	// Subsequent writes also rejected.
+	n, err = rc.Write([]byte("cd"))
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("third write err = %v, want ErrResponseTooLarge", err)
+	}
+	if n != 0 {
+		t.Fatalf("third write n = %d, want 0", n)
+	}
+}
+
+func TestResponseCapture_RejectsOversizeSingleWrite(t *testing.T) {
+	// A single Write that overshoots must still leave the body
+	// exactly max bytes long.
+	rc := NewResponseCaptureWithLimit(10)
+	_, err := rc.Write([]byte("0123456789AB")) // 12 bytes, cap=10
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("err = %v, want ErrResponseTooLarge", err)
+	}
+	if got := rc.BodyBytes(); len(got) != 10 {
+		t.Fatalf("body len = %d, want 10", len(got))
+	}
+}
+
+func TestResponseCapture_ZeroIsUnbounded(t *testing.T) {
+	rc := NewResponseCaptureWithLimit(0)
+	chunk := bytes.Repeat([]byte("x"), 1<<20) // 1 MiB
+	for i := 0; i < 10; i++ {                 // 10 MiB total
+		n, err := rc.Write(chunk)
+		if err != nil {
+			t.Fatalf("iter %d: unexpected err: %v", i, err)
+		}
+		if n != len(chunk) {
+			t.Fatalf("iter %d: n = %d, want %d", i, n, len(chunk))
+		}
+	}
+	if got := len(rc.BodyBytes()); got != 10*(1<<20) {
+		t.Fatalf("body len = %d, want %d", got, 10*(1<<20))
+	}
 }
 
 func TestResponseCapture_WriteHeaderThenWrite_StatusPreserved(t *testing.T) {

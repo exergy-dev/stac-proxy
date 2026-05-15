@@ -6,6 +6,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 func TestBodyLimitMiddleware_LargeBodyRejected(t *testing.T) {
@@ -70,5 +75,123 @@ func readAll(r interface {
 			}
 			return out, err
 		}
+	}
+}
+
+// TestRouter_MetricsLabelsAreBounded is the C3 regression test:
+// firing requests against /collections/{X}/items/{Y} with many distinct
+// X, Y values must not produce many distinct metric series. The path
+// label is the chi route pattern, so all such requests collapse to a
+// single series.
+//
+// Without the fix, every distinct (collectionID, itemID) combination
+// produced its own time series — an unbounded cardinality DoS against
+// Prometheus.
+func TestRouter_MetricsLabelsAreBounded(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	metrics := observability.NewMetrics("test_router_cardinality")
+	r := NewRouter(RouterConfig{
+		Handler: inner,
+		Metrics: metrics,
+	})
+
+	// Fire 50 distinct (collectionID, itemID) combinations against the
+	// items-by-id route. Without the fix this generates 50 series;
+	// with the fix it's 1 (the pattern).
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest(http.MethodGet,
+			"/collections/coll-"+strings.Repeat("x", i+1)+"/items/item-"+strings.Repeat("y", i+1),
+			nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+	}
+
+	// The pattern slot should have accumulated all 50 requests.
+	const wantPattern = "/collections/{collectionId}/items/{itemId}"
+	got := testutil.ToFloat64(metrics.RequestsTotal.WithLabelValues(http.MethodGet, wantPattern, "200"))
+	if got < 50 {
+		t.Errorf("pattern label %q only accumulated %v of 50 requests — raw path probably leaked into label",
+			wantPattern, got)
+	}
+}
+
+// --- H7 trusted-proxy XFF tests --------------------------------------------
+
+// TestClientIP_IgnoresUntrustedXFF: when the immediate TCP peer is
+// NOT in trusted_proxies, the X-Forwarded-For header must be ignored
+// even if present — otherwise an internet-exposed listener lets any
+// caller spoof its IP.
+func TestClientIP_IgnoresUntrustedXFF(t *testing.T) {
+	var captured string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = middleware.ClientIPFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	r := NewRouter(RouterConfig{
+		Handler:        inner,
+		TrustedProxies: nil, // empty — untrusted everywhere
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.5:54321"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if captured != "203.0.113.5" {
+		t.Errorf("client IP = %q, want %q (XFF should be ignored when not trusted)", captured, "203.0.113.5")
+	}
+}
+
+// TestClientIP_ParsesTrustedXFF: when the immediate TCP peer IS in
+// trusted_proxies, X-Forwarded-For's right-most untrusted entry is
+// honored. This is the deployment-behind-LB path.
+func TestClientIP_ParsesTrustedXFF(t *testing.T) {
+	var captured string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = middleware.ClientIPFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	r := NewRouter(RouterConfig{
+		Handler:        inner,
+		TrustedProxies: []string{"10.0.0.0/8"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.5:54321"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.1")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if captured != "1.2.3.4" {
+		t.Errorf("client IP = %q, want %q (right-most untrusted XFF entry)", captured, "1.2.3.4")
+	}
+}
+
+// TestClientIP_FallsBackToRemoteAddrWhenXFFAllTrusted: every XFF
+// entry is itself in a trusted CIDR; nothing untrusted to pick →
+// falls back to the peer's RemoteAddr.
+func TestClientIP_FallsBackToRemoteAddrWhenXFFAllTrusted(t *testing.T) {
+	var captured string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = middleware.ClientIPFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	r := NewRouter(RouterConfig{
+		Handler:        inner,
+		TrustedProxies: []string{"10.0.0.0/8"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.5:54321"
+	req.Header.Set("X-Forwarded-For", "10.0.0.1, 10.0.0.2") // all trusted
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if captured != "10.0.0.5" {
+		t.Errorf("client IP = %q, want %q (fallback to RemoteAddr)", captured, "10.0.0.5")
 	}
 }

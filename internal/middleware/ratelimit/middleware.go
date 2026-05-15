@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
@@ -54,7 +55,16 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				principalID = p.ID
 				roles = p.Roles
 			}
-			key := keyFunc(ctx, principalID, r.RemoteAddr)
+			// Prefer the derived client IP attached by the server's
+			// trusted-proxy aware middleware. Falls back to
+			// RemoteAddr when no such derived IP is in context (e.g.
+			// when ratelimit is wired without the server's
+			// clientIPMiddleware).
+			clientIP := middleware.ClientIPFromContext(ctx)
+			if clientIP == "" {
+				clientIP = r.RemoteAddr
+			}
+			key := keyFunc(ctx, principalID, clientIP)
 			quota := quotaFunc(roles, cfg.DefaultQuota)
 
 			allowed, info, err := limiter.Allow(ctx, key, quota)

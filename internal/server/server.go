@@ -51,6 +51,8 @@ func New(cfg Config) (*Server, error) {
 		ReadTimeout:  cfg.ServerConfig.Timeouts.Read,
 		WriteTimeout: cfg.ServerConfig.Timeouts.Write,
 		IdleTimeout:  cfg.ServerConfig.Timeouts.Idle,
+		// TODO(post-merge): expose via cfg.Server.ReadHeaderTimeout when config.go gains the field.
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Set default timeouts if not configured

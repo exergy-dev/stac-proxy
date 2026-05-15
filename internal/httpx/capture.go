@@ -2,8 +2,17 @@ package httpx
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 )
+
+// ErrResponseTooLarge is returned by ResponseCapture.Write when the
+// cumulative number of bytes written would exceed the capture's
+// configured maximum. Once this error is returned, the capture rejects
+// all further writes; the captured body remains exactly the bytes
+// from the last successful write (the offending chunk is dropped
+// entirely — partial writes are not retained).
+var ErrResponseTooLarge = errors.New("httpx: response body exceeded capture limit")
 
 // ResponseCapture is a buffering http.ResponseWriter suitable for
 // passing to httputil.ReverseProxy.ServeHTTP. The captured status,
@@ -24,16 +33,27 @@ type ResponseCapture interface {
 	HeadersOut() http.Header
 }
 
-// NewResponseCapture returns a fresh ResponseCapture with an empty
-// header map and zero captured status.
+// NewResponseCapture returns an unbounded ResponseCapture (no byte
+// cap). This is a thin wrapper around NewResponseCaptureWithLimit(0).
 func NewResponseCapture() ResponseCapture {
-	return &responseCapture{}
+	return NewResponseCaptureWithLimit(0)
+}
+
+// NewResponseCaptureWithLimit returns a ResponseCapture that errors
+// out (and stops accepting writes) once total bytes would exceed max.
+// max == 0 means unbounded (matching the historical NewResponseCapture
+// behavior).
+func NewResponseCaptureWithLimit(max int64) ResponseCapture {
+	return &responseCapture{max: max}
 }
 
 type responseCapture struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
+	header  http.Header
+	status  int
+	body    bytes.Buffer
+	max     int64 // 0 = unbounded
+	written int64 // cumulative bytes accepted into body
+	closed  bool  // true once we've rejected a write; further writes also reject
 }
 
 // Header implements http.ResponseWriter. It lazy-inits the underlying
@@ -57,12 +77,31 @@ func (rc *responseCapture) WriteHeader(statusCode int) {
 
 // Write accumulates bytes into the body buffer. If WriteHeader was
 // not called, status defaults to 200 on first Write (matching
-// net/http behavior).
+// net/http behavior). When a byte cap is configured and the
+// cumulative total would exceed it, Write fills the body up to the
+// cap (so the captured body is exactly max bytes), returns
+// ErrResponseTooLarge, and rejects all subsequent writes with the
+// same error.
 func (rc *responseCapture) Write(p []byte) (int, error) {
 	if rc.status == 0 {
 		rc.status = http.StatusOK
 	}
-	return rc.body.Write(p)
+	if rc.closed {
+		return 0, ErrResponseTooLarge
+	}
+	if rc.max > 0 && rc.written+int64(len(p)) > rc.max {
+		// Fill the body up to the cap, then reject.
+		remaining := rc.max - rc.written
+		if remaining > 0 {
+			n, _ := rc.body.Write(p[:remaining])
+			rc.written += int64(n)
+		}
+		rc.closed = true
+		return 0, ErrResponseTooLarge
+	}
+	n, err := rc.body.Write(p)
+	rc.written += int64(n)
+	return n, err
 }
 
 // Status returns the captured status code, or 200 if none was ever

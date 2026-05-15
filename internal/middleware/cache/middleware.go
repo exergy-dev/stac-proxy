@@ -20,8 +20,46 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/middleware/authz"
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
+
+// cacheableResponseHeaders is the whitelist of upstream response
+// headers that may be stored in a cache entry and re-emitted on a
+// hit. Anything not in this set — notably Set-Cookie, Authorization,
+// WWW-Authenticate, and arbitrary X-* headers from upstream — is
+// dropped to avoid leaking principal-specific or origin-internal
+// state to whichever caller next gets the cached response.
+//
+// Keys are the Go canonical form returned by http.CanonicalHeaderKey
+// (e.g. "Etag", not "ETag").
+var cacheableResponseHeaders = map[string]struct{}{
+	"Content-Type":     {},
+	"Content-Encoding": {},
+	"Content-Language": {},
+	"Etag":             {},
+	"Last-Modified":    {},
+	"Cache-Control":    {},
+	"Expires":          {},
+	"Vary":             {},
+	"X-Cache-Status":   {},
+}
+
+// filterCacheableHeaders returns a copy of h with only the headers in
+// cacheableResponseHeaders preserved (canonicalised on access). Used
+// before persisting a CacheEntry so non-cacheable headers aren't
+// replayed.
+func filterCacheableHeaders(h http.Header) http.Header {
+	out := make(http.Header, len(cacheableResponseHeaders))
+	for name, vs := range h {
+		if _, ok := cacheableResponseHeaders[http.CanonicalHeaderKey(name)]; ok {
+			for _, v := range vs {
+				out.Add(name, v)
+			}
+		}
+	}
+	return out
+}
 
 // Config contains configuration for the cache middleware.
 type Config struct {
@@ -32,8 +70,8 @@ type Config struct {
 // NewHTTPMiddleware returns chi-compatible response-cache middleware.
 //
 // The middleware only engages when:
-//   1. The router has populated a *middleware.STACInfo in r.Context().
-//   2. The Strategy says the request is cacheable (default: GETs only).
+//  1. The router has populated a *middleware.STACInfo in r.Context().
+//  2. The Strategy says the request is cacheable (default: GETs only).
 //
 // On a hit, the cached response is written directly with X-Cache-Status:
 // HIT. On a miss, the inner handler runs into an httpx.ResponseCapture;
@@ -58,6 +96,21 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			info := middleware.STACInfoFromContext(r.Context())
 			if info == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Bypass the cache whenever the authz decision attached
+			// any row-level constraint. The same URL can produce
+			// different filtered responses for different principals
+			// (different CQL2 filter / geofence / collection
+			// allowlist), and including all of that in the cache key
+			// is more complex than is worth in a first cut. Skipping
+			// caching here is the conservative correctness choice;
+			// the unauthenticated-or-unconstrained path still caches
+			// normally. Requires the authz middleware to run BEFORE
+			// the cache middleware in the chi chain — see main.go's
+			// middleware ordering.
+			if d := authz.DecisionFromContext(r.Context()); d != nil && d.HasConstraints() {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -112,7 +165,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			}
 			envelope, err := json.Marshal(CacheEntry{
 				Status:  cap.Status(),
-				Headers: cap.HeadersOut(),
+				Headers: filterCacheableHeaders(cap.HeadersOut()),
 				Body:    append([]byte(nil), body...),
 			})
 			if err == nil {
@@ -180,9 +233,17 @@ type BasicStrategy struct {
 	SearchTTL     time.Duration
 }
 
-// ShouldCache returns true for GET requests.
+// ShouldCache returns true for GET requests other than asset
+// streams. Asset bytes can be GB-scale and benefit from upstream
+// Cache-Control / CDN caching rather than the proxy's in-memory store.
 func (s *BasicStrategy) ShouldCache(req CacheableRequest) bool {
-	return req.Method == http.MethodGet
+	if req.Method != http.MethodGet {
+		return false
+	}
+	if req.RequestType == "asset" {
+		return false
+	}
+	return true
 }
 
 // CacheKey generates a cache key from the request.

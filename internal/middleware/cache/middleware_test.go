@@ -1,11 +1,13 @@
 package cache
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/yourorg/stac-proxy/internal/middleware/authz"
 )
 
 // withSTACInfo returns r wrapped in a context carrying the given info,
@@ -31,9 +33,13 @@ func upstreamWriter(status int, headers map[string]string, body []byte) http.Han
 // Content-Type rather than hardcoded values.
 func TestCacheHit_RestoresStatusAndHeaders(t *testing.T) {
 	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
+	// ETag is in the cacheable-headers whitelist; X-Custom is NOT
+	// (the proxy deliberately drops arbitrary upstream headers from
+	// cache entries to avoid leaking principal-specific state on a
+	// hit). The "stays on hit" assertion below uses ETag.
 	h := NewHTTPMiddleware(Config{Store: store})(upstreamWriter(
 		http.StatusOK,
-		map[string]string{"Content-Type": "application/geo+json", "X-Custom": "stac-value"},
+		map[string]string{"Content-Type": "application/geo+json", "ETag": `"v1"`},
 		[]byte(`{"type":"FeatureCollection","features":[]}`),
 	))
 
@@ -58,8 +64,8 @@ func TestCacheHit_RestoresStatusAndHeaders(t *testing.T) {
 	if got := rr2.Header().Get("Content-Type"); got != "application/geo+json" {
 		t.Errorf("Content-Type on hit: want application/geo+json, got %q", got)
 	}
-	if got := rr2.Header().Get("X-Custom"); got != "stac-value" {
-		t.Errorf("X-Custom on hit: want stac-value, got %q", got)
+	if got := rr2.Header().Get("ETag"); got != `"v1"` {
+		t.Errorf("ETag on hit: want \"v1\", got %q", got)
 	}
 }
 
@@ -107,5 +113,106 @@ func TestCache_NoSTACInfoPassesThrough(t *testing.T) {
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 	if rr.Code != http.StatusTeapot {
 		t.Errorf("status: want 418, got %d", rr.Code)
+	}
+}
+
+// --- C2 cache-bypass on authz constraints ---------------------------------
+
+// TestCache_BypassedWhenAuthzConstrained verifies that when the authz
+// middleware has attached a per-principal constraint (CQL2 filter,
+// geofence, etc.) to the request context, the cache middleware does
+// NOT consult its store. Otherwise the same URL could serve a
+// principal-A-filtered response to principal B.
+func TestCache_BypassedWhenAuthzConstrained(t *testing.T) {
+	store := NewMemoryStore(MemoryConfig{MaxSize: 100})
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	mw := NewHTTPMiddleware(Config{Store: store})
+
+	decision := &authz.AuthzDecision{
+		Allowed: true,
+		Constraints: &authz.AuthzConstraints{
+			CQL2Filter: "eo:cloud_cover < 10",
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/collections/x/items", nil)
+	ctx := middleware.WithSTACInfo(req.Context(), &middleware.STACInfo{
+		RequestType: middleware.RequestTypeItems,
+		Collection:  "x",
+	})
+	ctx = context.WithValue(ctx, middleware.AuthzDecisionKey, decision)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+	mw(inner).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first request status = %d", rr.Code)
+	}
+
+	// Hit cache: the entry should NOT have been stored. Confirm via
+	// a second request that the X-Cache-Status header is "MISS"
+	// again (would be "HIT" if the entry had been persisted).
+	req2 := httptest.NewRequest(http.MethodGet, "/collections/x/items", nil)
+	req2 = req2.WithContext(ctx)
+	rr2 := httptest.NewRecorder()
+	mw(inner).ServeHTTP(rr2, req2)
+	if got := rr2.Header().Get("X-Cache-Status"); got == "HIT" {
+		t.Errorf("expected no cache (constrained request); got X-Cache-Status=HIT")
+	}
+}
+
+// TestCache_FiltersSensitiveHeadersFromEntry verifies that Set-Cookie
+// and other non-cacheable headers from the upstream response are NOT
+// persisted into the cache entry. Otherwise a cache hit would replay
+// principal-specific headers to every subsequent caller.
+func TestCache_FiltersSensitiveHeadersFromEntry(t *testing.T) {
+	store := NewMemoryStore(MemoryConfig{MaxSize: 100})
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Upstream tries to set a Set-Cookie + Authorization on the
+		// response. Neither should survive into the cache entry.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Set-Cookie", "session=secret; HttpOnly")
+		w.Header().Set("Authorization", "Bearer upstream-secret")
+		w.Header().Set("ETag", `"v1"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	mw := NewHTTPMiddleware(Config{Store: store})
+
+	// First request: populate cache.
+	req := httptest.NewRequest(http.MethodGet, "/collections/x", nil)
+	ctx := middleware.WithSTACInfo(req.Context(), &middleware.STACInfo{
+		RequestType: middleware.RequestTypeCollection,
+		Collection:  "x",
+	})
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+	mw(inner).ServeHTTP(rr, req)
+
+	// Second request: should be a cache hit. The cached headers
+	// must NOT include Set-Cookie or Authorization.
+	req2 := httptest.NewRequest(http.MethodGet, "/collections/x", nil)
+	req2 = req2.WithContext(ctx)
+	rr2 := httptest.NewRecorder()
+	mw(inner).ServeHTTP(rr2, req2)
+
+	if got := rr2.Header().Get("X-Cache-Status"); got != "HIT" {
+		t.Fatalf("expected HIT on second request, got %q", got)
+	}
+	if got := rr2.Header().Get("Set-Cookie"); got != "" {
+		t.Errorf("Set-Cookie leaked through cache: %q", got)
+	}
+	if got := rr2.Header().Get("Authorization"); got != "" {
+		t.Errorf("Authorization leaked through cache: %q", got)
+	}
+	// ETag is in the allowlist — should survive.
+	if got := rr2.Header().Get("ETag"); got != `"v1"` {
+		t.Errorf("ETag dropped from cache: %q", got)
 	}
 }
