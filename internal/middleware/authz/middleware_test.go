@@ -525,3 +525,77 @@ func TestAuthz_GeofenceFilterModeDefaultsTrueWhenAllowedAreaSet(t *testing.T) {
 		t.Fatalf("FilterMode must default to true when AllowedArea is set; an operator who forgets the flag must not get a silently disabled geofence")
 	}
 }
+
+
+// TestAuthz_Geofence_MalformedFeatureCollection_Returns502 asserts
+// the H-authz-3 behaviour: a 2xx upstream response that *claims*
+// to be a FeatureCollection but is unparseable must surface as 502
+// rather than be forwarded as-is. The previous fail-open path
+// shipped unrestricted bytes despite the geofence having no chance
+// to enforce.
+func TestAuthz_Geofence_MalformedFeatureCollection_Returns502(t *testing.T) {
+	polygon := map[string]interface{}{
+		"type": "Polygon",
+		"coordinates": []interface{}{[]interface{}{
+			[]interface{}{0.0, 0.0},
+			[]interface{}{10.0, 0.0},
+			[]interface{}{10.0, 10.0},
+			[]interface{}{0.0, 10.0},
+			[]interface{}{0.0, 0.0},
+		}},
+	}
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				Geofence: &GeofenceConstraint{AllowedArea: polygon, FilterMode: true},
+			},
+		}},
+		AllowAnonymous: true,
+	})
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	body := []byte(`{"type":"FeatureCollection","features":INVALID}`)
+	rr := runMWWithBody(mw, r, http.StatusOK, body)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("want 502 for malformed FeatureCollection, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestAuthz_Geofence_NonFeatureCollection200_PassesThrough asserts
+// the symmetric case: a 2xx upstream response whose body is a
+// singular Item (not a FeatureCollection) must be forwarded
+// unchanged — geofence post-filtering doesn't apply, and any
+// single-record enforcement happens via validateSingleRecord on
+// item GET routes.
+func TestAuthz_Geofence_NonFeatureCollection200_PassesThrough(t *testing.T) {
+	polygon := map[string]interface{}{
+		"type": "Polygon",
+		"coordinates": []interface{}{[]interface{}{
+			[]interface{}{0.0, 0.0},
+			[]interface{}{10.0, 0.0},
+			[]interface{}{10.0, 10.0},
+			[]interface{}{0.0, 10.0},
+			[]interface{}{0.0, 0.0},
+		}},
+	}
+	mw := NewHTTPMiddleware(HTTPConfig{
+		Enforcer: &stubEnforcer{decision: &AuthzDecision{
+			Allowed: true,
+			Constraints: &AuthzConstraints{
+				Geofence: &GeofenceConstraint{AllowedArea: polygon, FilterMode: true},
+			},
+		}},
+		AllowAnonymous: true,
+	})
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch}
+	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+	body := []byte(`{"type":"Item","id":"x"}`)
+	rr := runMWWithBody(mw, r, http.StatusOK, body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200 pass-through, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != string(body) {
+		t.Fatalf("body mutated; got %q want %q", rr.Body.String(), string(body))
+	}
+}

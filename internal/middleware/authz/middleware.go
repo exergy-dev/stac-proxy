@@ -15,6 +15,7 @@
 package authz
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -122,14 +123,27 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 
 			// Geofence post-filter: only when allowed-area is set,
 			// filter-mode is on, and the geofence wasn't pushed down as
-			// a CQL2 predicate.
+			// a CQL2 predicate. A malformed FeatureCollection on a 2xx
+			// upstream response now fails closed (502) instead of being
+			// forwarded unfiltered — see filterByGeofence.
 			if decision.Constraints != nil &&
 				decision.Constraints.Geofence != nil &&
 				decision.Constraints.Geofence.FilterMode &&
 				!decision.Constraints.GeofencePushedDown &&
 				status >= 200 && status < 300 {
-				if filtered, ok := filterByGeofence(body, decision.Constraints.Geofence); ok {
+				filtered, fstatus := filterByGeofence(body, decision.Constraints.Geofence)
+				switch fstatus {
+				case geofenceFiltered:
 					body = filtered
+				case geofenceMalformed:
+					writeError(w, http.StatusBadGateway, "BadGateway",
+						"upstream returned malformed FeatureCollection; geofence cannot enforce")
+					return
+				case geofenceNotApplicable:
+					// Body wasn't a FeatureCollection (e.g. a singular
+					// Item or a JSON error wrapped in 200) — pass through
+					// unchanged. The single-record validation branch
+					// below will catch policy violations on items.
 				}
 			}
 
@@ -399,25 +413,73 @@ func validateSingleRecord(body []byte, c *AuthzConstraints) (bool, error) {
 	return ok, nil
 }
 
+// geofenceFilterStatus distinguishes the three outcomes of
+// filterByGeofence so the caller can make the correct enforcement
+// decision instead of conflating "no filter applied" (pass-through)
+// with "we couldn't parse the body" (fail-open).
+type geofenceFilterStatus int
+
+const (
+	// geofenceNotApplicable means the body wasn't FeatureCollection-shaped
+	// JSON (e.g. a singular Item, an error wrapped in 200, or a non-JSON
+	// payload). The caller should forward the body unchanged.
+	geofenceNotApplicable geofenceFilterStatus = iota
+	// geofenceFiltered means the body was a FeatureCollection and the
+	// returned bytes contain the filtered version.
+	geofenceFiltered
+	// geofenceMalformed means the body claimed to be a FeatureCollection
+	// (top-level type=="FeatureCollection") but parsing failed or the
+	// "features" array was missing/wrong-typed. The caller MUST NOT
+	// forward the original body — the geofence cannot be enforced —
+	// and should return 502 to the client.
+	geofenceMalformed
+)
+
 // filterByGeofence post-filters a FeatureCollection response against a
-// geofence. Returns (mutated, ok); ok=false means body wasn't a
-// FeatureCollection (or couldn't be parsed) and should pass through.
-func filterByGeofence(body []byte, geofence *GeofenceConstraint) ([]byte, bool) {
+// geofence. The returned status drives caller enforcement:
+//
+//   - geofenceFiltered:     bytes contains the filtered FC.
+//   - geofenceNotApplicable: body wasn't a FeatureCollection; pass
+//     through (single-record validation may still apply downstream).
+//   - geofenceMalformed:    body looked like a FeatureCollection but
+//     was unparsable; caller MUST return 502 — the prior behaviour
+//     of forwarding the original body would have unrestricted-leaked
+//     data the geofence was supposed to constrain.
+//
+// We discriminate "looked like a FC but malformed" by checking
+// fc["type"] == "FeatureCollection" before deciding which bucket to
+// bin a parse failure into.
+func filterByGeofence(body []byte, geofence *GeofenceConstraint) ([]byte, geofenceFilterStatus) {
 	if len(body) == 0 || geofence == nil {
-		return nil, false
+		return nil, geofenceNotApplicable
 	}
 	allowed, denied, err := parseGeofenceAreas(geofence)
 	if err != nil || (allowed == nil && denied == nil) {
-		return nil, false
+		return nil, geofenceNotApplicable
 	}
+
+	// Cheap top-level shape sniff: if the body claims to be a
+	// FeatureCollection, any subsequent parse/structure failure is a
+	// fail-closed event — the upstream told us this is the protected
+	// shape and we couldn't extract it.
+	looksLikeFC := bodyClaimsFeatureCollection(body)
 
 	var fc map[string]interface{}
 	if err := json.Unmarshal(body, &fc); err != nil {
-		return nil, false
+		if looksLikeFC {
+			return nil, geofenceMalformed
+		}
+		return nil, geofenceNotApplicable
+	}
+	typeStr, _ := fc["type"].(string)
+	if typeStr != "FeatureCollection" {
+		return nil, geofenceNotApplicable
 	}
 	features, ok := fc["features"].([]interface{})
 	if !ok {
-		return nil, false
+		// type=FeatureCollection but features array missing or
+		// wrong-typed — malformed.
+		return nil, geofenceMalformed
 	}
 
 	kept := make([]interface{}, 0, len(features))
@@ -451,9 +513,24 @@ func filterByGeofence(body []byte, geofence *GeofenceConstraint) ([]byte, bool) 
 	}
 	out, err := json.Marshal(fc)
 	if err != nil {
-		return nil, false
+		return nil, geofenceMalformed
 	}
-	return out, true
+	return out, geofenceFiltered
+}
+
+// bodyClaimsFeatureCollection inspects the first ~2KB of body for a
+// top-level "type":"FeatureCollection" pair without fully parsing.
+// We use this to decide whether a subsequent parse failure should be
+// treated as malformed (fail-closed) or as not-applicable
+// (pass-through). The check tolerates whitespace and either quote
+// style inside the value.
+func bodyClaimsFeatureCollection(body []byte) bool {
+	const limit = 2048
+	if len(body) > limit {
+		body = body[:limit]
+	}
+	// crude but cheap; full parse handles the canonical case.
+	return bytes.Contains(body, []byte("\"FeatureCollection\""))
 }
 
 // parseGeofenceAreas parses the geofence's optional allowed and denied

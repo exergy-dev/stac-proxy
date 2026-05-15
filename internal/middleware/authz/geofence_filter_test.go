@@ -37,9 +37,9 @@ func TestFilterByGeofence_DropsOutsideItems(t *testing.T) {
 		"numberReturned": 2,
 	})
 
-	out, ok := filterByGeofence(body, g)
-	if !ok {
-		t.Fatal("filterByGeofence should mutate a FeatureCollection body")
+	out, status := filterByGeofence(body, g)
+	if status != geofenceFiltered {
+		t.Fatalf("filterByGeofence: want geofenceFiltered, got %v", status)
 	}
 	var fc map[string]interface{}
 	if err := json.Unmarshal(out, &fc); err != nil {
@@ -61,8 +61,44 @@ func TestFilterByGeofence_NonFeatureCollectionPassesThrough(t *testing.T) {
 	g := &GeofenceConstraint{
 		AllowedArea: map[string]interface{}{"type": "Point", "coordinates": []interface{}{0.0, 0.0}},
 	}
-	if _, ok := filterByGeofence([]byte(`{"error":"boom"}`), g); ok {
-		t.Fatal("non-FeatureCollection body should pass through unchanged")
+	if _, status := filterByGeofence([]byte(`{"error":"boom"}`), g); status != geofenceNotApplicable {
+		t.Fatalf("non-FeatureCollection body should be NotApplicable, got %v", status)
+	}
+}
+
+// TestFilterByGeofence_MalformedFeatureCollectionFailsClosed asserts
+// the H-authz-3 fail-closed path: a body whose top-level type claims
+// FeatureCollection but is otherwise unparseable returns
+// geofenceMalformed so the caller can surface 502 instead of
+// fail-opening the original bytes.
+func TestFilterByGeofence_MalformedFeatureCollectionFailsClosed(t *testing.T) {
+	g := &GeofenceConstraint{
+		AllowedArea: map[string]interface{}{
+			"type": "Polygon",
+			"coordinates": []interface{}{
+				[]interface{}{
+					[]interface{}{0.0, 0.0},
+					[]interface{}{1.0, 0.0},
+					[]interface{}{1.0, 1.0},
+					[]interface{}{0.0, 1.0},
+					[]interface{}{0.0, 0.0},
+				},
+			},
+		},
+	}
+	cases := []struct {
+		name string
+		body []byte
+	}{
+		{"unparseable features array", []byte(`{"type":"FeatureCollection","features":INVALID}`)},
+		{"features wrong type", []byte(`{"type":"FeatureCollection","features":42}`)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, status := filterByGeofence(c.body, g); status != geofenceMalformed {
+				t.Fatalf("want geofenceMalformed, got %v", status)
+			}
+		})
 	}
 }
 
