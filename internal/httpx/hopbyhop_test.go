@@ -117,3 +117,18 @@ func TestStripHopByHopHeaders_ConnectionWithWhitespaceAndEmpty(t *testing.T) {
 		t.Error("whitespace-trimmed connection-named headers not stripped")
 	}
 }
+
+func TestStripHopByHopHeaders_StripsForwarded(t *testing.T) {
+	h := http.Header{}
+	h.Set("Forwarded", "for=192.0.2.60;proto=http;by=203.0.113.43")
+	h.Set("Content-Type", "application/json")
+
+	StripHopByHopHeaders(h)
+
+	if h.Get("Forwarded") != "" {
+		t.Error("RFC 7239 Forwarded header not stripped")
+	}
+	if h.Get("Content-Type") != "application/json" {
+		t.Error("end-to-end Content-Type incorrectly stripped")
+	}
+}
