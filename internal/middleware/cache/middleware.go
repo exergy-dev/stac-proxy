@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/httpx"
@@ -24,6 +25,31 @@ import (
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
+
+// normalizeQuery returns a canonical form of raw with parameters sorted
+// alphabetically by key (and per-key values preserved in original
+// order). It is used to derive a cache key component so that
+// permutations like "?a=1&b=2" and "?b=2&a=1" map to the same entry.
+//
+// HIGH H-cache-3: without this, the cache is keyed by the literal
+// query string. An attacker can permute parameter order to bypass
+// cached entries (cache poisoning vector if combined with
+// per-principal entries; cache thrash for arbitrary callers).
+//
+// Falls back to raw on parse failure so a malformed query does not
+// silently collapse into the same bucket as the empty query.
+func normalizeQuery(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	v, err := url.ParseQuery(raw)
+	if err != nil {
+		return raw
+	}
+	// url.Values.Encode sorts keys alphabetically and percent-encodes
+	// in a single deterministic form.
+	return v.Encode()
+}
 
 // principalClass returns a stable per-principal namespace string used as
 // part of the cache key digest. The literal "anonymous" is returned for
@@ -144,9 +170,12 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 			cacheReq := CacheableRequest{
-				Method:         r.Method,
-				Path:           r.URL.Path,
-				Query:          r.URL.RawQuery,
+				Method: r.Method,
+				Path:   r.URL.Path,
+				// Normalize RawQuery so parameter permutations
+				// (?a=1&b=2 vs ?b=2&a=1) collapse to a single
+				// cache bucket. (HIGH H-cache-3)
+				Query:          normalizeQuery(r.URL.RawQuery),
 				RequestType:    info.RequestType.String(),
 				Collection:     info.Collection,
 				PrincipalClass: principalClass(r.Context()),

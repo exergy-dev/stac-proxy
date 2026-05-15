@@ -218,6 +218,44 @@ func TestCache_FiltersSensitiveHeadersFromEntry(t *testing.T) {
 	}
 }
 
+// TestCache_QueryParamOrderInvariant (HIGH H-cache-3): two requests
+// with the same query parameters in different order must hit the same
+// cache entry. Otherwise an attacker can permute parameters to bypass
+// the cache (and force expensive upstream work) and benign callers can
+// thrash the cache for no benefit.
+func TestCache_QueryParamOrderInvariant(t *testing.T) {
+	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
+	defer store.Close()
+
+	var upstreamHits int
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	mw := NewHTTPMiddleware(Config{Store: store})(inner)
+
+	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch}
+
+	// First request: ?a=1&b=2  -> MISS, populates cache.
+	rr1 := httptest.NewRecorder()
+	mw.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/search?a=1&b=2", nil), info))
+	if got := rr1.Header().Get("X-Cache-Status"); got != "MISS" {
+		t.Fatalf("first request X-Cache-Status: want MISS, got %q", got)
+	}
+
+	// Second request: ?b=2&a=1 -> must HIT the same entry.
+	rr2 := httptest.NewRecorder()
+	mw.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/search?b=2&a=1", nil), info))
+	if got := rr2.Header().Get("X-Cache-Status"); got != "HIT" {
+		t.Fatalf("permuted-query request X-Cache-Status: want HIT (cache key must be order-invariant), got %q", got)
+	}
+	if upstreamHits != 1 {
+		t.Errorf("upstream hits = %d, want 1 (second request should not have reached upstream)", upstreamHits)
+	}
+}
+
 // TestCache_DoesNotMixAnonymousAndAuthenticated (C3): the cache key
 // must include a principal-class component so an anonymous response
 // can never be served back to an authenticated caller (or vice
