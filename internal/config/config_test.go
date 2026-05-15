@@ -2168,6 +2168,81 @@ func TestEdgeCases(t *testing.T) {
 	})
 }
 
+// TestConfig_ExpandEnv_ErrorsOnUndefined verifies that referencing
+// an unset environment variable from YAML now fails Load (HIGH
+// H-config-1). Previously os.ExpandEnv silently produced "" and the
+// config slipped past validation as "configured".
+func TestConfig_ExpandEnv_ErrorsOnUndefined(t *testing.T) {
+	// Cannot t.Parallel — uses os.Setenv which races with other env tests.
+	const varName = "STAC_PROXY_TEST_UNSET_8E2F1A"
+	os.Unsetenv(varName)
+
+	yaml := `
+mode: single
+upstream:
+  url: ${` + varName + `}
+`
+	tmp := createTempFile(t, yaml)
+	defer os.Remove(tmp)
+
+	_, err := Load(tmp)
+	if err == nil {
+		t.Fatal("expected error for undefined env var, got nil")
+	}
+	if !strings.Contains(err.Error(), varName) {
+		t.Errorf("error should mention the undefined var %q; got: %v", varName, err)
+	}
+}
+
+// TestConfig_ExpandEnv_DefaultSyntax verifies ${VAR:-default}
+// expands to "default" when VAR is unset, matching shell semantics.
+func TestConfig_ExpandEnv_DefaultSyntax(t *testing.T) {
+	const varName = "STAC_PROXY_TEST_DEFAULT_8E2F1B"
+	os.Unsetenv(varName)
+
+	yaml := `
+mode: single
+upstream:
+  url: ${` + varName + `:-https://fallback.example.com}
+`
+	tmp := createTempFile(t, yaml)
+	defer os.Remove(tmp)
+
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("expected default to satisfy load, got error: %v", err)
+	}
+	if cfg.Upstream == nil || cfg.Upstream.URL != "https://fallback.example.com" {
+		t.Errorf("expected fallback to apply, got %+v", cfg.Upstream)
+	}
+}
+
+// TestConfig_ExpandEnv_SetVarTakesPriority verifies that when the
+// env var IS set, its value wins over the :-default fallback.
+func TestConfig_ExpandEnv_SetVarTakesPriority(t *testing.T) {
+	const varName = "STAC_PROXY_TEST_SET_8E2F1C"
+	if err := os.Setenv(varName, "https://from-env.example.com"); err != nil {
+		t.Fatalf("setenv: %v", err)
+	}
+	defer os.Unsetenv(varName)
+
+	yaml := `
+mode: single
+upstream:
+  url: ${` + varName + `:-https://fallback.example.com}
+`
+	tmp := createTempFile(t, yaml)
+	defer os.Remove(tmp)
+
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Upstream.URL != "https://from-env.example.com" {
+		t.Errorf("expected env-set value to win, got %q", cfg.Upstream.URL)
+	}
+}
+
 // createTempFile creates a temporary file with the given content
 func createTempFile(t *testing.T, content string) string {
 	t.Helper()

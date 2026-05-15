@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -380,8 +381,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Expand environment variables
-	data = []byte(os.ExpandEnv(string(data)))
+	// Expand environment variables. Unlike os.ExpandEnv, we treat
+	// undefined references as a configuration error rather than
+	// silently expanding to "" — a YAML containing ${MISSING_SECRET}
+	// otherwise reads as "configured" with an empty value and slips
+	// past validation. Shell-style ${VAR:-default} provides an
+	// explicit opt-out for genuinely optional fields.
+	expanded, err := expandEnvStrict(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	data = []byte(expanded)
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -396,6 +406,48 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// expandEnvStrict performs ${VAR} / $VAR substitution like
+// os.ExpandEnv, with two semantic differences:
+//
+//   - References to unset environment variables produce an error
+//     rather than expanding to "". This catches configs where a
+//     required secret was forgotten — without the strict check, the
+//     YAML would parse as if the field were set to "" and downstream
+//     validation would happily accept the empty string as
+//     "configured".
+//
+//   - Shell-style ${VAR:-default} returns "default" when VAR is
+//     unset (or set to ""), giving operators an explicit way to
+//     declare a fallback for genuinely optional fields.
+//
+// All undefined references are collected before returning so the
+// operator gets a single error listing every missing variable, not
+// one-error-per-load-attempt.
+func expandEnvStrict(s string) (string, error) {
+	var missing []string
+	out := os.Expand(s, func(name string) string {
+		// ${VAR:-default}: name == "VAR:-default"
+		if idx := strings.Index(name, ":-"); idx >= 0 {
+			varName := name[:idx]
+			fallback := name[idx+2:]
+			if v, ok := os.LookupEnv(varName); ok && v != "" {
+				return v
+			}
+			return fallback
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		missing = append(missing, name)
+		return ""
+	})
+	if len(missing) > 0 {
+		return "", fmt.Errorf("undefined environment variable(s) referenced in config: %s (use ${VAR:-default} to provide a fallback)",
+			strings.Join(missing, ", "))
+	}
+	return out, nil
 }
 
 // setDefaults sets default values for optional fields.
