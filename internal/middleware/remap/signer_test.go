@@ -66,6 +66,42 @@ func TestNewSigner_RejectsCloudFrontAndS3(t *testing.T) {
 	}
 }
 
+// TestHMACSigner_RotationVerifiesOldSigs (M-remap-2): after rotating
+// a new primary key in, signatures issued under the old key continue
+// to verify and new signatures use the new key. This is the property
+// that makes a key rotation operation safe to perform without
+// invalidating in-flight signed URLs.
+func TestHMACSigner_RotationVerifiesOldSigs(t *testing.T) {
+	s := NewHMACSigner("secret-A")
+
+	// Signature under A.
+	signedA := s.Sign(context.Background(), "https://stac.example.com/items/abc?role=read", time.Hour)
+
+	// Rotate: B becomes primary, A stays for verification only.
+	s.RotateSecret([]byte("secret-B"))
+
+	// Old A-signed URL still verifies.
+	if ok, err := s.Verify(signedA); !ok || err != nil {
+		t.Errorf("old A-signed URL must still verify after rotation: ok=%v err=%v", ok, err)
+	}
+
+	// New signature uses B.
+	signedB := s.Sign(context.Background(), "https://stac.example.com/items/abc?role=read", time.Hour)
+	if signedB == signedA {
+		t.Errorf("after rotation, Sign should produce a new signature (B != A)")
+	}
+	if ok, err := s.Verify(signedB); !ok || err != nil {
+		t.Errorf("new B-signed URL must verify: ok=%v err=%v", ok, err)
+	}
+
+	// A signer that knows ONLY B must reject the A-signed URL —
+	// proves the A-signature/B-signature distinction is real.
+	bOnly := NewHMACSigner("secret-B")
+	if ok, _ := bOnly.Verify(signedA); ok {
+		t.Errorf("A-signed URL should not verify under a B-only signer (sanity check)")
+	}
+}
+
 func TestNewSigner_HMACAndNoOp(t *testing.T) {
 	s, err := NewSigner("hmac", "secret")
 	if err != nil {

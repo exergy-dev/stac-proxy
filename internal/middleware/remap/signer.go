@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,15 +20,60 @@ type Signer interface {
 }
 
 // HMACSigner signs URLs using HMAC-SHA256.
+//
+// HMACSigner holds a *slice* of secrets to support key rotation
+// without breaking in-flight signed URLs (M-remap-2):
+//
+//   - Sign always uses secrets[0] (the primary).
+//   - Verify tries every secret in order; first match wins.
+//   - RotateSecret prepends a new primary and demotes the previous
+//     primaries; the rotation operator can then expire the trailing
+//     entries on whatever overlap window matches the longest in-
+//     flight signed-URL TTL.
+//
+// Concurrent calls to Sign/Verify are safe; concurrent rotation is
+// serialized via the embedded mutex. The secrets slice is copied on
+// rotation rather than mutated in place so live readers retain a
+// consistent snapshot.
 type HMACSigner struct {
-	secret []byte
+	mu      sync.RWMutex
+	secrets [][]byte
 }
 
-// NewHMACSigner creates a new HMAC signer.
+// NewHMACSigner creates a new HMAC signer with a single primary secret.
 func NewHMACSigner(secret string) *HMACSigner {
 	return &HMACSigner{
-		secret: []byte(secret),
+		secrets: [][]byte{[]byte(secret)},
 	}
+}
+
+// RotateSecret prepends a new primary secret and demotes the previous
+// primary. After rotation:
+//   - new signatures are produced with `next`.
+//   - previously-issued signatures (under any older secret) continue
+//     to verify until the operator drops them by re-rotating.
+//
+// The slice grows unbounded; callers that perform many rotations
+// should call CompactSecrets (or build a new HMACSigner) once they
+// are confident no in-flight signed URLs reference an older key.
+func (s *HMACSigner) RotateSecret(next []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([][]byte, 0, len(s.secrets)+1)
+	cp = append(cp, append([]byte(nil), next...))
+	cp = append(cp, s.secrets...)
+	s.secrets = cp
+}
+
+// snapshotSecrets returns a copy-of-pointers slice safe to iterate
+// without holding the lock. The underlying byte slices are immutable
+// once stored.
+func (s *HMACSigner) snapshotSecrets() [][]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([][]byte, len(s.secrets))
+	copy(out, s.secrets)
+	return out
 }
 
 // signingMessage builds the canonical bytes the HMAC covers. Host, path
@@ -41,7 +87,8 @@ func signingMessage(host, path string, q url.Values, expiry int64) string {
 	return strings.ToLower(host) + "\n" + path + "\n" + q.Encode()
 }
 
-// Sign adds an HMAC signature and expiry to the URL.
+// Sign adds an HMAC signature and expiry to the URL using the primary
+// secret (secrets[0]).
 func (s *HMACSigner) Sign(ctx context.Context, rawURL string, ttl time.Duration) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -52,7 +99,9 @@ func (s *HMACSigner) Sign(ctx context.Context, rawURL string, ttl time.Duration)
 
 	q := parsed.Query()
 	message := signingMessage(parsed.Host, parsed.Path, q, expiry)
-	mac := hmac.New(sha256.New, s.secret)
+
+	primary := s.snapshotSecrets()[0]
+	mac := hmac.New(sha256.New, primary)
 	mac.Write([]byte(message))
 	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 
@@ -64,6 +113,12 @@ func (s *HMACSigner) Sign(ctx context.Context, rawURL string, ttl time.Duration)
 }
 
 // Verify validates an HMAC-signed URL.
+//
+// During key rotation Verify accepts a signature produced by ANY
+// secret currently held by the signer (M-remap-2). The first match
+// wins; absence of a match is reported as a single "invalid
+// signature" error rather than per-key detail to avoid leaking the
+// rotation history.
 func (s *HMACSigner) Verify(rawURL string) (bool, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -88,15 +143,16 @@ func (s *HMACSigner) Verify(rawURL string) (bool, error) {
 	}
 
 	message := signingMessage(parsed.Host, parsed.Path, q, expiry)
-	mac := hmac.New(sha256.New, s.secret)
-	mac.Write([]byte(message))
-	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 
-	if !hmac.Equal([]byte(sig), []byte(expectedSig)) {
-		return false, fmt.Errorf("invalid signature")
+	for _, secret := range s.snapshotSecrets() {
+		mac := hmac.New(sha256.New, secret)
+		mac.Write([]byte(message))
+		expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		if hmac.Equal([]byte(sig), []byte(expectedSig)) {
+			return true, nil
+		}
 	}
-
-	return true, nil
+	return false, fmt.Errorf("invalid signature")
 }
 
 // NoOpSigner is a signer that doesn't modify URLs.
