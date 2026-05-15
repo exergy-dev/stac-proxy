@@ -196,11 +196,21 @@ func (p *OIDCProvider) Authenticate(ctx context.Context, req *http.Request) (*Pr
 		return nil, fmt.Errorf("failed to get signing key: %w", err)
 	}
 
-	// Parse and validate the token
+	// Parse and validate the token. Restrict to RSA/EC algorithms:
+	// JWKS keys are RSA or EC (parseJWK rejects others), so HMAC algs
+	// must be excluded. Without this allowlist an attacker who knows
+	// the public key can forge an HS256 token using the PEM-encoded
+	// public-key bytes as the HMAC secret — jwt.ParseWithClaims would
+	// hand the *rsa.PublicKey to the HS256 verifier and accept the
+	// forgery (alg-confusion attack).
 	claims := jwt.MapClaims{}
 	token, err = jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 		return key, nil
-	}, jwt.WithIssuer(p.issuer), jwt.WithAudience(p.audience))
+	},
+		jwt.WithValidMethods([]string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}),
+		jwt.WithIssuer(p.issuer),
+		jwt.WithAudience(p.audience),
+	)
 
 	if err != nil {
 		return nil, fmt.Errorf("token validation failed: %w", err)
