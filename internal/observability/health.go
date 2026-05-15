@@ -346,14 +346,28 @@ type OriginCheck struct {
 	timeout time.Duration
 }
 
-// NewOriginCheck creates a new origin health check.
+// NewOriginCheck creates a new origin health check using a default
+// *http.Client. Prefer NewOriginCheckWithClient so the check shares
+// the project's instrumented transport (retry, custom CA pool,
+// per-origin auth) instead of constructing a parallel client that
+// bypasses project-wide policy (M-observability-2).
 func NewOriginCheck(name, url string) *OriginCheck {
+	return NewOriginCheckWithClient(name, url, nil)
+}
+
+// NewOriginCheckWithClient creates a new origin health check that
+// dispatches probes through the supplied *http.Client. When client is
+// nil, http.DefaultClient is used. Pass the federation OriginClient's
+// HTTPClient() so /health probes traverse the same transport stack
+// (CA pool, retry, instrumentation) as production fan-out.
+func NewOriginCheckWithClient(name, url string, client *http.Client) *OriginCheck {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	return &OriginCheck{
-		name: name,
-		url:  url,
-		client: &http.Client{
-			Timeout: 5 * time.Second,
-		},
+		name:    name,
+		url:     url,
+		client:  client,
 		timeout: 5 * time.Second,
 	}
 }

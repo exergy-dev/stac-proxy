@@ -1151,6 +1151,16 @@ func (h *Handler) OriginIDs() []string {
 	return ids
 }
 
+// OriginClient returns the *OriginClient for the given origin ID, or
+// nil if no such origin is registered. Exposed so external collaborators
+// (e.g. cmd/stac-proxy wiring observability.OriginCheck) can reuse the
+// same instrumented HTTP client/transport that fan-out uses, instead
+// of constructing a parallel client that bypasses retry, custom CA
+// pools, etc.
+func (h *Handler) OriginClient(id string) *OriginClient {
+	return h.origins[id]
+}
+
 // reverseProxyOnce forwards req to a single origin via
 // httputil.ReverseProxy. Auth + retry are applied transparently via
 // the origin's RoundTripper chain; the captured response is returned

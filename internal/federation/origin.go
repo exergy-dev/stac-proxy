@@ -411,6 +411,14 @@ func (c *OriginClient) Transport() http.RoundTripper {
 	return c.transport
 }
 
+// HTTPClient returns the origin's *http.Client. Exposed so collaborators
+// (e.g. observability.OriginCheck) can reuse the same instrumented
+// transport (retry, custom CA pool, per-origin auth) rather than
+// constructing a parallel client that bypasses project-wide policy.
+func (c *OriginClient) HTTPClient() *http.Client {
+	return c.httpClient
+}
+
 // MaxResponseBytes returns the resolved per-call upstream response
 // body cap for this client. Callers wrapping reverse-proxy responses
 // (e.g. reverseProxyOnce) can use this to enforce the same cap on

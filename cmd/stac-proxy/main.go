@@ -639,11 +639,6 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		}
 		origins = append(origins, origin)
 
-		// Add to health checker — bind the URL into a local Check so we
-		// don't capture the loop variable.
-		baseURL := originCfg.BaseURL
-		health.AddCheck(observability.NewOriginCheck(originCfg.ID, baseURL))
-
 		logger.Info("Configured origin",
 			"id", originCfg.ID,
 			"url", originCfg.BaseURL,
@@ -672,7 +667,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 
 	caps := computeConformanceCaps(cfg, origins)
 
-	return federation.NewHandler(federation.HandlerConfig{
+	handler, err := federation.NewHandler(federation.HandlerConfig{
 		Origins:          origins,
 		ConflictStrategy: conflictStrategy,
 		MaxConcurrent:    cfg.Federation.MaxConcurrent,
@@ -685,6 +680,24 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		AssetSigner:      buildAssetSigner(cfg),
 		CursorSecret:     []byte(cfg.Federation.CursorSecret),
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Register origin health checks against the same *http.Client the
+	// federation fan-out uses, so probes share the project's
+	// instrumented transport (retry, custom CA pool, per-origin auth)
+	// rather than constructing a parallel client (M-observability-2).
+	for _, o := range origins {
+		var client *http.Client
+		if oc := handler.OriginClient(o.ID); oc != nil {
+			client = oc.HTTPClient()
+		}
+		baseURL := o.BaseURL
+		health.AddCheck(observability.NewOriginCheckWithClient(o.ID, baseURL, client))
+	}
+
+	return handler, nil
 }
 
 // computeConformanceCaps derives the proxy's runtime conformance
@@ -752,9 +765,6 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 		timeout = 30 * time.Second
 	}
 
-	// Add upstream health check
-	health.AddCheck(observability.NewOriginCheck("upstream", cfg.Upstream.URL))
-
 	supportsFilter := cfg.Upstream.SupportsFilterExtension
 	if !supportsFilter {
 		supportsFilter = probeFilterExtension(logger, "upstream", cfg.Upstream.URL)
@@ -779,7 +789,7 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 
 	caps := computeConformanceCaps(cfg, []*federation.Origin{origin})
 
-	return federation.NewHandler(federation.HandlerConfig{
+	handler, err := federation.NewHandler(federation.HandlerConfig{
 		Origins:          []*federation.Origin{origin},
 		ConflictStrategy: federation.ConflictPriorityWins,
 		ProxyBaseURL:     "",
@@ -787,6 +797,19 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 		LifetimeCtx:      ctx,
 		Logger:           logger,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Register upstream health check against the same instrumented
+	// HTTP client used for fan-out (M-observability-2).
+	var hc *http.Client
+	if oc := handler.OriginClient(origin.ID); oc != nil {
+		hc = oc.HTTPClient()
+	}
+	health.AddCheck(observability.NewOriginCheckWithClient("upstream", cfg.Upstream.URL, hc))
+
+	return handler, nil
 }
 
 // newMetricsServer constructs the Prometheus metrics *http.Server

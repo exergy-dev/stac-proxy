@@ -149,6 +149,52 @@ func TestHealth_ServesStaleDuringSlowCheck(t *testing.T) {
 	}
 }
 
+// recordingTransport captures the http.Request it is asked to dispatch
+// and returns a canned 200 OK response. Used to verify OriginCheck
+// dispatches through an injected client (M-observability-2).
+type recordingTransport struct {
+	mu  sync.Mutex
+	req *http.Request
+}
+
+func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.req = r
+	rt.mu.Unlock()
+	return &http.Response{
+		StatusCode: 200,
+		Body:       http.NoBody,
+		Header:     http.Header{},
+		Request:    r,
+	}, nil
+}
+
+// TestOriginCheck_UsesInjectedClient verifies M-observability-2:
+// OriginCheck dispatches through the supplied *http.Client, so the
+// caller's transport (CA pool, retry, instrumentation) is honored
+// instead of being shadowed by a parallel default-client construction.
+func TestOriginCheck_UsesInjectedClient(t *testing.T) {
+	rt := &recordingTransport{}
+	client := &http.Client{Transport: rt, Timeout: 2 * time.Second}
+
+	check := NewOriginCheckWithClient("upstream", "http://upstream.invalid/health", client)
+	res := check.Check(context.Background())
+
+	rt.mu.Lock()
+	gotReq := rt.req
+	rt.mu.Unlock()
+
+	if gotReq == nil {
+		t.Fatalf("injected transport never received a request; OriginCheck must dispatch via the supplied client")
+	}
+	if gotReq.URL.String() != "http://upstream.invalid/health" {
+		t.Errorf("request URL = %q, want %q", gotReq.URL.String(), "http://upstream.invalid/health")
+	}
+	if res.Status != StatusHealthy {
+		t.Errorf("status = %q, want %q", res.Status, StatusHealthy)
+	}
+}
+
 // TestHealth_RunChecksConcurrent ensures the cache is goroutine-safe
 // under concurrent probe load — no panics, no data races, every probe
 // returns a result.
