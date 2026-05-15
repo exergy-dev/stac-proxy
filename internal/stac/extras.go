@@ -36,11 +36,21 @@ func SearchContextOf(fc *FeatureCollection) *SearchContext {
 	return nil
 }
 
+// itemDatetimeFormats lists the formats ItemDatetime tries in order.
+// RFC3339 is the STAC spec form; RFC3339Nano is the same with
+// fractional seconds; the date-only form is accepted as a leniency
+// for sources that publish only a calendar date (treated as midnight UTC).
+var itemDatetimeFormats = []string{
+	time.RFC3339,
+	time.RFC3339Nano,
+	"2006-01-02",
+}
+
 // ItemDatetime returns the canonical datetime for a STAC Item, parsed
 // from properties.datetime. When that field is null (a STAC Item may
 // omit datetime in favor of start_datetime/end_datetime), it falls
 // back to properties.start_datetime. Returns (zero, false) if neither
-// is present or parseable as RFC 3339.
+// is present or parseable as one of itemDatetimeFormats.
 //
 // The library represents Properties as map[string]any, so datetime is
 // surfaced as a JSON string rather than a typed *time.Time. This
@@ -58,8 +68,10 @@ func ItemDatetime(item *Item) (time.Time, bool) {
 		if !ok {
 			continue
 		}
-		if t, err := time.Parse(time.RFC3339, s); err == nil {
-			return t, true
+		for _, layout := range itemDatetimeFormats {
+			if t, err := time.Parse(layout, s); err == nil {
+				return t, true
+			}
 		}
 	}
 	return time.Time{}, false

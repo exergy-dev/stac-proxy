@@ -413,6 +413,22 @@ func TestExtractNextToken(t *testing.T) {
 	if ExtractNextToken([]*Link{{Rel: "next", Href: "no-token-here"}}) != "" {
 		t.Error("no token param should yield empty token")
 	}
+	// Defense against the strings.Split heuristic: a different
+	// query value happens to contain "token=" inside it. The old
+	// implementation extracted "real" from this URL.
+	tricky := []*Link{
+		{Rel: "next", Href: "https://example.com/search?other=x%3Dtoken%3Dreal&token=actual"},
+	}
+	if got := ExtractNextToken(tricky); got != "actual" {
+		t.Errorf("ExtractNextToken with mis-extract trap = %q, want %q", got, "actual")
+	}
+	// Percent-encoded token value should be decoded.
+	enc := []*Link{
+		{Rel: "next", Href: "https://example.com/search?token=a%2Bb%2Fc"},
+	}
+	if got := ExtractNextToken(enc); got != "a+b/c" {
+		t.Errorf("ExtractNextToken decoded = %q, want %q", got, "a+b/c")
+	}
 }
 
 func TestValidateItem(t *testing.T) {

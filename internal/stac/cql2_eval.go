@@ -153,7 +153,11 @@ func evalOp(op *cql2.Op, item map[string]interface{}) (interface{}, error) {
 			return nil, fmt.Errorf("cql2 eval: IN second arg not array (%T)", hay)
 		}
 		for _, e := range arr {
-			if matches, _ := compare(cql2.OpEq, needle, e); matches == true {
+			matches, err := compare(cql2.OpEq, needle, e)
+			if err != nil {
+				return nil, fmt.Errorf("cql2 eval: IN comparator: %w", err)
+			}
+			if matches {
 				return true, nil
 			}
 		}

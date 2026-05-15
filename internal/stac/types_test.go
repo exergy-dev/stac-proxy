@@ -77,6 +77,8 @@ func TestItemDatetimeHelper(t *testing.T) {
 	}{
 		{"datetime present", map[string]any{"datetime": "2024-01-01T00:00:00Z"}, true},
 		{"start_datetime fallback", map[string]any{"datetime": nil, "start_datetime": "2024-01-01T00:00:00Z"}, true},
+		{"rfc3339nano", map[string]any{"datetime": "2024-01-01T00:00:00.123456789Z"}, true},
+		{"date-only fallback", map[string]any{"datetime": "2024-01-01"}, true},
 		{"absent", map[string]any{}, false},
 		{"unparseable", map[string]any{"datetime": "not-a-date"}, false},
 		{"nil properties", nil, false},

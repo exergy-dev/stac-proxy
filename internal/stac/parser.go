@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -288,26 +289,20 @@ func ExtractNextLink(links []*Link) *Link {
 	return nil
 }
 
-// ExtractNextToken extracts token from next link.
+// ExtractNextToken extracts the token query parameter from the next
+// link's href. Uses url.Parse + Query so it correctly handles cases
+// like ?other=token=foo (where a substring "token=" appears inside
+// another query value) and percent-encoded token values.
 func ExtractNextToken(links []*Link) string {
 	link := ExtractNextLink(links)
-	if link == nil {
+	if link == nil || link.Href == "" {
 		return ""
 	}
-
-	// Try to extract token from URL
-	if link.Href != "" {
-		// Parse URL and get token parameter
-		if strings.Contains(link.Href, "token=") {
-			parts := strings.Split(link.Href, "token=")
-			if len(parts) > 1 {
-				token := strings.Split(parts[1], "&")[0]
-				return token
-			}
-		}
+	u, err := url.Parse(link.Href)
+	if err != nil {
+		return ""
 	}
-
-	return ""
+	return u.Query().Get("token")
 }
 
 // ValidateItem validates a STAC item.
