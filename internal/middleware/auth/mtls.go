@@ -34,7 +34,17 @@ type SubjectMapper interface {
 type DefaultSubjectMapper struct{}
 
 // NewMTLSProvider creates a new mTLS authentication provider.
+//
+// TrustedCAs MUST be non-nil. mTLS without an explicit CA pool means
+// the provider would accept any client certificate (the cert.Verify
+// block is skipped when trustedCAs is nil), which is a critical auth
+// bypass — an operator could ship "any cert wins" by accident. The
+// constructor refuses this configuration to make the failure loud at
+// startup rather than silent in production.
 func NewMTLSProvider(cfg MTLSConfig) (*MTLSProvider, error) {
+	if cfg.TrustedCAs == nil {
+		return nil, errors.New("mtls: trustedCAs must be non-nil; mTLS without an explicit CA pool is unsafe")
+	}
 	return &MTLSProvider{
 		name:            cfg.Name,
 		trustedCAs:      cfg.TrustedCAs,
