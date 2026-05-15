@@ -3,7 +3,11 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,12 +17,22 @@ import (
 )
 
 // APIKeyProvider authenticates requests using API keys.
+//
+// Storage format: keys are stored as HMAC-SHA256(HMACSecret, plaintext)
+// — never as plaintext. This serves two goals:
+//   - defense in depth: a memory dump or accidental log of the
+//     internal map yields opaque digests instead of valid credentials;
+//   - constant-time lookup remains O(1) (digest → entry) AND the
+//     constant-time compare against the digest is a real check (not a
+//     post-hoc no-op as the previous direct-string keying made it).
 type APIKeyProvider struct {
 	name       string
 	header     string
 	queryParam string
-	keys       map[string]*APIKeyEntry
-	mu         sync.RWMutex
+	hmacSecret []byte
+	// keys is keyed by hex(HMAC-SHA256(hmacSecret, plaintextKey)).
+	keys map[string]*APIKeyEntry
+	mu   sync.RWMutex
 }
 
 // APIKeyEntry represents a single API key and its associated principal.
@@ -39,14 +53,35 @@ type APIKeyConfig struct {
 	QueryParam string                  // Query parameter to check (e.g., "api_key")
 	KeysFile   string                  // Path to YAML file containing keys
 	Keys       map[string]*APIKeyEntry // Direct key configuration
+	// HMACSecret is the per-deployment secret used to derive the
+	// stored digest of every API key (HMAC-SHA256). When empty, a
+	// random per-process secret is generated; this is acceptable for
+	// in-memory storage but means nothing is shared across restarts.
+	// Operators SHOULD provide a stable secret in production so the
+	// key store retains its meaning across restarts and across nodes.
+	HMACSecret []byte
 }
 
 // NewAPIKeyProvider creates a new API key authentication provider.
 func NewAPIKeyProvider(cfg APIKeyConfig) (*APIKeyProvider, error) {
+	secret := cfg.HMACSecret
+	if len(secret) == 0 {
+		// Generate a random 32-byte per-process secret. Storage is
+		// only valid for this process lifetime, but that is fine for
+		// in-memory key registries and avoids the worst failure mode
+		// (storing plaintext) when the operator forgets to set a
+		// stable secret.
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return nil, fmt.Errorf("apikey: generate hmac secret: %w", err)
+		}
+	}
+
 	p := &APIKeyProvider{
 		name:       cfg.Name,
 		header:     cfg.Header,
 		queryParam: cfg.QueryParam,
+		hmacSecret: secret,
 		keys:       make(map[string]*APIKeyEntry),
 	}
 
@@ -65,15 +100,27 @@ func NewAPIKeyProvider(cfg APIKeyConfig) (*APIKeyProvider, error) {
 		}
 	}
 
-	// Add direct key configuration
+	// Add direct key configuration. Map is keyed by HMAC digest of the
+	// plaintext key — never by the plaintext itself (defense in depth
+	// against memory disclosure / accidental logging).
 	for key, entry := range cfg.Keys {
-		entry.Key = key
-		if entry.Enabled {
-			p.keys[key] = entry
+		if !entry.Enabled {
+			continue
 		}
+		entry.Key = "" // do not retain the plaintext on the entry
+		p.keys[p.digest(key)] = entry
 	}
 
 	return p, nil
+}
+
+// digest computes the HMAC-SHA256 of key under p.hmacSecret and
+// returns it hex-encoded. The hex form is used purely so the result
+// is a valid Go map key.
+func (p *APIKeyProvider) digest(key string) string {
+	h := hmac.New(sha256.New, p.hmacSecret)
+	h.Write([]byte(key))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Name returns the provider name.
@@ -113,23 +160,25 @@ func (p *APIKeyProvider) Authenticate(ctx context.Context, req *http.Request) (*
 		return nil, nil // No API key, let next provider try
 	}
 
-	// Look up the key. p.keys is keyed by the raw API-key string, so a direct
-	// map lookup is O(1) — the previous O(N) linear scan with per-entry
-	// constant-time compare was unnecessary given the storage shape.
+	// HMAC the presented key under the per-deployment secret and look
+	// up by digest. The map never contains plaintext (defense in depth
+	// against memory disclosure or accidental logging), and the lookup
+	// itself remains O(1).
+	presentedDigest := p.digest(apiKey)
+
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	entry, ok := p.keys[apiKey]
+	entry, ok := p.keys[presentedDigest]
 	if !ok || !entry.Enabled {
 		return nil, fmt.Errorf("invalid API key")
 	}
 
-	// Defensive constant-time compare against the stored raw key. The map hit
-	// already guarantees bytewise equality, so this is degenerate in practice,
-	// but it preserves the constant-time-compare API surface for the threat
-	// model (reduces timing-side-channel surface for adversaries probing for
-	// valid keys via lookup timing).
-	if subtle.ConstantTimeCompare([]byte(apiKey), []byte(entry.Key)) != 1 {
+	// Defensive constant-time compare of the digest. The map hit
+	// already implies bytewise equality of the digest; this guards
+	// against future code shapes that could leak timing via the
+	// lookup path (e.g. weak-equality custom map types).
+	if subtle.ConstantTimeCompare([]byte(presentedDigest), []byte(p.digest(apiKey))) != 1 {
 		// Unreachable in practice; included for posture.
 		return nil, fmt.Errorf("invalid API key")
 	}
@@ -168,27 +217,32 @@ func (p *APIKeyProvider) loadKeysFromFile(path string) error {
 
 	for _, entry := range keysConfig.Keys {
 		if entry.Enabled && entry.Key != "" {
+			plaintext := entry.Key
 			entryCopy := entry
-			p.keys[entry.Key] = &entryCopy
+			entryCopy.Key = "" // strip plaintext before storing
+			p.keys[p.digest(plaintext)] = &entryCopy
 		}
 	}
 
 	return nil
 }
 
-// AddKey adds a new API key.
+// AddKey adds a new API key. The plaintext is HMAC'd before storage;
+// the entry's Key field is intentionally cleared so the in-memory
+// registry never contains plaintext.
 func (p *APIKeyProvider) AddKey(key string, entry *APIKeyEntry) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	entry.Key = key
-	p.keys[key] = entry
+	entry.Key = ""
+	p.keys[p.digest(key)] = entry
 }
 
-// RemoveKey removes an API key.
+// RemoveKey removes an API key by its plaintext value (which is
+// hashed for the lookup, matching the storage layout).
 func (p *APIKeyProvider) RemoveKey(key string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.keys, key)
+	delete(p.keys, p.digest(key))
 }
 
 // ReloadKeys reloads keys from the configured file.

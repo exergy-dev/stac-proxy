@@ -44,7 +44,7 @@ func TestNewAPIKeyProvider(t *testing.T) {
 				if len(p.keys) != 1 {
 					t.Errorf("expected 1 key, got %d", len(p.keys))
 				}
-				if p.keys["key123"] == nil {
+				if p.keys[p.digest("key123")] == nil {
 					t.Error("expected key123 to be present")
 				}
 			},
@@ -133,10 +133,10 @@ func TestNewAPIKeyProvider(t *testing.T) {
 				if len(p.keys) != 1 {
 					t.Errorf("expected 1 enabled key, got %d", len(p.keys))
 				}
-				if p.keys["enabled-key"] == nil {
+				if p.keys[p.digest("enabled-key")] == nil {
 					t.Error("expected enabled-key to be present")
 				}
-				if p.keys["disabled-key"] != nil {
+				if p.keys[p.digest("disabled-key")] != nil {
 					t.Error("expected disabled-key to be absent")
 				}
 			},
@@ -173,7 +173,7 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				key := p.keys["full-key"]
+				key := p.keys[p.digest("full-key")]
 				if key == nil {
 					t.Fatal("expected full-key to be present")
 				}
@@ -256,10 +256,10 @@ func TestNewAPIKeyProvider_WithKeysFile(t *testing.T) {
 				if len(p.keys) != 2 {
 					t.Errorf("expected 2 keys from file, got %d", len(p.keys))
 				}
-				if p.keys["file-key-1"] == nil {
+				if p.keys[p.digest("file-key-1")] == nil {
 					t.Error("expected file-key-1 to be present")
 				}
-				if p.keys["file-key-2"] == nil {
+				if p.keys[p.digest("file-key-2")] == nil {
 					t.Error("expected file-key-2 to be present")
 				}
 			},
@@ -280,7 +280,7 @@ func TestNewAPIKeyProvider_WithKeysFile(t *testing.T) {
 				if len(p.keys) != 1 {
 					t.Errorf("expected 1 key, got %d", len(p.keys))
 				}
-				if p.keys["enabled-key"] == nil {
+				if p.keys[p.digest("enabled-key")] == nil {
 					t.Error("expected enabled-key to be present")
 				}
 			},
@@ -392,11 +392,11 @@ func TestNewAPIKeyProvider_CombineFileAndDirectKeys(t *testing.T) {
 		t.Errorf("expected 2 keys (file + direct), got %d", len(provider.keys))
 	}
 
-	if provider.keys["file-key"] == nil {
+	if provider.keys[provider.digest("file-key")] == nil {
 		t.Error("expected file-key to be present")
 	}
 
-	if provider.keys["direct-key"] == nil {
+	if provider.keys[provider.digest("direct-key")] == nil {
 		t.Error("expected direct-key to be present")
 	}
 }
@@ -910,18 +910,20 @@ func TestAPIKeyProvider_AddKey(t *testing.T) {
 		Roles:   []string{"admin"},
 	})
 
-	// Verify the key was added
-	if provider.keys["new-key"] == nil {
+	// Verify the key was added (looked up by HMAC digest, not plaintext)
+	if provider.keys[provider.digest("new-key")] == nil {
 		t.Error("expected new-key to be present")
 	}
 
-	if provider.keys["new-key"].Name != "new-service" {
-		t.Errorf("expected Name=new-service, got %s", provider.keys["new-key"].Name)
+	if provider.keys[provider.digest("new-key")].Name != "new-service" {
+		t.Errorf("expected Name=new-service, got %s", provider.keys[provider.digest("new-key")].Name)
 	}
 
-	// Verify the key field is set correctly
-	if provider.keys["new-key"].Key != "new-key" {
-		t.Errorf("expected Key=new-key, got %s", provider.keys["new-key"].Key)
+	// Plaintext is intentionally cleared from the entry after storage
+	// so the in-memory registry never contains plaintext credentials
+	// (defense in depth against memory disclosure / accidental logging).
+	if got := provider.keys[provider.digest("new-key")].Key; got != "" {
+		t.Errorf("expected stored Key field to be empty (plaintext stripped), got %q", got)
 	}
 
 	// Verify it can be used for authentication
@@ -961,12 +963,12 @@ func TestAPIKeyProvider_RemoveKey(t *testing.T) {
 	provider.RemoveKey("key-to-remove")
 
 	// Verify the key was removed
-	if provider.keys["key-to-remove"] != nil {
+	if provider.keys[provider.digest("key-to-remove")] != nil {
 		t.Error("expected key-to-remove to be absent")
 	}
 
 	// Verify the other key is still present
-	if provider.keys["key-to-keep"] == nil {
+	if provider.keys[provider.digest("key-to-keep")] == nil {
 		t.Error("expected key-to-keep to still be present")
 	}
 
@@ -1004,7 +1006,7 @@ func TestAPIKeyProvider_ReloadKeys(t *testing.T) {
 	}
 
 	// Verify initial key
-	if provider.keys["initial-key"] == nil {
+	if provider.keys[provider.digest("initial-key")] == nil {
 		t.Error("expected initial-key to be present")
 	}
 
@@ -1027,10 +1029,10 @@ func TestAPIKeyProvider_ReloadKeys(t *testing.T) {
 	}
 
 	// Verify updated keys
-	if provider.keys["updated-key"] == nil {
+	if provider.keys[provider.digest("updated-key")] == nil {
 		t.Error("expected updated-key to be present after reload")
 	}
-	if provider.keys["new-key"] == nil {
+	if provider.keys[provider.digest("new-key")] == nil {
 		t.Error("expected new-key to be present after reload")
 	}
 }
@@ -1356,6 +1358,96 @@ func benchmarkAuthenticateN(b *testing.B, n int) {
 		if err != nil || p == nil {
 			b.Fatalf("authenticate failed: p=%v err=%v", p, err)
 		}
+	}
+}
+
+// TestAPIKey_StorageDoesNotContainPlaintextKey verifies the
+// HMAC-hashed-storage contract (HIGH H-auth-3): the in-memory key map
+// must never contain the plaintext API key as either a key or a value.
+// This is defense in depth — a memory dump or accidental log of the
+// internal map yields opaque digests instead of valid credentials.
+func TestAPIKey_StorageDoesNotContainPlaintextKey(t *testing.T) {
+	t.Parallel()
+
+	const plaintext = "my-secret-key"
+	provider, err := NewAPIKeyProvider(APIKeyConfig{
+		Header:     "X-API-Key",
+		HMACSecret: []byte("test-deployment-secret"),
+		Keys: map[string]*APIKeyEntry{
+			plaintext: {
+				Name:    "test-svc",
+				Enabled: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAPIKeyProvider: %v", err)
+	}
+
+	for k, entry := range provider.keys {
+		if k == plaintext {
+			t.Fatalf("internal map key contains plaintext API key %q", plaintext)
+		}
+		if entry.Key == plaintext {
+			t.Fatalf("internal entry.Key contains plaintext API key %q", plaintext)
+		}
+	}
+
+	// Sanity: the digest IS present (storage is keyed by HMAC).
+	if provider.keys[provider.digest(plaintext)] == nil {
+		t.Fatal("expected key to be stored under its HMAC digest")
+	}
+}
+
+// TestAPIKey_AcceptsCorrectKey is a focused regression test for the
+// HMAC scheme: a configured plaintext key authenticates correctly
+// after the storage migration to digests.
+func TestAPIKey_AcceptsCorrectKey(t *testing.T) {
+	t.Parallel()
+	provider, err := NewAPIKeyProvider(APIKeyConfig{
+		Header:     "X-API-Key",
+		HMACSecret: []byte("deployment-secret"),
+		Keys: map[string]*APIKeyEntry{
+			"good-key": {Name: "svc", Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAPIKeyProvider: %v", err)
+	}
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-API-Key", "good-key")
+	princ, err := provider.Authenticate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if princ == nil || princ.Name != "svc" {
+		t.Fatalf("want principal name=svc, got %+v", princ)
+	}
+}
+
+// TestAPIKey_RejectsWrongKey ensures a key not in the registry is
+// rejected post-HMAC (and that the digest comparison does not
+// accidentally collide).
+func TestAPIKey_RejectsWrongKey(t *testing.T) {
+	t.Parallel()
+	provider, err := NewAPIKeyProvider(APIKeyConfig{
+		Header:     "X-API-Key",
+		HMACSecret: []byte("deployment-secret"),
+		Keys: map[string]*APIKeyEntry{
+			"good-key": {Name: "svc", Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAPIKeyProvider: %v", err)
+	}
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-API-Key", "wrong-key")
+	princ, err := provider.Authenticate(context.Background(), req)
+	if err == nil {
+		t.Fatal("want error for wrong key")
+	}
+	if princ != nil {
+		t.Fatalf("want nil principal, got %+v", princ)
 	}
 }
 
