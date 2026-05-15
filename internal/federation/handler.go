@@ -568,12 +568,30 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 // than one registered origin (true federation mode).
 func (h *Handler) handleGetCollection(ctx context.Context,
 	req *request) (*response, error) {
+	return h.handleSingleResource(ctx, req, "Collection not found")
+}
+
+// handleGetItem handles GET /collections/{collectionId}/items/{itemId}.
+// Same priority-order iteration as handleGetCollection.
+func (h *Handler) handleGetItem(ctx context.Context,
+	req *request) (*response, error) {
+	return h.handleSingleResource(ctx, req, "Item not found")
+}
+
+// handleSingleResource is the shared body of handleGetCollection and
+// handleGetItem: route by collection ID, iterate candidate origins in
+// priority order via reverseProxyOnce, and return the first non-404.
+// Origin metadata is injected when more than one origin is configured.
+// notFoundDescription is used for both the empty-routing 404 and the
+// all-origins-404 fallthrough.
+func (h *Handler) handleSingleResource(ctx context.Context,
+	req *request, notFoundDescription string) (*response, error) {
 
 	collectionID := req.Collection
 	origins := h.router.RouteCollection(collectionID)
 
 	if len(origins) == 0 {
-		return notFoundResponse("Collection not found"), nil
+		return notFoundResponse(notFoundDescription), nil
 	}
 
 	annotate := len(h.origins) > 1
@@ -602,46 +620,7 @@ func (h *Handler) handleGetCollection(ctx context.Context,
 		return resp, nil
 	}
 
-	return notFoundResponse("Collection not found"), nil
-}
-
-// handleGetItem handles GET /collections/{collectionId}/items/{itemId}.
-// Same priority-order iteration as handleGetCollection.
-func (h *Handler) handleGetItem(ctx context.Context,
-	req *request) (*response, error) {
-
-	collectionID := req.Collection
-	origins := h.router.RouteCollection(collectionID)
-
-	if len(origins) == 0 {
-		return notFoundResponse("Item not found"), nil
-	}
-
-	annotate := len(h.origins) > 1
-
-	for _, origin := range origins {
-		reqOut := req
-		if origin.CollectionPrefix != "" && strings.HasPrefix(collectionID, origin.CollectionPrefix) {
-			reqOut = adaptRequestStripCollectionPrefix(req, origin.CollectionPrefix)
-		}
-
-		resp, err := h.reverseProxyOnce(ctx, origin, reqOut)
-		if err != nil {
-			continue
-		}
-		if resp.StatusCode == http.StatusNotFound {
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			return resp, nil
-		}
-		if annotate {
-			injectOriginMetadata(resp, origin.ID, origin.BaseURL)
-		}
-		return resp, nil
-	}
-
-	return notFoundResponse("Item not found"), nil
+	return notFoundResponse(notFoundDescription), nil
 }
 
 // notFoundResponse builds a uniform 404 STAC error response.
