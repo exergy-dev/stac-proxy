@@ -17,6 +17,30 @@ type Provider interface {
 	Authenticate(ctx context.Context, req *http.Request) (*Principal, error)
 }
 
+// CredentialClaimer is an optional interface a Provider may implement
+// to declare that the inbound request carries the credential type it
+// handles (e.g. an Authorization: Bearer header for the bearer
+// provider, an X-API-Key header for the apikey provider).
+//
+// The auth middleware uses this signal to fail closed: if a provider
+// claims the credential and Authenticate returns an error, the chain
+// terminates with 401 instead of falling through to the next provider
+// (and ultimately to anonymous when AllowAnonymous=true). Without this
+// signal, a Bearer token with a bad signature would be silently
+// downgraded to anonymous because the bearer provider's error would
+// be treated as "not my credential", which is a critical auth bypass.
+//
+// Providers that do not implement this interface retain the legacy
+// "errors fall through" behaviour (intended for diagnostic providers
+// or transient failures that genuinely should not block the chain).
+type CredentialClaimer interface {
+	// ClaimsCredential reports whether the request bears the
+	// credential type this provider handles. It is consulted before
+	// Authenticate; an error from Authenticate while ClaimsCredential
+	// returns true is a hard failure for the chain.
+	ClaimsCredential(req *http.Request) bool
+}
+
 // Principal represents an authenticated entity (user or service).
 type Principal struct {
 	ID          string            // Unique identifier

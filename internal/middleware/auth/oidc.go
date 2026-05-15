@@ -163,6 +163,13 @@ func (p *OIDCProvider) Name() string {
 	return p.name
 }
 
+// ClaimsCredential reports whether the request bears a Bearer
+// Authorization header (which OIDC consumes as an ID/access token).
+// See CredentialClaimer for the fail-closed contract.
+func (p *OIDCProvider) ClaimsCredential(req *http.Request) bool {
+	return strings.HasPrefix(req.Header.Get("Authorization"), "Bearer ")
+}
+
 // Authenticate validates an OIDC token.
 func (p *OIDCProvider) Authenticate(ctx context.Context, req *http.Request) (*Principal, error) {
 	// Extract token from Authorization header

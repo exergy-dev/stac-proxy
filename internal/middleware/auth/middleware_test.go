@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 )
 
@@ -145,6 +147,95 @@ func TestHTTPMiddleware_ErroringProviderContinuesToNext(t *testing.T) {
 func TestPrincipalFromContext_Missing(t *testing.T) {
 	if p := PrincipalFromContext(context.Background()); p != nil {
 		t.Fatalf("want nil principal, got %+v", p)
+	}
+}
+
+// claimingMockProvider is a mock that implements CredentialClaimer.
+type claimingMockProvider struct {
+	mockProvider
+	claims bool
+}
+
+func (m *claimingMockProvider) ClaimsCredential(_ *http.Request) bool { return m.claims }
+
+// TestProviderChain_BadSignatureBearerDoesNotFallThroughToAnonymous
+// verifies the fail-closed contract for the auth chain (HIGH H-auth-1):
+// when a Bearer token with a bad signature is presented and the bearer
+// provider errors, the chain MUST return 401 even when AllowAnonymous
+// is true. Otherwise an attacker could downgrade themselves to
+// anonymous by presenting any garbage Bearer token.
+func TestProviderChain_BadSignatureBearerDoesNotFallThroughToAnonymous(t *testing.T) {
+	bearer, err := NewBearerProvider(BearerConfig{Secret: testSecret})
+	if err != nil {
+		t.Fatalf("NewBearerProvider: %v", err)
+	}
+
+	// Mint a token signed with the WRONG secret so signature verification fails.
+	bad := createTestToken(jwt.MapClaims{
+		"sub": "attacker",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}, testSecret, false, true /*invalidSig*/)
+
+	called := false
+	h := NewHTTPMiddleware(Config{
+		AllowAnonymous: true, // critical: anonymous WOULD be allowed if we fall through
+		Providers:      []Provider{bearer},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer "+bad)
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status: want 401 (fail-closed), got %d", rr.Code)
+	}
+	if called {
+		t.Fatal("inner handler ran despite bad-signature bearer token")
+	}
+}
+
+// TestProviderChain_ClaimingProviderErrorIsHardFailure verifies the
+// generic CredentialClaimer fail-closed contract using a mock.
+func TestProviderChain_ClaimingProviderErrorIsHardFailure(t *testing.T) {
+	called := false
+	h := NewHTTPMiddleware(Config{
+		AllowAnonymous: true,
+		Providers: []Provider{
+			&claimingMockProvider{
+				mockProvider: mockProvider{
+					name: "claiming-erroring",
+					authFunc: func(_ context.Context, _ *http.Request) (*Principal, error) {
+						return nil, errors.New("invalid signature")
+					},
+				},
+				claims: true,
+			},
+			// Even with a downstream provider that WOULD authenticate,
+			// the chain must terminate at the claiming-provider error.
+			&mockProvider{
+				name: "would-grant",
+				authFunc: func(_ context.Context, _ *http.Request) (*Principal, error) {
+					return &Principal{ID: "should-not-reach", Type: "user"}, nil
+				},
+			},
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status: want 401, got %d", rr.Code)
+	}
+	if called {
+		t.Fatal("inner handler ran despite claiming-provider error")
 	}
 }
 

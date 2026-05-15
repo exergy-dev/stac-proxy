@@ -81,6 +81,21 @@ func (p *APIKeyProvider) Name() string {
 	return p.name
 }
 
+// ClaimsCredential reports whether the request bears an API key in the
+// configured header or query parameter. When this returns true, the
+// auth chain treats any Authenticate error as a hard 401 instead of
+// falling through (an invalid API key must not be downgraded to
+// anonymous).
+func (p *APIKeyProvider) ClaimsCredential(req *http.Request) bool {
+	if p.header != "" && req.Header.Get(p.header) != "" {
+		return true
+	}
+	if p.queryParam != "" && req.URL.Query().Get(p.queryParam) != "" {
+		return true
+	}
+	return false
+}
+
 // Authenticate validates an API key and returns a Principal.
 func (p *APIKeyProvider) Authenticate(ctx context.Context, req *http.Request) (*Principal, error) {
 	// Extract API key from header or query parameter

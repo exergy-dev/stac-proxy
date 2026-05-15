@@ -71,6 +71,13 @@ func (p *BasicAuthProvider) Name() string {
 	return p.name
 }
 
+// ClaimsCredential reports whether the request bears a Basic
+// Authorization header. See CredentialClaimer for the fail-closed
+// contract.
+func (p *BasicAuthProvider) ClaimsCredential(req *http.Request) bool {
+	return strings.HasPrefix(req.Header.Get("Authorization"), "Basic ")
+}
+
 // Authenticate validates Basic auth credentials.
 func (p *BasicAuthProvider) Authenticate(ctx context.Context, req *http.Request) (*Principal, error) {
 	// Extract basic auth from Authorization header

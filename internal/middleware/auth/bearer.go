@@ -122,6 +122,22 @@ func (p *BearerProvider) Name() string {
 	return p.name
 }
 
+// ClaimsCredential reports whether the request bears a Bearer
+// Authorization header. When this returns true, the auth chain treats
+// any error from Authenticate as a hard failure (401) rather than
+// falling through to the next provider — required to prevent a bad
+// signature from being silently downgraded to anonymous.
+func (p *BearerProvider) ClaimsCredential(req *http.Request) bool {
+	authHeader := req.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return false
+	}
+	// "Bearer " on its own (empty token) is still a Bearer credential
+	// presentation — Authenticate will reject it with an error and the
+	// chain MUST fail closed rather than try the next provider.
+	return true
+}
+
 // Authenticate validates a Bearer token and returns a Principal.
 func (p *BearerProvider) Authenticate(ctx context.Context, req *http.Request) (*Principal, error) {
 	// Extract token from Authorization header

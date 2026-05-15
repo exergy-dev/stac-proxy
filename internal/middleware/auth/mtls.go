@@ -48,6 +48,14 @@ func (p *MTLSProvider) Name() string {
 	return p.name
 }
 
+// ClaimsCredential reports whether the request presented a client
+// certificate via TLS. See CredentialClaimer for the fail-closed
+// contract — a presented but unverifiable client cert must not be
+// downgraded to anonymous.
+func (p *MTLSProvider) ClaimsCredential(req *http.Request) bool {
+	return req.TLS != nil && len(req.TLS.PeerCertificates) > 0
+}
+
 // Authenticate validates a client certificate.
 func (p *MTLSProvider) Authenticate(ctx context.Context, req *http.Request) (*Principal, error) {
 	// Extract client certificate from TLS connection state
