@@ -61,8 +61,8 @@ func TestNewMemoryStore(t *testing.T) {
 				t.Error("items map is nil")
 			}
 
-			if store.order == nil {
-				t.Error("order slice is nil")
+			if store.lru == nil {
+				t.Error("lru list is nil")
 			}
 
 			// Verify initial state
@@ -1109,6 +1109,30 @@ func BenchmarkMemoryStore_GetSet(b *testing.B) {
 		} else {
 			store.Get(ctx, key)
 		}
+	}
+}
+
+// BenchmarkMemoryCache_LRU_LargeSet exercises Set under heavy LRU
+// pressure: max-size 10k, 100k inserts, forcing ~90k evictions. With
+// the previous slice-based LRU bookkeeping each evict was O(n);
+// regressions to that pattern will dominate this benchmark.
+//
+// (HIGH H-cache-2). Skipped under -short to keep CI fast.
+func BenchmarkMemoryCache_LRU_LargeSet(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping LRU large-set benchmark under -short")
+	}
+	ctx := context.Background()
+	store := NewMemoryStore(MemoryConfig{MaxSize: 10000})
+	defer store.Close()
+
+	value := []byte("benchmark-value")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// 10x the cap forces eviction-heavy workload.
+		key := fmt.Sprintf("key-%d", i%100000)
+		store.Set(ctx, key, value, 1*time.Hour)
 	}
 }
 

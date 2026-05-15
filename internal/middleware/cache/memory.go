@@ -3,15 +3,24 @@ package cache
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"sync"
 	"time"
 )
 
 // MemoryStore is an in-memory cache implementation with LRU eviction.
+//
+// Internal layout (HIGH H-cache-2): a doubly-linked list (lru) holds
+// keys in usage order — front = most recently used, back = least
+// recently used. The items map indexes from key to a *cacheItem
+// carrying the value, expiry, and the *list.Element pointing back into
+// lru. This makes Get's move-to-front, Set's push-front, and
+// evictOldest's pop-back all O(1); the previous slice-based approach
+// was O(n) per operation.
 type MemoryStore struct {
 	items   map[string]*cacheItem
-	order   []string // For LRU tracking
+	lru     *list.List // values: string keys; front = MRU, back = LRU
 	maxSize int
 	mu      sync.RWMutex
 	stats   Stats
@@ -23,6 +32,7 @@ type MemoryStore struct {
 type cacheItem struct {
 	value     []byte
 	expiresAt time.Time
+	elem      *list.Element // points into MemoryStore.lru; never nil for live items
 }
 
 // MemoryConfig contains configuration for the memory store.
@@ -38,7 +48,7 @@ func NewMemoryStore(cfg MemoryConfig) *MemoryStore {
 
 	store := &MemoryStore{
 		items:   make(map[string]*cacheItem),
-		order:   make([]string, 0, cfg.MaxSize),
+		lru:     list.New(),
 		maxSize: cfg.MaxSize,
 		stop:    make(chan struct{}),
 	}
@@ -75,9 +85,11 @@ func (s *MemoryStore) Get(ctx context.Context, key string) ([]byte, bool) {
 
 	s.recordHit()
 
-	// Move to end of LRU list (most recently used)
+	// Move to front of LRU list (most recently used). O(1).
 	s.mu.Lock()
-	s.moveToEnd(key)
+	if item.elem != nil {
+		s.lru.MoveToFront(item.elem)
+	}
 	s.mu.Unlock()
 
 	// Return an independent copy so subsequent Set/evict cannot mutate
@@ -90,19 +102,27 @@ func (s *MemoryStore) Set(ctx context.Context, key string, value []byte, ttl tim
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Evict if at capacity
+	// Update path: existing key gets a new value/TTL and is bumped to MRU.
+	if existing, ok := s.items[key]; ok {
+		existing.value = value
+		existing.expiresAt = time.Now().Add(ttl)
+		if existing.elem != nil {
+			s.lru.MoveToFront(existing.elem)
+		}
+		return nil
+	}
+
+	// Evict if at capacity (rare loop in case maxSize was lowered).
 	for len(s.items) >= s.maxSize {
 		s.evictOldest()
 	}
 
-	// Store the item
+	elem := s.lru.PushFront(key)
 	s.items[key] = &cacheItem{
 		value:     value,
 		expiresAt: time.Now().Add(ttl),
+		elem:      elem,
 	}
-
-	// Add to LRU order
-	s.order = append(s.order, key)
 
 	return nil
 }
@@ -112,8 +132,12 @@ func (s *MemoryStore) Delete(ctx context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.items, key)
-	s.removeFromOrder(key)
+	if item, ok := s.items[key]; ok {
+		if item.elem != nil {
+			s.lru.Remove(item.elem)
+		}
+		delete(s.items, key)
+	}
 
 	return nil
 }
@@ -124,7 +148,7 @@ func (s *MemoryStore) Clear(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	s.items = make(map[string]*cacheItem)
-	s.order = make([]string, 0, s.maxSize)
+	s.lru = list.New()
 
 	return nil
 }
@@ -147,31 +171,16 @@ func (s *MemoryStore) Stats() Stats {
 	return s.stats
 }
 
-// evictOldest removes the least recently used item.
+// evictOldest removes the least recently used item. O(1). Caller MUST
+// hold s.mu (write).
 func (s *MemoryStore) evictOldest() {
-	if len(s.order) == 0 {
+	back := s.lru.Back()
+	if back == nil {
 		return
 	}
-
-	oldest := s.order[0]
-	s.order = s.order[1:]
-	delete(s.items, oldest)
-}
-
-// moveToEnd moves a key to the end of the LRU list.
-func (s *MemoryStore) moveToEnd(key string) {
-	s.removeFromOrder(key)
-	s.order = append(s.order, key)
-}
-
-// removeFromOrder removes a key from the LRU list.
-func (s *MemoryStore) removeFromOrder(key string) {
-	for i, k := range s.order {
-		if k == key {
-			s.order = append(s.order[:i], s.order[i+1:]...)
-			return
-		}
-	}
+	key, _ := back.Value.(string)
+	s.lru.Remove(back)
+	delete(s.items, key)
 }
 
 // cleanupLoop periodically removes expired items until Close() is called.
@@ -197,8 +206,10 @@ func (s *MemoryStore) cleanupExpired() {
 	now := time.Now()
 	for key, item := range s.items {
 		if now.After(item.expiresAt) {
+			if item.elem != nil {
+				s.lru.Remove(item.elem)
+			}
 			delete(s.items, key)
-			s.removeFromOrder(key)
 		}
 	}
 }
