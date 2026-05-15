@@ -162,41 +162,60 @@ func encodeForLang(expr *cql2.Expr, lang string) (interface{}, error) {
 }
 
 // maybePushDownGeofence converts a geofence (if present and amenable to
-// push-down) into a CQL2 predicate, AND-combines it into the
-// constraints' CQL2 filter, and sets GeofencePushedDown=true. Returns
-// true if push-down was applied. When false, the post-response
-// geofence filter remains responsible for enforcement.
+// push-down) into a CQL2 predicate and AND-combines it into the
+// constraints' CQL2 filter. The input constraint is NOT mutated;
+// instead a shallow copy is returned with GeofencePushedDown=true and
+// the merged CQL2Filter installed. Callers must use the returned
+// constraint for downstream operations and check GeofencePushedDown
+// to decide whether to skip the post-response geofence filter.
 //
-// It is a no-op when:
+// Returning a fresh value protects against double-application: both
+// injectCQL2Filter and validateSingleRecord invoke this helper, and a
+// shared *AuthzConstraints lives on the AuthzDecision attached to the
+// request context. In-place mutation caused the second caller to see
+// a constraint already containing the geofence predicate, with the
+// risk of double-AND'ing it (and breaking observability counters that
+// branch on GeofencePushedDown).
+//
+// The returned bool is true iff push-down was applied (a new constraint
+// was synthesized). When false the original *c is returned unchanged
+// and the post-response geofence filter remains responsible.
+//
+// It is a no-op (returns c, false, nil) when:
 //   - constraints is nil
-//   - the geofence is absent or has only a DeniedArea
+//   - the geofence is absent or yields no spatial predicate
+//   - the geofence has already been pushed down on this constraint
 //   - encoding fails (the caller will see the error and the post-filter
 //     stays as the safety net)
-func maybePushDownGeofence(c *AuthzConstraints) (bool, error) {
+func maybePushDownGeofence(c *AuthzConstraints) (*AuthzConstraints, bool, error) {
 	if c == nil || c.Geofence == nil {
-		return false, nil
+		return c, false, nil
+	}
+	if c.GeofencePushedDown {
+		return c, false, nil
 	}
 	geofenceExpr, err := geofenceToCQL2(c.Geofence)
 	if err != nil {
-		return false, err
+		return c, false, err
 	}
 	if geofenceExpr == nil {
-		return false, nil
+		return c, false, nil
 	}
 	existing, err := parsePolicyCQL2(c)
 	if err != nil {
-		return false, err
+		return c, false, err
 	}
 	combined := andNonNil(existing, geofenceExpr)
 	if combined == nil {
-		return false, nil
+		return c, false, nil
 	}
 	b, err := cql2.Encode(combined.N, cql2.EncodingText)
 	if err != nil {
-		return false, fmt.Errorf("cql2: encode geofence push-down: %w", err)
+		return c, false, fmt.Errorf("cql2: encode geofence push-down: %w", err)
 	}
-	c.CQL2Filter = string(b)
-	c.CQL2FilterJSON = nil
-	c.GeofencePushedDown = true
-	return true, nil
+	out := *c
+	out.CQL2Filter = string(b)
+	out.CQL2FilterJSON = nil
+	out.GeofencePushedDown = true
+	return &out, true, nil
 }

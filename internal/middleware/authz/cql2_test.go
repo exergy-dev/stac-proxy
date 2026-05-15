@@ -180,18 +180,21 @@ func TestMaybePushDownGeofence_Polygon(t *testing.T) {
 			},
 		},
 	}
-	applied, err := maybePushDownGeofence(c)
+	out, applied, err := maybePushDownGeofence(c)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !applied {
 		t.Fatal("expected push-down to be applied")
 	}
-	if !c.GeofencePushedDown {
-		t.Fatal("expected GeofencePushedDown=true")
+	if !out.GeofencePushedDown {
+		t.Fatal("expected GeofencePushedDown=true on returned constraint")
 	}
-	if !strings.Contains(strings.ToUpper(c.CQL2Filter), "S_INTERSECTS") {
-		t.Fatalf("want S_INTERSECTS in CQL2Filter, got %q", c.CQL2Filter)
+	if !strings.Contains(strings.ToUpper(out.CQL2Filter), "S_INTERSECTS") {
+		t.Fatalf("want S_INTERSECTS in CQL2Filter, got %q", out.CQL2Filter)
+	}
+	if c.GeofencePushedDown {
+		t.Fatal("input constraint must not be mutated")
 	}
 }
 
@@ -213,36 +216,92 @@ func TestMaybePushDownGeofence_CombinesWithExistingPolicyFilter(t *testing.T) {
 			},
 		},
 	}
-	applied, err := maybePushDownGeofence(c)
+	out, applied, err := maybePushDownGeofence(c)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !applied {
 		t.Fatal("expected push-down to be applied")
 	}
-	s := strings.ToUpper(c.CQL2Filter)
+	s := strings.ToUpper(out.CQL2Filter)
 	if !strings.Contains(s, "S_INTERSECTS") {
-		t.Fatalf("want S_INTERSECTS, got %q", c.CQL2Filter)
+		t.Fatalf("want S_INTERSECTS, got %q", out.CQL2Filter)
 	}
 	if !strings.Contains(s, "EO:CLOUD_COVER") {
-		t.Fatalf("want existing policy filter retained, got %q", c.CQL2Filter)
+		t.Fatalf("want existing policy filter retained, got %q", out.CQL2Filter)
 	}
 	if !strings.Contains(s, "AND") {
-		t.Fatalf("want AND-combined output, got %q", c.CQL2Filter)
+		t.Fatalf("want AND-combined output, got %q", out.CQL2Filter)
 	}
-	if c.CQL2FilterJSON != nil {
-		t.Fatalf("want CQL2FilterJSON cleared after text-merge, got %v", c.CQL2FilterJSON)
+	if out.CQL2FilterJSON != nil {
+		t.Fatalf("want CQL2FilterJSON cleared after text-merge, got %v", out.CQL2FilterJSON)
 	}
 }
 
 func TestMaybePushDownGeofence_NoOpWhenAbsent(t *testing.T) {
 	c := &AuthzConstraints{}
-	applied, err := maybePushDownGeofence(c)
+	out, applied, err := maybePushDownGeofence(c)
 	if err != nil || applied {
 		t.Fatalf("want no-op for absent geofence, got applied=%v err=%v", applied, err)
 	}
+	if out != c {
+		t.Fatal("want input pointer returned when no push-down happened")
+	}
 	if c.GeofencePushedDown {
 		t.Fatal("GeofencePushedDown must not be set when no push-down happened")
+	}
+}
+
+// TestMaybePushDownGeofence_DoesNotMutateInput exercises the exact
+// regression that motivated H-authz-4: callers must not see
+// CQL2Filter or GeofencePushedDown change on the constraint they
+// passed in.
+func TestMaybePushDownGeofence_DoesNotMutateInput(t *testing.T) {
+	const origFilter = "eo:cloud_cover < 20"
+	in := &AuthzConstraints{
+		CQL2Filter: origFilter,
+		Geofence: &GeofenceConstraint{
+			AllowedArea: map[string]interface{}{
+				"type": "Polygon",
+				"coordinates": []interface{}{
+					[]interface{}{
+						[]interface{}{0.0, 0.0},
+						[]interface{}{1.0, 0.0},
+						[]interface{}{1.0, 1.0},
+						[]interface{}{0.0, 1.0},
+						[]interface{}{0.0, 0.0},
+					},
+				},
+			},
+		},
+	}
+	out, applied, err := maybePushDownGeofence(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected push-down to apply")
+	}
+	if out == in {
+		t.Fatal("returned constraint must be a fresh value, not the input pointer")
+	}
+	if in.CQL2Filter != origFilter {
+		t.Fatalf("input CQL2Filter was mutated: got %q want %q", in.CQL2Filter, origFilter)
+	}
+	if in.GeofencePushedDown {
+		t.Fatal("input GeofencePushedDown was mutated")
+	}
+	if !strings.Contains(strings.ToUpper(out.CQL2Filter), "S_INTERSECTS") {
+		t.Fatalf("expected merged filter on returned constraint, got %q", out.CQL2Filter)
+	}
+	// A second call on the original input must still apply push-down
+	// (i.e. push-down is not gated by the prior call's mutation).
+	out2, applied2, err := maybePushDownGeofence(in)
+	if err != nil || !applied2 {
+		t.Fatalf("second call should still apply push-down: applied=%v err=%v", applied2, err)
+	}
+	if out2 == in {
+		t.Fatal("second call must also return a fresh value")
 	}
 }
 

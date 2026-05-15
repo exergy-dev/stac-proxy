@@ -92,10 +92,16 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 				}
 				if cfg.CQL2InjectionEnabled &&
 					(cfg.FilterExtensionCheck == nil || cfg.FilterExtensionCheck(r, info)) {
-					if err := injectCQL2Filter(info.SearchReq, decision.Constraints); err != nil {
+					updated, err := injectCQL2Filter(info.SearchReq, decision.Constraints)
+					if err != nil {
 						writeError(w, http.StatusInternalServerError, "InternalError", "cql2 injection failed")
 						return
 					}
+					// Replace the decision's constraints with the
+					// (possibly new) constraint produced by push-down so
+					// the response-side branches below see GeofencePushedDown
+					// without us having mutated the shared object.
+					decision.Constraints = updated
 				}
 			}
 
@@ -291,18 +297,24 @@ func removeCollections(a, b []string) []string {
 // injectCQL2Filter merges policy CQL2 (including any geofence
 // push-down) with the client's filter and writes the combined
 // expression back into sr.Filter in the original lang.
-func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints) error {
-	if _, err := maybePushDownGeofence(constraints); err != nil {
-		return err
-	}
-	policyExpr, err := parsePolicyCQL2(constraints)
+//
+// Returns the constraint that should be installed on the decision
+// going forward: maybePushDownGeofence returns a fresh constraint
+// when push-down applies (so we don't mutate the shared decision
+// constraint pointer), and we propagate that here.
+func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints) (*AuthzConstraints, error) {
+	updated, _, err := maybePushDownGeofence(constraints)
 	if err != nil {
-		return err
+		return constraints, err
+	}
+	policyExpr, err := parsePolicyCQL2(updated)
+	if err != nil {
+		return updated, err
 	}
 	userExpr, _ := parseUserCQL2(sr.Filter)
 	merged := andNonNil(userExpr, policyExpr)
 	if merged == nil {
-		return nil
+		return updated, nil
 	}
 	lang := sr.FilterLang
 	if lang == "" {
@@ -310,7 +322,7 @@ func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints) err
 	}
 	encoded, err := encodeForLang(merged, lang)
 	if err != nil {
-		return err
+		return updated, err
 	}
 	sr.Filter = encoded
 	if sr.FilterLang == "" {
@@ -319,27 +331,33 @@ func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints) err
 	if mt := observability.Default(); mt != nil {
 		reason := observability.CQL2ReasonPolicy
 		switch {
-		case constraints.GeofencePushedDown && userExpr != nil:
+		case updated.GeofencePushedDown && userExpr != nil:
 			reason = observability.CQL2ReasonMerged
-		case constraints.GeofencePushedDown:
+		case updated.GeofencePushedDown:
 			reason = observability.CQL2ReasonGeofence
 		}
 		mt.CQL2Injected.WithLabelValues(sr.FilterLang, reason).Inc()
 	}
-	return nil
+	return updated, nil
 }
 
 // validateSingleRecord parses body as a STAC item and evaluates the
 // combined policy + geofence CQL2 predicate against it. Returns
 // (matched, error). A nil predicate is treated as a match.
+//
+// maybePushDownGeofence returns a fresh constraint when push-down
+// applies; we use that locally and never mutate the caller's
+// constraint pointer (which is shared via the AuthzDecision on the
+// request context).
 func validateSingleRecord(body []byte, c *AuthzConstraints) (bool, error) {
 	if c == nil || len(body) == 0 {
 		return true, nil
 	}
-	if _, err := maybePushDownGeofence(c); err != nil {
+	updated, _, err := maybePushDownGeofence(c)
+	if err != nil {
 		return true, err
 	}
-	expr, err := parsePolicyCQL2(c)
+	expr, err := parsePolicyCQL2(updated)
 	if err != nil {
 		return true, err
 	}
