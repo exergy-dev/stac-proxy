@@ -655,7 +655,7 @@ func TestOriginClient_Search(t *testing.T) {
 
 			// Execute search
 			ctx := context.Background()
-			fc, err := client.Search(ctx, tt.request)
+			fc, _, err := client.Search(ctx, tt.request)
 
 			if tt.wantErr {
 				if err == nil {
@@ -1723,7 +1723,7 @@ func TestOriginClient_Search_InvalidJSON(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err = client.Search(ctx, sampleSearchRequest())
+	_, _, err = client.Search(ctx, sampleSearchRequest())
 
 	if err == nil {
 		t.Error("expected error for invalid JSON but got nil")
@@ -1976,7 +1976,7 @@ func TestOriginClient_Search_MarshalError(t *testing.T) {
 		Filter: make(chan int),
 	}
 
-	_, err = client.Search(ctx, req)
+	_, _, err = client.Search(ctx, req)
 
 	if err == nil {
 		t.Error("expected marshal error but got nil")
@@ -2166,7 +2166,7 @@ func TestOriginClient_RejectsOversizedResponse(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	_, err = client.Search(context.Background(), sampleSearchRequest())
+	_, _, err = client.Search(context.Background(), sampleSearchRequest())
 	if err == nil {
 		t.Fatal("expected error for oversized response, got nil")
 	}
@@ -2200,7 +2200,7 @@ func TestOriginClient_AcceptsUnderLimit(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	got, err := client.Search(context.Background(), sampleSearchRequest())
+	got, _, err := client.Search(context.Background(), sampleSearchRequest())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

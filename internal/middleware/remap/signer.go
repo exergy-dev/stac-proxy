@@ -217,14 +217,6 @@ func (s *NoOpSigner) Sign(ctx context.Context, rawURL string, ttl time.Duration)
 // Supported types:
 //   - "hmac"  — HMAC-SHA256 signing using `secret` (see HMACSigner).
 //   - "noop"  — no-op signer (returns URLs unchanged).
-//
-// The "cloudfront" and "s3_presigned" types are explicitly rejected:
-// previous implementations in this package were stubs that did not
-// perform real RSA / SigV4 signing — they merely base64-encoded a
-// policy or appended unsigned query parameters. Shipping them in a
-// production binary was a credential-leak / auth-bypass trap, and they
-// have been removed. Use a real upstream signer (the AWS SDK) at the
-// origin instead, or use the HMAC signer for proxy-issued URLs.
 func NewSigner(typ, secret string) (Signer, error) {
 	switch typ {
 	case "hmac":
@@ -234,8 +226,6 @@ func NewSigner(typ, secret string) (Signer, error) {
 		return NewHMACSigner(secret), nil
 	case "noop", "":
 		return &NoOpSigner{}, nil
-	case "cloudfront", "s3_presigned":
-		return nil, fmt.Errorf("remap: signer type %q is not implemented; use hmac", typ)
 	default:
 		return nil, fmt.Errorf("remap: unknown signer type %q", typ)
 	}

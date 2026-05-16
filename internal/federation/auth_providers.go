@@ -221,9 +221,6 @@ func NewAWSSigV4Provider(config *AWSSigV4Config) (*AWSSigV4Provider, error) {
 
 // ApplyAuth signs the request with AWS Signature V4 via aws-sdk-go-v2.
 func (p *AWSSigV4Provider) ApplyAuth(ctx context.Context, req *http.Request) error {
-	// Get credentials. UseIAMRole is not yet supported (the previous
-	// hand-rolled impl carried a TODO with the same behaviour); when an
-	// IAM-role provider is wired in, this is the place to substitute it.
 	if p.config.AccessKey == "" || p.config.SecretKey == "" {
 		return fmt.Errorf("AWS credentials not configured")
 	}

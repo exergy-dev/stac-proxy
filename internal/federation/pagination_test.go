@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -59,11 +60,12 @@ type mockOriginClient struct {
 	searchFunc func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error)
 }
 
-func (m *mockOriginClient) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
+func (m *mockOriginClient) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, string, error) {
 	if m.searchFunc != nil {
-		return m.searchFunc(ctx, req)
+		items, tok, url, err := m.searchFunc(ctx, req)
+		return items, tok, url, "", err
 	}
-	return nil, "", "", nil
+	return nil, "", "", "", nil
 }
 
 func (m *mockOriginClient) BaseURL() string { return "https://" + m.id + ".example.com" }
@@ -79,11 +81,12 @@ type mockSearchableOrigin struct {
 	searchFunc func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error)
 }
 
-func (m *mockSearchableOrigin) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
+func (m *mockSearchableOrigin) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, string, error) {
 	if m.searchFunc != nil {
-		return m.searchFunc(ctx, req)
+		items, tok, url, err := m.searchFunc(ctx, req)
+		return items, tok, url, "", err
 	}
-	return nil, "", "", nil
+	return nil, "", "", "", nil
 }
 
 func (m *mockSearchableOrigin) BaseURL() string                                                 { return "https://" + m.originID + ".example.com" }
@@ -946,4 +949,161 @@ func TestPaginatedSearcher_ConcurrentSearches_DoNotCrossPollinateDedup(t *testin
 			}
 		}
 	}
+}
+
+// TestSearch_CursorV2_PrevFirstChain verifies that the cursor v2
+// chain (PrevCursor/FirstCursor/PageSeq) propagates correctly across
+// pages and that the page cache serves backwards-navigation lookups.
+//
+// Walks: page 0 → page 1 → page 2 → follow `prev` from page 2 → must
+// return page 1's items. Without the page cache the prev follow
+// would re-execute upstreams (which the mock allows), but with the
+// cache the upstream call count proves the lookup hit.
+func TestSearch_CursorV2_PrevFirstChain(t *testing.T) {
+	t.Parallel()
+
+	// Three pages of 1 item each. After page 3 the origin signals
+	// exhaustion (empty next token).
+	pages := []struct {
+		items []*stac.Item
+		token string
+	}{
+		{[]*stac.Item{paginationTestItem("item-1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))}, "t1"},
+		{[]*stac.Item{paginationTestItem("item-2", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))}, "t2"},
+		{[]*stac.Item{paginationTestItem("item-3", time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC))}, ""},
+	}
+
+	var (
+		mu        sync.Mutex
+		callCount int
+	)
+	origin := newMockSearchable("origin1", 1, func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		idx := 0
+		for i, p := range pages {
+			if i == 0 && req.Token == "" {
+				idx = 0
+				break
+			}
+			if i > 0 && p.token != "" && req.Token == pages[i-1].token {
+				idx = i
+				break
+			}
+		}
+		callCount++
+		return pages[idx].items, pages[idx].token, "", nil
+	})
+
+	store := newPageCacheTestStore()
+	pc, err := pagecache.New(store, time.Hour, []byte("test-secret"))
+	if err != nil {
+		t.Fatalf("pagecache.New: %v", err)
+	}
+
+	searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
+		Origins:   map[string]Searcher{"origin1": origin},
+		Merger:    NewResultMerger(ConflictFirstWins),
+		PageCache: pc,
+	})
+
+	req := &stac.SearchRequest{Limit: 1}
+
+	// Page 0: no incoming cursor, no `prev`/`first`/`self` links.
+	r0, err := searcher.Search(context.Background(), req, "")
+	if err != nil {
+		t.Fatalf("page 0: %v", err)
+	}
+	if r0.NextCursor == "" {
+		t.Fatal("page 0: NextCursor empty; expected continuation")
+	}
+	if r0.PrevCursor != "" || r0.FirstCursor != "" || r0.SelfCursor != "" {
+		t.Errorf("page 0: prev/first/self should be empty on first page; got prev=%q first=%q self=%q",
+			r0.PrevCursor, r0.FirstCursor, r0.SelfCursor)
+	}
+
+	// Page 1: follow `next` from page 0. self == page 0's next-cursor
+	// (which is the cursor we're consuming now), prev/first should
+	// reflect page 0's empty cursor (no prev/first to navigate to).
+	r1, err := searcher.Search(context.Background(), req, r0.NextCursor)
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if r1.SelfCursor != r0.NextCursor {
+		t.Errorf("page 1: SelfCursor = %q, want %q", r1.SelfCursor, r0.NextCursor)
+	}
+	if r1.PrevCursor != "" {
+		t.Errorf("page 1: PrevCursor = %q, want empty (page 0 had no cursor)", r1.PrevCursor)
+	}
+	if r1.NextCursor == "" {
+		t.Fatal("page 1: NextCursor empty; expected continuation to page 2")
+	}
+
+	// Page 2: follow next from page 1. Now prev should point at page 1's cursor.
+	r2, err := searcher.Search(context.Background(), req, r1.NextCursor)
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	if r2.SelfCursor != r1.NextCursor {
+		t.Errorf("page 2: SelfCursor = %q, want %q", r2.SelfCursor, r1.NextCursor)
+	}
+	if r2.PrevCursor != r0.NextCursor {
+		t.Errorf("page 2: PrevCursor = %q, want %q (page 1's cursor)",
+			r2.PrevCursor, r0.NextCursor)
+	}
+
+	callsBeforePrev := callCount
+
+	// Follow `prev` from page 2 → should hit the page cache and
+	// return page 1's items WITHOUT calling the upstream again.
+	rPrev, err := searcher.Search(context.Background(), req, r2.PrevCursor)
+	if err != nil {
+		t.Fatalf("prev follow: %v", err)
+	}
+	if len(rPrev.Items) != 1 || rPrev.Items[0].ID != "item-2" {
+		t.Errorf("prev follow: items = %v, want [item-2] (page 1)",
+			itemIDs(rPrev.Items))
+	}
+	if callCount != callsBeforePrev {
+		t.Errorf("prev follow: upstream was called %d times after lookup; want cache hit (no upstream calls)",
+			callCount-callsBeforePrev)
+	}
+}
+
+// pageCacheTestStore is a tiny in-memory implementation of
+// pagecache.Store for tests. Mirrors the one in the pagecache
+// package's own tests but kept local so this package doesn't need
+// to import pagecache_test internals.
+type pageCacheTestStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func newPageCacheTestStore() *pageCacheTestStore {
+	return &pageCacheTestStore{data: make(map[string][]byte)}
+}
+
+func (s *pageCacheTestStore) Get(_ context.Context, key string) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.data[key]
+	return v, ok
+}
+
+func (s *pageCacheTestStore) Set(_ context.Context, key string, value []byte, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[key] = value
+	return nil
+}
+
+// itemIDs extracts IDs from a slice of items for test assertions.
+func itemIDs(items []*stac.Item) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		if it != nil {
+			out = append(out, it.ID)
+		}
+	}
+	return out
 }

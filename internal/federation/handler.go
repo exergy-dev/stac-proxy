@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
 	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/observability"
@@ -86,6 +87,12 @@ type HandlerConfig struct {
 	// searches but cannot issue "next" links — config validation emits
 	// a warning in that case.
 	CursorSecret []byte
+
+	// PageCache, when non-nil, stores rendered pages keyed by cursor
+	// signature so the paginator can serve `rel: prev` / `rel: first`
+	// navigation without re-fanning-out to origins. Construction is
+	// in main; nil disables the feature.
+	PageCache *pagecache.Cache
 }
 
 // NewHandler creates a new federation handler.
@@ -147,7 +154,11 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 	if len(cfg.CursorSecret) > 0 && len(handler.origins) > 0 {
 		origins := make(map[string]Searcher, len(handler.origins))
 		for id, c := range handler.origins {
-			origins[id] = OriginClientSearcher{Client: c}
+			s, err := NewOriginClientSearcher(c, c.Origin().Pagination.ToAdapterConfig())
+			if err != nil {
+				return nil, fmt.Errorf("origin %q pagination adapter: %w", id, err)
+			}
+			origins[id] = s
 		}
 		searcher, err := NewPaginatedSearcher(PaginatedSearchConfig{
 			Origins:         origins,
@@ -155,6 +166,7 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 			DefaultPageSize: handler.defaultPageSize,
 			MaxPageSize:     handler.maxPageSize,
 			CursorSecret:    cfg.CursorSecret,
+			PageCache:       cfg.PageCache,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("paginated searcher: %w", err)
@@ -397,7 +409,7 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 
 	// Execute the search
 	start := time.Now()
-	fc, err := client.Search(ctx, adaptedReq)
+	fc, _, err := client.Search(ctx, adaptedReq)
 	if m := observability.Default(); m != nil {
 		m.UpstreamRequestDuration.WithLabelValues(origin.ID).Observe(time.Since(start).Seconds())
 		status := observability.UpstreamStatusOK
@@ -857,9 +869,11 @@ func (h *Handler) handleConformance(ctx context.Context,
 }
 
 // handleLanding builds a STAC Catalog landing page whose conformsTo
-// reflects the intersected proxy/origin capability set. Links are
-// kept minimal — clients use /conformance for the authoritative list
-// and follow the standard STAC link rels for navigation.
+// reflects the intersected proxy/origin capability set, plus the five
+// STAC API §1.4 required link rels (self, root, data, conformance,
+// search). When ProxyBaseURL is configured links are absolute; otherwise
+// they stay relative so callers behind a path-only reverse proxy still
+// produce usable links.
 func (h *Handler) handleLanding(ctx context.Context,
 	req *request) (*response, error) {
 
@@ -870,7 +884,7 @@ func (h *Handler) handleLanding(ctx context.Context,
 		"id":           "stac-proxy",
 		"description":  "Federated STAC proxy",
 		"conformsTo":   classes,
-		"links":        []map[string]string{},
+		"links":        h.landingLinks(),
 	})
 	if err != nil {
 		return nil, err
@@ -880,6 +894,26 @@ func (h *Handler) handleLanding(ctx context.Context,
 		Headers:    http.Header{"Content-Type": []string{"application/json"}},
 		Body:       body,
 	}, nil
+}
+
+// landingLinks returns the STAC API §1.4 required link rels for the
+// landing page. Hrefs are rooted at proxyBaseURL when configured;
+// otherwise they are emitted as relative paths.
+func (h *Handler) landingLinks() []map[string]string {
+	base := strings.TrimRight(h.proxyBaseURL, "/")
+	href := func(p string) string { return base + p }
+	const (
+		jsonType    = "application/json"
+		geoJSONType = "application/geo+json"
+	)
+	return []map[string]string{
+		{"rel": "self", "href": href("/"), "type": jsonType, "title": "Landing page"},
+		{"rel": "root", "href": href("/"), "type": jsonType, "title": "Landing page"},
+		{"rel": "data", "href": href("/collections"), "type": jsonType, "title": "Collections"},
+		{"rel": "conformance", "href": href("/conformance"), "type": jsonType, "title": "Conformance"},
+		{"rel": "search", "href": href("/search"), "type": geoJSONType, "method": "GET", "title": "STAC search (GET)"},
+		{"rel": "search", "href": href("/search"), "type": geoJSONType, "method": "POST", "title": "STAC search (POST)"},
+	}
 }
 
 // advertisedConformance returns the conformance classes the proxy is
@@ -1037,8 +1071,20 @@ func (h *Handler) buildPaginatedSearchResponse(result *SearchResult,
 		Context:  sc,
 	}
 
+	// Emit pagination link rels. Only emit links whose cursor is
+	// non-empty: page 0 has no `self` cursor (the search was issued
+	// without one), and the last page has no `next`.
+	if result.SelfCursor != "" {
+		fc.Links = append(fc.Links, h.cursorSearchLink(req.Request, "self", result.SelfCursor))
+	}
+	if result.PrevCursor != "" {
+		fc.Links = append(fc.Links, h.cursorSearchLink(req.Request, "prev", result.PrevCursor))
+	}
+	if result.FirstCursor != "" {
+		fc.Links = append(fc.Links, h.cursorSearchLink(req.Request, "first", result.FirstCursor))
+	}
 	if result.NextCursor != "" {
-		fc.Links = append(fc.Links, h.nextSearchLink(req.Request, result.NextCursor))
+		fc.Links = append(fc.Links, h.cursorSearchLink(req.Request, "next", result.NextCursor))
 	}
 
 	body, err := json.Marshal(fc)
@@ -1055,11 +1101,16 @@ func (h *Handler) buildPaginatedSearchResponse(result *SearchResult,
 	}, nil
 }
 
-// nextSearchLink builds a "next" Link carrying the proxy's signed
-// pagination cursor. The href is rooted at proxyBaseURL when
-// configured; otherwise it stays relative so callers behind path-only
-// reverse proxies still produce usable links.
-func (h *Handler) nextSearchLink(orig *http.Request, cursor string) *stac.Link {
+// cursorSearchLink builds a Link with the given rel carrying the
+// proxy's signed pagination cursor. The href is rooted at
+// proxyBaseURL when configured; otherwise it stays relative so
+// callers behind path-only reverse proxies still produce usable
+// links. The link shape (POST body.token vs GET ?token=) mirrors the
+// inbound request method.
+//
+// Used for `next`, `prev`, `first`, and `self` — every cursor-bearing
+// pagination link has the same wire format, only the rel differs.
+func (h *Handler) cursorSearchLink(orig *http.Request, rel, cursor string) *stac.Link {
 	base := strings.TrimRight(h.proxyBaseURL, "/")
 	path := "/search"
 	if orig != nil && orig.URL != nil && orig.URL.Path != "" {
@@ -1068,7 +1119,7 @@ func (h *Handler) nextSearchLink(orig *http.Request, cursor string) *stac.Link {
 
 	if orig != nil && orig.Method == http.MethodPost {
 		return &stac.Link{
-			Rel:  "next",
+			Rel:  rel,
 			Href: base + path,
 			Type: "application/json",
 			AdditionalFields: map[string]any{
@@ -1089,7 +1140,7 @@ func (h *Handler) nextSearchLink(orig *http.Request, cursor string) *stac.Link {
 	q.Del("cursor")
 
 	return &stac.Link{
-		Rel:  "next",
+		Rel:  rel,
 		Href: base + path + "?" + q.Encode(),
 		Type: "application/geo+json",
 		AdditionalFields: map[string]any{
@@ -1138,6 +1189,13 @@ func (h *Handler) OriginIDs() []string {
 // pools, etc.
 func (h *Handler) OriginClient(id string) *OriginClient {
 	return h.origins[id]
+}
+
+// ProxyBaseURL returns the configured external base URL the handler
+// uses when rewriting links (empty when unset → relative links). Exposed
+// for tests that need to verify config-to-handler wiring.
+func (h *Handler) ProxyBaseURL() string {
+	return h.proxyBaseURL
 }
 
 // reverseProxyOnce forwards req to a single origin via

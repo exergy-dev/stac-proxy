@@ -6,8 +6,15 @@ server:
   port: 8080
   timeouts:
     read: 30s
+    read_header: 10s
     write: 60s
     idle: 120s
+  # public_base_url is the externally reachable URL clients use to reach
+  # this proxy. When set, response links and pagination `next` URLs are
+  # rewritten as absolute hrefs rooted here, and `rewrite_assets: proxy`
+  # is supported. Leave empty to emit relative links (only suitable when
+  # client and proxy share a host).
+  # public_base_url: "https://stac.example.com"
 
 logging:
   level: "info"
@@ -64,3 +71,17 @@ middleware:
       collection_ttl: 5m
       item_ttl: 1m
       search_ttl: 30s
+
+  # CORS — preflight short-circuits and per-response headers for browser
+  # callers. `allowed_origins: ["*"]` is mutually exclusive with
+  # `allow_credentials: true` (Fetch spec). To support credentialed
+  # cross-origin requests, list exact origins instead.
+  - name: cors
+    config:
+      allowed_origins:
+        - "*"
+      allowed_methods: [GET, HEAD, POST, OPTIONS]
+      allowed_headers: [Authorization, Content-Type, Accept, Range]
+      exposed_headers: [ETag, Content-Range]
+      allow_credentials: false
+      max_age: 600

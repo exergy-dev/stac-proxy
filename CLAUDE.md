@@ -47,7 +47,7 @@ Client → Middleware Chain → Router/Handler → Origins
 - `internal/middleware/` - Chi-style `func(http.Handler) http.Handler` middleware components:
   - `auth/` - Authentication providers (JWT bearer, JWKS, OIDC discovery, API key, basic, mTLS)
   - `authz/` - Authorization with OPA (embedded + external), CQL2 injection, geofencing
-  - `cache/` - Response caching (memory; redis backend not yet implemented)
+  - `cache/` - Response caching (in-memory only)
   - `ratelimit/` - Token-bucket rate limiting (per-IP / per-principal)
   - `remap/` - URL remapping and HMAC URL signing
   - `logging/` - Structured slog request logging with request-id propagation
@@ -124,5 +124,4 @@ YAML-based configuration with environment variable expansion. Key sections:
 - `github.com/golang-jwt/jwt/v5` - JWT handling
 - `github.com/paulmach/orb` - GeoJSON/geometry
 - `github.com/tidwall/rtree` - Spatial indexing
-- `github.com/redis/go-redis/v9` - Redis caching
 - `github.com/bits-and-blooms/bloom/v3` - Bloom filters for deduplication

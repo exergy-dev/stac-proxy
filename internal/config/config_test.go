@@ -1935,16 +1935,20 @@ func TestValidationWarnings(t *testing.T) {
 		}
 	})
 
-	t.Run("unrecognized middleware warning", func(t *testing.T) {
+	t.Run("unrecognized middleware fails validation", func(t *testing.T) {
 		t.Parallel()
 
+		// A typo'd middleware name (e.g. "rate-limit" vs "rate_limit")
+		// previously emitted only a warning, so deployments could ship
+		// with authz/ratelimit silently disabled. Validation now hard-
+		// fails so the misconfig surfaces at startup.
 		cfg := &Config{
 			Mode: "single",
 			Server: ServerConfig{
 				Port: 8080,
 			},
 			Middleware: []MiddlewareConfig{
-				{Name: "unknown_middleware"},
+				{Name: "rate-limit"},
 			},
 			Upstream: &UpstreamConfig{
 				URL: "https://example.com",
@@ -1954,13 +1958,115 @@ func TestValidationWarnings(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		// Should succeed but may have warnings
-		if err != nil {
-			if ve, ok := err.(*ValidationError); ok {
-				if len(ve.Warnings) == 0 {
-					t.Error("expected warnings for unrecognized middleware")
-				}
-			}
+		if err == nil {
+			t.Fatal("expected validation error for unrecognized middleware name")
+		}
+		if !containsValidationError(err, "is not a recognized middleware") {
+			t.Errorf("expected unrecognized-middleware error, got: %v", err)
+		}
+	})
+
+	t.Run("cors with credentials and wildcard origin rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "cors", Config: map[string]interface{}{
+					"allowed_origins":   []interface{}{"*"},
+					"allow_credentials": true,
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		if err == nil {
+			t.Fatal("expected error for cors credentials+wildcard")
+		}
+		if !containsValidationError(err, "allow_credentials cannot be true with wildcard") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("cors with non-string origin element rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "cors", Config: map[string]interface{}{
+					"allowed_origins": []interface{}{"https://example.org", 42},
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		if err == nil {
+			t.Fatal("expected error for non-string origin")
+		}
+		if !containsValidationError(err, "must be a string") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("cors with credentials and exact origins is valid", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "cors", Config: map[string]interface{}{
+					"allowed_origins":   []interface{}{"https://app.example.org"},
+					"allow_credentials": true,
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+		}
+		cfg.setDefaults()
+		if err := NewValidator().Validate(cfg); err != nil {
+			t.Fatalf("unexpected validation error: %v", err)
+		}
+	})
+
+	t.Run("cache store redis rejected at validation", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "cache", Config: map[string]interface{}{
+					"store": "redis",
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		if err == nil {
+			t.Fatal("expected error for cache.store=redis")
+		}
+		if !containsValidationError(err, "store \"redis\" is not supported") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("cache store memory accepted", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "cache", Config: map[string]interface{}{
+					"store": "memory",
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+		}
+		cfg.setDefaults()
+		if err := NewValidator().Validate(cfg); err != nil {
+			t.Fatalf("unexpected validation error: %v", err)
 		}
 	})
 }

@@ -2,10 +2,30 @@
 
 **Project Name:** stac-proxy  
 **Language:** Go  
-**Version:** 1.0 (Draft)  
-**Author:** [Your Name]  
 **Date:** December 2024  
-**Status:** Proposal
+**Status:** Historical proposal — kept for architectural context
+
+---
+
+> ⚠ **This document is the original pre-implementation proposal.** It
+> predates v0.1.0 and has not been kept in lockstep with the code. Use
+> it for the architectural narrative (sections 1–3, the federation
+> diagrams, the design rationale); do **not** treat its config samples,
+> field lists, or roadmap as authoritative. Authoritative sources:
+>
+> - **What ships today:** [`README.md`](README.md) feature table and
+>   [`CHANGELOG.md`](CHANGELOG.md) `Unreleased` + `[0.1.0]` blocks.
+> - **Config schema:** the YAML tags on `internal/config/config.go`
+>   structs.
+> - **Operator docs:** [`docs/deploy.md`](docs/deploy.md),
+>   [`docs/policies.md`](docs/policies.md),
+>   [`docs/observability.md`](docs/observability.md).
+>
+> Specifically, code samples below referencing `use_iam_role`,
+> `store: redis`, `redis_url`, `signer.type: cloudfront`/`s3_presigned`,
+> per-origin `client_cert`, `authz.opa.url`, or `server.hot_reload` are
+> features that were either never implemented or have since been
+> removed. See `CHANGELOG.md > Unreleased > Removed`.
 
 ---
 

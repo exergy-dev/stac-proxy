@@ -46,18 +46,22 @@ func New(cfg Config) (*Server, error) {
 	addr := fmt.Sprintf("%s:%d", cfg.ServerConfig.Host, cfg.ServerConfig.Port)
 
 	httpServer := &http.Server{
-		Addr:         addr,
-		Handler:      cfg.Handler,
-		ReadTimeout:  cfg.ServerConfig.Timeouts.Read,
-		WriteTimeout: cfg.ServerConfig.Timeouts.Write,
-		IdleTimeout:  cfg.ServerConfig.Timeouts.Idle,
-		// TODO(post-merge): expose via cfg.Server.ReadHeaderTimeout when config.go gains the field.
-		ReadHeaderTimeout: 10 * time.Second,
+		Addr:              addr,
+		Handler:           cfg.Handler,
+		ReadTimeout:       cfg.ServerConfig.Timeouts.Read,
+		ReadHeaderTimeout: cfg.ServerConfig.Timeouts.ReadHeader,
+		WriteTimeout:      cfg.ServerConfig.Timeouts.Write,
+		IdleTimeout:       cfg.ServerConfig.Timeouts.Idle,
 	}
 
-	// Set default timeouts if not configured
+	// Set default timeouts if not configured. Normally these are
+	// populated by config.SetDefaults, but Server.New is also reachable
+	// from tests that construct a bare ServerConfig.
 	if httpServer.ReadTimeout == 0 {
 		httpServer.ReadTimeout = 30 * time.Second
+	}
+	if httpServer.ReadHeaderTimeout == 0 {
+		httpServer.ReadHeaderTimeout = 10 * time.Second
 	}
 	if httpServer.WriteTimeout == 0 {
 		httpServer.WriteTimeout = 60 * time.Second

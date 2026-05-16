@@ -33,8 +33,8 @@ func TestNewFederatedCursor(t *testing.T) {
 			t.Fatal("expected cursor to be non-nil")
 		}
 
-		if cursor.Version != 1 {
-			t.Errorf("expected version 1, got %d", cursor.Version)
+		if cursor.Version != currentCursorVersion {
+			t.Errorf("expected version %d, got %d", currentCursorVersion, cursor.Version)
 		}
 
 		if cursor.QueryHash != queryHash {

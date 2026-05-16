@@ -33,7 +33,7 @@ YAML; `${ENV_VAR}` expansion happens at load (`os.ExpandEnv`).
 
 | Top-level key | Required | Purpose |
 |---|---|---|
-| `server` | yes | host/port/TLS/timeouts/`max_body_bytes`/`hot_reload` (v0.2) |
+| `server` | yes | host/port/TLS/timeouts/`max_body_bytes` |
 | `logging` | no | level (debug/info/warn/error), format (json/console) |
 | `metrics` | no | enable Prometheus exposition on a separate port |
 | `health` | no | `/health` settings + upstream probe interval |
@@ -111,8 +111,50 @@ load profile:
 
 Vertical-scale first; horizontal-scale once you cap a single instance.
 stac-proxy is stateless except for the in-memory cache, so horizontal
-scaling Just Works — at the cost of cache duplication per replica
-(switch to Redis when v0.2 ships).
+scaling Just Works — at the cost of cache duplication per replica.
+
+## Pagination & page cache
+
+Federation responses paginate via HMAC-signed cursors. To enable
+backwards navigation (`rel: prev`, `rel: first`) the proxy keeps a
+rendered-page cache so a returning client can replay an earlier page
+without re-fanning out to every origin.
+
+**Prerequisite.** Set `federation.cursor_secret` (HMAC key, ≥32 bytes
+recommended). Without it cursors are unsigned and the page cache is
+not engaged.
+
+**When to enable.** Federation deployments with deep pagination
+workloads where clients walk back over previously-returned pages. The
+cache is keyed by cursor signature + principal hash, so entries never
+cross tenants. Single-origin pass-through deployments do not need it.
+
+**Configuration.** Defaults are usually fine; tune only if profiling
+shows pressure.
+
+```yaml
+federation:
+  cursor_secret: "${CURSOR_SECRET}"
+  page_cache:
+    enabled: true        # omit to default-on whenever cursor_secret is set
+    max_entries: 1024    # LRU eviction at the cap
+    ttl: 1h              # capped at the cursor's remaining lifetime
+```
+
+**Memory footprint (rough).** Each entry stores one rendered page of
+items. Estimate `max_entries × page_size × avg_item_bytes`. For
+1024 entries × 100 items × 4 KB ≈ 400 MB worst case; in practice items
+are smaller and the LRU rarely fills.
+
+**Disabling.** Either omit `cursor_secret` (also disables backwards
+navigation), or set `page_cache.enabled: false` while keeping the
+cursor secret (forward-only pagination remains signed).
+
+**Horizontal scaling.** Like the response cache, the page cache is
+per-replica in-memory only. A sticky-session load balancer keeps a
+given client's page chain on the same replica; without stickiness, a
+`prev` request that lands on a different replica falls back to re-
+fetching from origins.
 
 ## Graceful shutdown
 
@@ -164,5 +206,3 @@ audit field that quotes the request's client IP is forgeable.
 
 Stateless; rolling upgrade is the default. To rotate configs, push a
 new ConfigMap or rebuild the image and `docker compose up -d --force-recreate`.
-Hot reload is not implemented; the `server.hot_reload` config key has
-been removed.

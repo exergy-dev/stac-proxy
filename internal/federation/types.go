@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/yourorg/stac-proxy/internal/federation/pageadapter"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
@@ -107,6 +108,32 @@ type Origin struct {
 	// malicious origin from OOMing the proxy by streaming a multi-GB
 	// response into memory.
 	MaxResponseBytes int64
+
+	// Pagination selects the pagination convention this origin uses.
+	// Zero value (empty adapter name) means "auto" — the proxy probes
+	// the first response and locks its choice into the cursor.
+	Pagination PaginationSpec
+}
+
+// PaginationSpec configures the pagination adapter for a single
+// origin. The zero value means the federation uses the "auto" adapter,
+// which probes the upstream's first response and picks the highest-
+// confidence convention.
+type PaginationSpec struct {
+	Adapter     string // "auto" (default), "token", "next_url", "offset", "link_header"
+	OffsetParam string // override for the offset adapter; default "offset"
+	TokenParam  string // override for the token adapter; default "token"
+}
+
+// ToAdapterConfig converts the federation-layer spec into the
+// adapter-package config struct. Kept as a method so adapter-package
+// internals don't leak into the config layer.
+func (p PaginationSpec) ToAdapterConfig() pageadapter.Config {
+	return pageadapter.Config{
+		Adapter:     p.Adapter,
+		OffsetParam: p.OffsetParam,
+		TokenParam:  p.TokenParam,
+	}
 }
 
 // RetryPolicy defines retry behavior for an origin.
@@ -141,9 +168,6 @@ type AuthConfig struct {
 
 	// Custom header injection
 	CustomHeaders map[string]string
-
-	// mTLS client certificate
-	ClientCert *ClientCertConfig
 }
 
 // OAuth2Config contains OAuth2 settings.
@@ -157,18 +181,10 @@ type OAuth2Config struct {
 
 // AWSSigV4Config contains AWS Signature V4 settings.
 type AWSSigV4Config struct {
-	Region     string
-	Service    string
-	AccessKey  string
-	SecretKey  string
-	UseIAMRole bool
-}
-
-// ClientCertConfig contains mTLS settings.
-type ClientCertConfig struct {
-	CertFile string
-	KeyFile  string
-	CAFile   string
+	Region    string
+	Service   string
+	AccessKey string
+	SecretKey string
 }
 
 // ConflictStrategy defines how to handle item ID collisions.

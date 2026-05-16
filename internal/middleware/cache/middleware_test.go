@@ -425,14 +425,14 @@ func TestCache_5xxNotCached(t *testing.T) {
 	}
 }
 
-func TestNewFromConfig_RejectsRedis(t *testing.T) {
+func TestNewFromConfig_RejectsUnknownStore(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewFromConfig(map[string]interface{}{"store": "redis"})
+	_, err := NewFromConfig(map[string]interface{}{"store": "bogus"})
 	if err == nil {
-		t.Fatal("NewFromConfig(redis) returned nil error; want explicit rejection")
+		t.Fatal("NewFromConfig(bogus) returned nil error; want explicit rejection")
 	}
-	want := "redis cache backend not yet supported"
+	want := `unknown cache store type "bogus"`
 	if got := err.Error(); !strings.Contains(got, want) {
 		t.Errorf("error = %q, want substring %q", got, want)
 	}

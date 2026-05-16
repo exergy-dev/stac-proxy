@@ -104,10 +104,10 @@ func TestIntegration_FederationFilterRidesAlong(t *testing.T) {
 	// origin client (simulating federation fan-out).
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})).ServeHTTP(httptest.NewRecorder(), httpReq)
 
-	if _, err := originA.Search(context.Background(), sr); err != nil {
+	if _, _, err := originA.Search(context.Background(), sr); err != nil {
 		t.Fatalf("originA Search: %v", err)
 	}
-	if _, err := originB.Search(context.Background(), sr); err != nil {
+	if _, _, err := originB.Search(context.Background(), sr); err != nil {
 		t.Fatalf("originB Search: %v", err)
 	}
 

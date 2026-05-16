@@ -44,12 +44,11 @@ func TestHMACSigner_TamperWithHostFails(t *testing.T) {
 	}
 }
 
-// TestNewSigner_RejectsCloudFrontAndS3 guards against re-introducing
-// the deleted CloudFront and S3-presigned signers, which were stubs
-// that performed no real RSA / SigV4 signing and thus silently shipped
-// URLs with no integrity protection.
-func TestNewSigner_RejectsCloudFrontAndS3(t *testing.T) {
-	for _, typ := range []string{"cloudfront", "s3_presigned"} {
+// TestNewSigner_RejectsUnknownTypes guards against signer-type typos
+// (and re-introduction of the deleted cloudfront / s3_presigned stubs,
+// which performed no real RSA / SigV4 signing).
+func TestNewSigner_RejectsUnknownTypes(t *testing.T) {
+	for _, typ := range []string{"cloudfront", "s3_presigned", "bogus"} {
 		typ := typ
 		t.Run(typ, func(t *testing.T) {
 			s, err := NewSigner(typ, "ignored")
@@ -59,8 +58,8 @@ func TestNewSigner_RejectsCloudFrontAndS3(t *testing.T) {
 			if s != nil {
 				t.Fatalf("expected nil signer for type %q, got %v", typ, s)
 			}
-			if !strings.Contains(err.Error(), "not implemented") {
-				t.Errorf("expected 'not implemented' in error, got: %v", err)
+			if !strings.Contains(err.Error(), "unknown signer type") {
+				t.Errorf("expected 'unknown signer type' in error, got: %v", err)
 			}
 		})
 	}

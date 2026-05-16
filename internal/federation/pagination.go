@@ -11,19 +11,27 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yourorg/stac-proxy/internal/federation/pageadapter"
+	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // Searcher is the minimal interface PaginatedSearcher needs from each
-// origin: execute a search request and return items plus pagination
-// tokens, plus advertise its BaseURL so the paginator can enforce the
-// NextURL allowlist when decoding signed cursors. *OriginClient is
-// adapted to this interface via OriginClientSearcher; tests provide
-// their own implementations.
+// origin: execute a search request and return items plus the captured
+// pagination state, plus advertise its BaseURL so the paginator can
+// enforce the NextURL allowlist when decoding signed cursors.
+// *OriginClient is adapted to this interface via OriginClientSearcher;
+// tests provide their own implementations.
+//
+// The returned (nextToken, nextURL) pair is the pagination state the
+// adapter (token / next_url / offset / link_header / auto) captured
+// from the upstream response. adapterName is non-empty only when the
+// auto adapter locked its choice on the first response; subsequent
+// pages route to the named adapter via OriginCursor.AdapterName.
 type Searcher interface {
-	Search(ctx context.Context, req *stac.SearchRequest) (items []*stac.Item, nextToken string, nextURL string, err error)
+	Search(ctx context.Context, req *stac.SearchRequest) (items []*stac.Item, nextToken string, nextURL string, adapterName string, err error)
 	// BaseURL returns the origin's upstream base URL. Used to enforce
 	// that any cursor-encoded NextURL is rooted at the configured
 	// origin (preventing SSRF via tampered cursors).
@@ -31,36 +39,108 @@ type Searcher interface {
 }
 
 // OriginClientSearcher wraps a *OriginClient so it satisfies Searcher
-// by translating the FeatureCollection return into the (items,
-// nextToken, nextURL, err) shape that the paginator works in.
-type OriginClientSearcher struct{ Client *OriginClient }
+// by:
+//   - executing the upstream search (POST /search or verbatim GET when
+//     the request carries an OverrideURL),
+//   - invoking the configured pagination Adapter on the upstream
+//     response to capture next-page state,
+//   - propagating the adapter-captured state back to the paginator.
+//
+// The pagination Adapter is bound at construction. When the auto
+// adapter is configured, the locked inner-adapter name flows back via
+// the searcher's return value into OriginCursor.AdapterName, where the
+// paginator stores it for the next page.
+type OriginClientSearcher struct {
+	Client  *OriginClient
+	Adapter pageadapter.Adapter
 
-// Search executes the underlying client's search and extracts items
-// plus the upstream's "next" link, if any. Both a token (parsed from
-// the next-link URL) and the raw URL are surfaced so the paginator
-// can drive subsequent requests against origins that paginate by
-// token, by full URL, or both.
-func (o OriginClientSearcher) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
-	fc, err := o.Client.Search(ctx, req)
-	if err != nil || fc == nil {
-		return nil, "", "", err
+	// Registry holds the named adapters so subsequent pages can
+	// retrieve the locked adapter by name. Non-nil only when the
+	// configured default is `auto`.
+	Registry map[string]pageadapter.Adapter
+}
+
+// NewOriginClientSearcher builds a Searcher from an OriginClient and
+// the origin's pagination config. When cfg names a specific adapter,
+// that adapter handles every page. When cfg is empty or names "auto",
+// the auto adapter probes on page 0 and locks its choice into the
+// returned cursor.
+func NewOriginClientSearcher(client *OriginClient, cfg pageadapter.Config) (*OriginClientSearcher, error) {
+	adapter, err := pageadapter.New(cfg)
+	if err != nil {
+		return nil, err
 	}
-	items := append([]*stac.Item(nil), fc.Features...)
-	nextToken := stac.ExtractNextToken(fc.Links)
-	var nextURL string
-	for _, link := range fc.Links {
-		if link != nil && link.Rel == "next" {
-			nextURL = link.Href
-			break
+	s := &OriginClientSearcher{Client: client, Adapter: adapter}
+	// Build a registry of named adapters when auto is the default —
+	// subsequent pages route to the locked named adapter via
+	// req.AdapterName.
+	if cfg.Adapter == "" || cfg.Adapter == "auto" {
+		s.Registry = make(map[string]pageadapter.Adapter, 4)
+		for _, name := range []string{"token", "next_url", "offset", "link_header"} {
+			sub, err := pageadapter.New(pageadapter.Config{
+				Adapter:     name,
+				OffsetParam: cfg.OffsetParam,
+				TokenParam:  cfg.TokenParam,
+			})
+			if err != nil {
+				return nil, err
+			}
+			s.Registry[name] = sub
 		}
 	}
-	return items, nextToken, nextURL, nil
+	return s, nil
+}
+
+// Search executes the underlying client's search and runs the bound
+// pagination adapter against the upstream response. When the cursor
+// (carried via req.AdapterName) names a locked adapter, that one is
+// used in place of the default — this is how `auto` honors its first-
+// response decision on subsequent pages.
+func (o *OriginClientSearcher) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, string, error) {
+	fc, hdr, err := o.Client.Search(ctx, req)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+	if fc == nil {
+		return nil, "", "", "", nil
+	}
+	items := append([]*stac.Item(nil), fc.Features...)
+
+	adapter := o.pickAdapter(req)
+	st, err := adapter.Capture(pageadapter.UpstreamResponse{
+		FC:      fc,
+		Header:  hdr,
+		BaseURL: o.Client.BaseURL(),
+	})
+	if err != nil {
+		// A capture error is non-fatal for the items we already have
+		// but should retire this origin from further pagination so we
+		// don't loop. Logging happens at the paginator (origin marked
+		// errored on subsequent advance attempts).
+		return items, "", "", "", err
+	}
+	if st.Done {
+		return items, "", "", "", nil
+	}
+	return items, st.Token, st.URL, st.AdapterName, nil
+}
+
+// pickAdapter returns the adapter that should handle this response:
+// the locked named adapter when req.AdapterName is set and we have a
+// registry (i.e. our default is `auto`); otherwise the bound default.
+func (o *OriginClientSearcher) pickAdapter(req *stac.SearchRequest) pageadapter.Adapter {
+	if req != nil && req.AdapterName != "" && o.Registry != nil {
+		if a, ok := o.Registry[req.AdapterName]; ok {
+			return a
+		}
+	}
+	return o.Adapter
 }
 
 // BaseURL exposes the underlying OriginClient's base URL so the
 // paginator can validate cursor NextURLs against the allowlist.
-func (o OriginClientSearcher) BaseURL() string {
-	if o.Client == nil {
+func (o *OriginClientSearcher) BaseURL() string {
+	if o == nil || o.Client == nil {
 		return ""
 	}
 	return o.Client.BaseURL()
@@ -84,6 +164,13 @@ type PaginatedSearcher struct {
 	pageSize       int
 	maxPageSize    int
 	cursorSecret   []byte
+
+	// pageCache stores rendered pages keyed by the cursor that
+	// produced them, enabling `rel: prev` / `rel: first` navigation
+	// without re-executing the upstream fan-out. Nil when the page
+	// cache is disabled by config; Search treats a nil cache as
+	// "feature off" and always re-executes.
+	pageCache *pagecache.Cache
 }
 
 // PaginatedSearchConfig configures paginated search.
@@ -96,6 +183,10 @@ type PaginatedSearchConfig struct {
 	// pagination cursors. Required (non-empty) — NewPaginatedSearcher
 	// returns an error if it is missing.
 	CursorSecret []byte
+	// PageCache, when non-nil, stores rendered pages so the
+	// paginator can serve `rel: prev` / `rel: first` navigation
+	// without re-fanning-out to origins. Nil disables the feature.
+	PageCache *pagecache.Cache
 }
 
 // NewPaginatedSearcher creates a new paginated searcher.
@@ -128,15 +219,32 @@ func NewPaginatedSearcher(cfg PaginatedSearchConfig) (*PaginatedSearcher, error)
 		pageSize:       cfg.DefaultPageSize,
 		maxPageSize:    cfg.MaxPageSize,
 		cursorSecret:   cfg.CursorSecret,
+		pageCache:      cfg.PageCache,
 	}, nil
 }
 
-// SearchResult contains search results and pagination info.
+// SearchResult contains search results and pagination info. The
+// four cursor strings carry the link chain the handler turns into
+// link rels:
+//
+//	NextCursor   → rel: next
+//	PrevCursor   → rel: prev   (empty on page 0)
+//	FirstCursor  → rel: first  (empty on page 0; same as the page-0
+//	                            cursor on page ≥ 1)
+//	SelfCursor   → rel: self   (empty on page 0; same as the cursor
+//	                            the client supplied to reach this page)
+//
+// Empty cursors mean "no link of that rel for this page" — the
+// handler omits the corresponding link rather than emitting an empty
+// href.
 type SearchResult struct {
-	Items      []*stac.Item
-	TotalCount int
-	NextCursor string
-	Context    *SearchContext
+	Items       []*stac.Item
+	TotalCount  int
+	NextCursor  string
+	PrevCursor  string
+	FirstCursor string
+	SelfCursor  string
+	Context     *SearchContext
 }
 
 // SearchContext contains additional search context.
@@ -167,6 +275,12 @@ func principalHashFromContext(ctx context.Context) string {
 }
 
 // Search performs a paginated federated search.
+//
+// When a page cache is configured and the incoming cursor matches a
+// stored entry, Search returns the cached page directly (the
+// backwards-navigation path). On a miss, Search executes the upstream
+// fan-out as usual and stores the rendered page in the cache so a
+// later `rel: prev` follow can serve it.
 func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest, cursorStr string) (*SearchResult, error) {
 	// Determine page size
 	limit := s.pageSize
@@ -188,6 +302,15 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 		// Validate cursor matches query
 		if cursor.QueryHash != hashSearchRequest(req) {
 			return nil, errors.New("cursor does not match search parameters")
+		}
+
+		// Backwards-navigation fast path: when the page cache holds
+		// the page this cursor produced, return it directly. Cache
+		// keys are derived from the cursor signature (already
+		// HMAC-bound to principal at the cursor encoder), so a hit
+		// here is safe to return verbatim.
+		if cached, ok := s.pageCache.Get(ctx, pagecache.SignatureOf(cursorStr), principalHash); ok {
+			return fromCachedResult(cached), nil
 		}
 	} else {
 		// Create new cursor
@@ -221,21 +344,46 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 	// Update cursor with new state
 	cursor.TotalReturned += len(mergedItems)
 
-	// Build result
+	// Build result. SelfCursor is the cursor the client supplied to
+	// reach this page (or "" on page 0); PrevCursor and FirstCursor
+	// come from the chain encoded into the incoming cursor.
 	result := &SearchResult{
-		Items:      mergedItems,
-		TotalCount: cursor.TotalReturned,
+		Items:       mergedItems,
+		TotalCount:  cursor.TotalReturned,
+		PrevCursor:  cursor.PrevCursor,
+		FirstCursor: cursor.FirstCursor,
+		SelfCursor:  cursorStr,
 		Context: &SearchContext{
 			Returned: len(mergedItems),
 			Limit:    limit,
 		},
 	}
 
-	// Encode next cursor if there are more results
+	// Encode next cursor if there are more results. The next cursor
+	// carries the prev/first chain so the downstream link emitter
+	// can offer backwards navigation from page N+1.
 	if cursor.HasMore() {
-		nextCursor, err := cursor.Encode(s.cursorSecret)
-		if err == nil {
-			result.NextCursor = nextCursor
+		nextCursor := cursor.Clone()
+		// Chain pointers: prev points to the cursor that PRODUCED
+		// this page; first points to page 0. cursorStr is "" on
+		// page 0 itself, in which case the next cursor's
+		// PrevCursor stays empty and PageSeq goes from 0 to 1.
+		nextCursor.PrevCursor = cursorStr
+		if cursor.PageSeq == 0 {
+			// Page 0 is the first page; the cursor we're about to
+			// emit (page 1's cursor) needs FirstCursor = page-0's
+			// cursor. cursorStr is "" on page 0, so we record an
+			// empty string; the handler treats empty FirstCursor on
+			// page > 0 as "page 0 has no canonical cursor"
+			// (synthetic-first behavior — see handler).
+			nextCursor.FirstCursor = cursorStr
+		} else {
+			nextCursor.FirstCursor = cursor.FirstCursor
+		}
+		nextCursor.PageSeq = cursor.PageSeq + 1
+		encoded, encErr := nextCursor.Encode(s.cursorSecret)
+		if encErr == nil {
+			result.NextCursor = encoded
 		}
 	}
 
@@ -252,19 +400,90 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 		result.Context.Origins = append(result.Context.Origins, status)
 	}
 
+	// Store the rendered page in the cache. The key is the cursor
+	// that PRODUCED this page (cursorStr) — when a client later
+	// follows `rel: prev` and arrives back here with that same
+	// cursorStr, the Get above hits and we serve the cached bytes
+	// without re-fanning-out.
+	if cursorStr != "" {
+		s.putToPageCache(ctx, cursorStr, principalHash, cursor, result)
+	}
+
 	return result, nil
+}
+
+// putToPageCache serializes result and stores it under cursorStr's
+// signature. Errors are non-fatal — the cache is purely an
+// optimisation; a put failure means a future prev-link follow will
+// fall through to a fresh fetch. TTL is bounded by the cursor's
+// remaining lifetime.
+func (s *PaginatedSearcher) putToPageCache(ctx context.Context, cursorStr, principalHash string, cursor *FederatedCursor, result *SearchResult) {
+	if s.pageCache == nil {
+		return
+	}
+	sig := pagecache.SignatureOf(cursorStr)
+	if sig == "" {
+		return
+	}
+	remaining := time.Until(time.Unix(cursor.ExpiresAt, 0))
+	if remaining <= 0 {
+		return
+	}
+	ctxJSON, _ := json.Marshal(result.Context)
+	_ = s.pageCache.Put(ctx, sig, principalHash, &pagecache.SearchResult{
+		Items:       result.Items,
+		TotalCount:  result.TotalCount,
+		NextCursor:  result.NextCursor,
+		PrevCursor:  result.PrevCursor,
+		FirstCursor: result.FirstCursor,
+		SelfCursor:  result.SelfCursor,
+		Context:     ctxJSON,
+	}, remaining)
+}
+
+// fromCachedResult translates a pagecache.SearchResult back into the
+// federation-layer SearchResult shape. The Context JSON is decoded
+// into the typed *SearchContext; on decode failure we degrade
+// gracefully to an empty context (the cache hit is still useful — the
+// items are the load-bearing part).
+func fromCachedResult(c *pagecache.SearchResult) *SearchResult {
+	r := &SearchResult{
+		Items:       c.Items,
+		TotalCount:  c.TotalCount,
+		NextCursor:  c.NextCursor,
+		PrevCursor:  c.PrevCursor,
+		FirstCursor: c.FirstCursor,
+		SelfCursor:  c.SelfCursor,
+	}
+	if len(c.Context) > 0 {
+		var sc SearchContext
+		if err := json.Unmarshal(c.Context, &sc); err == nil {
+			r.Context = &sc
+		}
+	}
+	return r
 }
 
 // originFetchResult holds results from a single origin.
 type originFetchResult struct {
-	OriginID  string
-	Items     []*stac.Item
-	NextToken string
-	NextURL   string
-	Error     error
+	OriginID    string
+	Items       []*stac.Item
+	NextToken   string
+	NextURL     string
+	AdapterName string // adapter that captured this state (auto's lock decision)
+	Error       error
 }
 
 // fetchFromOrigins fetches pages from all active origins in parallel.
+//
+// Cursor → request plumbing: OriginCursor.NextToken populates
+// SearchRequest.Token (POST body.token / GET ?token=); NextURL
+// populates SearchRequest.OverrideURL (instructs OriginClient to GET
+// the URL verbatim); AdapterName populates SearchRequest.AdapterName
+// (selects the locked pagination adapter for `auto` origins). These
+// transport-private fields carry the adapter's view of pagination
+// state across the Searcher boundary without changing the on-wire
+// SearchRequest shape.
 func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.SearchRequest, cursor *FederatedCursor, originIDs []string, limit int) []originFetchResult {
 	var wg sync.WaitGroup
 	results := make([]originFetchResult, len(originIDs))
@@ -287,22 +506,30 @@ func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.Sear
 			originReq := cloneSearchRequest(req)
 			originReq.Limit = limit * 2 // Fetch extra for merge buffer
 
-			// Apply cursor state
+			// Apply cursor state. We pass the full set of pagination
+			// hints; the OriginClient + adapter decide which to use.
 			if oc := cursor.GetOriginCursor(id); oc != nil {
 				if oc.NextToken != "" {
 					originReq.Token = oc.NextToken
 				}
+				if oc.NextURL != "" {
+					originReq.OverrideURL = oc.NextURL
+				}
+				originReq.AdapterName = oc.AdapterName
 			}
 
-			// Execute search via the Searcher interface
-			items, nextToken, nextURL, err := origin.Search(ctx, originReq)
+			// Execute search via the Searcher interface. The
+			// returned adapterName, if non-empty, is `auto`'s locked
+			// choice — propagated back into the cursor by mergeResults.
+			items, nextToken, nextURL, adapterName, err := origin.Search(ctx, originReq)
 
 			results[idx] = originFetchResult{
-				OriginID:  id,
-				Items:     items,
-				NextToken: nextToken,
-				NextURL:   nextURL,
-				Error:     err,
+				OriginID:    id,
+				Items:       items,
+				NextToken:   nextToken,
+				NextURL:     nextURL,
+				AdapterName: adapterName,
+				Error:       err,
 			}
 		}(i, originID)
 	}
@@ -342,7 +569,13 @@ func (s *PaginatedSearcher) mergeResults(results []originFetchResult, cursor *Fe
 				}
 			}
 		}
-		cursor.UpdateOrigin(result.OriginID, len(result.Items), result.NextToken, result.NextURL, lastSort)
+		cursor.UpdateOriginState(result.OriginID, OriginUpdate{
+			ItemCount:     len(result.Items),
+			NextToken:     result.NextToken,
+			NextURL:       result.NextURL,
+			AdapterName:   result.AdapterName,
+			LastSortValue: lastSort,
+		})
 
 		// Deduplicate and add items
 		for _, item := range result.Items {

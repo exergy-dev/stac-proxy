@@ -44,6 +44,14 @@ var (
 	ErrCursorSecretMissing = errors.New("cursor: secret required")
 )
 
+// currentCursorVersion is the format version stamped onto every cursor
+// the proxy mints. Decoders accept any version that round-trips
+// through encoding/json without unknown-field errors — we bump the
+// version when adding new semantic state (v1 → v2 added prev/first
+// link plumbing) so logs / dashboards / future migrations can tell
+// cursor generations apart, not because we reject old shapes.
+const currentCursorVersion = 2
+
 // FederatedCursor tracks pagination state across multiple origins.
 type FederatedCursor struct {
 	// Version for cursor format compatibility
@@ -66,6 +74,23 @@ type FederatedCursor struct {
 
 	// Sort state for merge-sort pagination
 	LastSortValues []interface{} `json:"lsv,omitempty"`
+
+	// PrevCursor is the encoded cursor that produced THIS page. When
+	// the response is the first page (no incoming cursor), this is
+	// empty. The proxy uses it to emit `rel: prev` links and to key
+	// the page cache for backwards-navigation lookups.
+	PrevCursor string `json:"pc,omitempty"`
+
+	// FirstCursor is the encoded cursor for page 0 of this chain.
+	// Fixed for the lifetime of a pagination session so `rel: first`
+	// links keep working from any page. Empty on page 0 itself
+	// (there's nothing to navigate "first" to from the first page).
+	FirstCursor string `json:"fc,omitempty"`
+
+	// PageSeq is the 0-indexed page number for this cursor. Used by
+	// the link emitter to decide whether `rel: first` is meaningful
+	// (only when PageSeq > 0).
+	PageSeq int `json:"ps,omitempty"`
 }
 
 // OriginCursor tracks pagination state for a single origin.
@@ -79,6 +104,13 @@ type OriginCursor struct {
 
 	// Offset-based pagination
 	Offset int `json:"off,omitempty"`
+
+	// AdapterName locks this origin's pagination convention for the
+	// cursor's lifetime. Populated by the `auto` pagination adapter
+	// after its first successful probe; empty for origins configured
+	// with an explicit named adapter (those don't need locking).
+	// Subsequent pages route to the named adapter directly.
+	AdapterName string `json:"ad,omitempty"`
 
 	// State
 	Exhausted bool `json:"ex"`
@@ -128,7 +160,7 @@ func NewFederatedCursor(queryHash, principalHash string, originIDs []string, cfg
 
 	now := time.Now()
 	cursor := &FederatedCursor{
-		Version:       1,
+		Version:       currentCursorVersion,
 		QueryHash:     queryHash,
 		PrincipalHash: principalHash,
 		Origins:       make(map[string]*OriginCursor),
@@ -278,18 +310,51 @@ func (c *FederatedCursor) MarkError(originID string) {
 
 // UpdateOrigin updates cursor state for an origin after fetching results.
 func (c *FederatedCursor) UpdateOrigin(originID string, itemCount int, nextToken, nextURL string, lastSortValue interface{}) {
+	c.UpdateOriginState(originID, OriginUpdate{
+		ItemCount:     itemCount,
+		NextToken:     nextToken,
+		NextURL:       nextURL,
+		LastSortValue: lastSortValue,
+	})
+}
+
+// OriginUpdate carries the fields UpdateOriginState applies to an
+// OriginCursor. New fields go here rather than on UpdateOrigin's
+// argument list so subsequent additions don't ripple through every
+// caller — and so callers can supply only the fields they know about
+// (zero values are skipped where the distinction matters).
+type OriginUpdate struct {
+	ItemCount     int
+	NextToken     string
+	NextURL       string
+	Offset        int
+	AdapterName   string // only written when non-empty (auto's lock decision)
+	LastSortValue interface{}
+}
+
+// UpdateOriginState is the rich-argument form of UpdateOrigin. Pagination
+// adapters that need to record an offset or lock an adapter name use
+// this; the simpler UpdateOrigin remains for token-style updates.
+func (c *FederatedCursor) UpdateOriginState(originID string, u OriginUpdate) {
 	origin, ok := c.Origins[originID]
 	if !ok {
 		origin = &OriginCursor{ID: originID}
 		c.Origins[originID] = origin
 	}
 
-	origin.ItemCount += itemCount
-	origin.NextToken = nextToken
-	origin.NextURL = nextURL
-	origin.LastSortValue = lastSortValue
+	origin.ItemCount += u.ItemCount
+	origin.NextToken = u.NextToken
+	origin.NextURL = u.NextURL
+	origin.Offset = u.Offset
+	origin.LastSortValue = u.LastSortValue
+	// AdapterName is sticky: once locked (auto's choice), don't
+	// overwrite on subsequent updates with an empty string. The named
+	// adapter's response will not re-emit the adapter name.
+	if u.AdapterName != "" {
+		origin.AdapterName = u.AdapterName
+	}
 
-	if nextToken == "" && nextURL == "" {
+	if u.NextToken == "" && u.NextURL == "" && u.Offset == 0 {
 		origin.Exhausted = true
 	}
 }
@@ -311,6 +376,9 @@ func (c *FederatedCursor) Clone() *FederatedCursor {
 		TotalReturned: c.TotalReturned,
 		CreatedAt:     c.CreatedAt,
 		ExpiresAt:     c.ExpiresAt,
+		PrevCursor:    c.PrevCursor,
+		FirstCursor:   c.FirstCursor,
+		PageSeq:       c.PageSeq,
 	}
 
 	for id, origin := range c.Origins {
@@ -319,6 +387,7 @@ func (c *FederatedCursor) Clone() *FederatedCursor {
 			NextToken:     origin.NextToken,
 			NextURL:       origin.NextURL,
 			Offset:        origin.Offset,
+			AdapterName:   origin.AdapterName,
 			Exhausted:     origin.Exhausted,
 			Error:         origin.Error,
 			ItemCount:     origin.ItemCount,

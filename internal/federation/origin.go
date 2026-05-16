@@ -202,25 +202,84 @@ func (c *OriginClient) limitedBody(body io.Reader) *countingReader {
 	return &countingReader{r: io.LimitReader(body, c.maxResponseBytes+1)}
 }
 
-// Search executes a search request against this origin.
-func (c *OriginClient) Search(ctx context.Context, req *stac.SearchRequest) (*stac.FeatureCollection, error) {
+// Search executes a search request against this origin. When the
+// request carries an OverrideURL (set by the federation layer's
+// pagination adapter), the URL is fetched verbatim via GET instead of
+// POSTing the standard /search endpoint — this lets the proxy follow
+// upstream-issued next-page links regardless of their query-parameter
+// convention. The OverrideURL is allowlist-checked against this
+// origin's BaseURL.
+//
+// Returns the parsed FeatureCollection and the upstream response
+// headers. Headers are needed by the link_header pagination adapter,
+// which parses RFC 5988 next-page links from the `Link:` header.
+func (c *OriginClient) Search(ctx context.Context, req *stac.SearchRequest) (*stac.FeatureCollection, http.Header, error) {
+	if req != nil && req.OverrideURL != "" {
+		return c.searchByURL(ctx, req.OverrideURL)
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal search request: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal search request: %w", err)
 	}
 
 	resp, err := c.DoRequest(ctx, "POST", "/search", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
-		return nil, fmt.Errorf("search failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, nil, fmt.Errorf("search failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	cr := c.limitedBody(resp.Body)
+	fc, err := c.decodeFC(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return fc, resp.Header, nil
+}
+
+// searchByURL fetches a verbatim upstream URL with GET, allowlist-
+// checked against this client's BaseURL. The URL is expected to be
+// the value an upstream emitted in a `rel: next` link or `Link:`
+// header — the SSRF defense layer is `SameOrigin` on the way in.
+func (c *OriginClient) searchByURL(ctx context.Context, fullURL string) (*stac.FeatureCollection, http.Header, error) {
+	if !urlRootedAtBase(fullURL, c.baseURL) {
+		return nil, nil, fmt.Errorf("search override URL %q not rooted at origin base %q", fullURL, c.BaseURL())
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Accept", "application/geo+json, application/json")
+	middleware.ForwardRequestID(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
+		return nil, nil, fmt.Errorf("search-by-url failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	fc, err := c.decodeFC(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return fc, resp.Header, nil
+}
+
+// decodeFC parses a FeatureCollection from a bounded response body,
+// erroring when the body exceeds maxResponseBytes. Extracted because
+// both Search and searchByURL share the parse-with-cap pattern.
+func (c *OriginClient) decodeFC(body io.Reader) (*stac.FeatureCollection, error) {
+	cr := c.limitedBody(body)
 	var fc stac.FeatureCollection
 	if err := json.NewDecoder(cr).Decode(&fc); err != nil {
 		if cr.n > c.maxResponseBytes {
@@ -231,8 +290,29 @@ func (c *OriginClient) Search(ctx context.Context, req *stac.SearchRequest) (*st
 	if cr.n > c.maxResponseBytes {
 		return nil, fmt.Errorf("upstream search response exceeded max %d bytes", c.maxResponseBytes)
 	}
-
 	return &fc, nil
+}
+
+// urlRootedAtBase returns true when fullURL has the same scheme + host
+// as base and its path starts with base's path. Defends against SSRF
+// via tampered upstream responses (an upstream that returns a `rel:
+// next` href pointing to a different host or tenant path).
+func urlRootedAtBase(fullURL string, base *url.URL) bool {
+	if fullURL == "" || base == nil {
+		return false
+	}
+	u, err := url.Parse(fullURL)
+	if err != nil || !u.IsAbs() {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, base.Scheme) {
+		return false
+	}
+	if !strings.EqualFold(u.Host, base.Host) {
+		return false
+	}
+	basePath := strings.TrimSuffix(base.Path, "/")
+	return strings.HasPrefix(u.Path, basePath)
 }
 
 // GetCollections fetches all collections from this origin.

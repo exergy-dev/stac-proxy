@@ -18,10 +18,12 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/config"
 	"github.com/yourorg/stac-proxy/internal/federation"
+	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
 	"github.com/yourorg/stac-proxy/internal/middleware/cache"
+	"github.com/yourorg/stac-proxy/internal/middleware/cors"
 	"github.com/yourorg/stac-proxy/internal/middleware/logging"
 	"github.com/yourorg/stac-proxy/internal/middleware/ratelimit"
 	"github.com/yourorg/stac-proxy/internal/middleware/remap"
@@ -141,8 +143,11 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// at the request boundary without per-iteration overhead.
 	//
 	// Order matters:
-	//   logging → auth → ratelimit → authz → cache → remap
+	//   logging → cors → auth → ratelimit → authz → cache → remap
 	//
+	// cors before auth so preflight (OPTIONS + AC-Request-Method) short-
+	// circuits with 204 without consuming auth/ratelimit budget; browsers
+	// send preflights unauthenticated by spec.
 	// auth before ratelimit so the rate-limit key can include the
 	// authenticated principal. authz BEFORE cache so the cache key
 	// can be informed by the authz decision — specifically, when the
@@ -152,6 +157,11 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// different responses for different principals.
 	httpMiddlewares := []func(http.Handler) http.Handler{
 		logging.NewHTTPMiddleware(logging.Config{Logger: logger}),
+	}
+	if corsMW, err := buildCorsHTTPMiddleware(cfg); err != nil {
+		return fmt.Errorf("failed to build cors middleware: %w", err)
+	} else if corsMW != nil {
+		httpMiddlewares = append(httpMiddlewares, corsMW)
 	}
 	if authMW, err := buildAuthHTTPMiddleware(cfg, logger); err != nil {
 		return fmt.Errorf("failed to build auth middleware: %w", err)
@@ -275,19 +285,17 @@ func buildAuthzHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(htt
 		return nil, nil
 	}
 
-	var enforcer authz.Enforcer
-	if az.OPA.Embedded {
-		enf, err := authz.NewEmbeddedOPAEnforcer(authz.EmbeddedOPAConfig{
-			Name:        "embedded-opa",
-			PolicyPaths: az.OPA.RegoFiles,
-		})
-		if err != nil {
-			return nil, err
-		}
-		enforcer = enf
-	} else {
-		return nil, fmt.Errorf("only embedded OPA is wired today; external OPA URL=%q", az.OPA.URL)
+	if !az.OPA.Embedded {
+		return nil, fmt.Errorf("authz.opa.embedded must be true; only embedded OPA is supported")
 	}
+	enf, err := authz.NewEmbeddedOPAEnforcer(authz.EmbeddedOPAConfig{
+		Name:        "embedded-opa",
+		PolicyPaths: az.OPA.RegoFiles,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var enforcer authz.Enforcer = enf
 
 	cql2Enabled := false
 	if az.CQL2Injection != nil {
@@ -512,6 +520,23 @@ func buildCacheHTTPMiddleware(cfg *config.Config) (func(http.Handler) http.Handl
 	return cache.NewFromConfig(rawCfg)
 }
 
+// buildCorsHTTPMiddleware builds the chi-style CORS middleware from the
+// `cors` block of the middleware config list. Returns (nil, nil) when no
+// block is configured.
+func buildCorsHTTPMiddleware(cfg *config.Config) (func(http.Handler) http.Handler, error) {
+	var rawCfg map[string]interface{}
+	for _, mw := range cfg.Middleware {
+		if mw.Name == "cors" {
+			rawCfg = mw.Config
+			break
+		}
+	}
+	if rawCfg == nil {
+		return nil, nil
+	}
+	return cors.NewFromConfig(rawCfg)
+}
+
 // buildRemapHTTPMiddleware builds the chi-style URL-remap middleware
 // from the `url_remap` block of the middleware config list. Returns
 // (nil, nil) when no block is configured.
@@ -662,6 +687,8 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 			BaseURL:                 originCfg.BaseURL,
 			Enabled:                 originCfg.Enabled,
 			Timeout:                 timeout,
+			Retry:                   originRetryPolicy(originCfg.Retry),
+			MaxIdleConnsPerHost:     originCfg.MaxIdleConnsPerHost,
 			Collections:             originCfg.Collections,
 			ExcludeCollections:      originCfg.ExcludeCollections,
 			Priority:                originCfg.Priority,
@@ -675,6 +702,9 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 			SupportsFilterExtension: supportsFilter,
 			RewriteAssets:           originCfg.RewriteAssets,
 			AssetSignTTL:            originCfg.AssetSignTTL,
+			ForwardUserIdentity:     originCfg.ForwardUserIdentity,
+			MaxResponseBytes:        originCfg.MaxResponseBytes,
+			Pagination:              originPaginationSpec(originCfg.Pagination),
 			Auth:                    originAuthConfig(originCfg.Auth),
 		}
 		origins = append(origins, origin)
@@ -712,6 +742,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		ConflictStrategy: conflictStrategy,
 		MaxConcurrent:    cfg.Federation.MaxConcurrent,
 		AggregateTimeout: cfg.Federation.AggregateTimeout,
+		ProxyBaseURL:     cfg.Server.PublicBaseURL,
 		DefaultPageSize:  cfg.Federation.DefaultPageSize,
 		MaxPageSize:      cfg.Federation.MaxPageSize,
 		ConformanceCaps:  caps,
@@ -719,6 +750,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		Logger:           logger,
 		AssetSigner:      buildAssetSigner(cfg),
 		CursorSecret:     []byte(cfg.Federation.CursorSecret),
+		PageCache:        buildPageCache(cfg.Federation, logger),
 	})
 	if err != nil {
 		return nil, err
@@ -765,6 +797,86 @@ func computeConformanceCaps(cfg *config.Config, origins []*federation.Origin) st
 	}
 }
 
+// originRetryPolicy converts the YAML-bound retry config to the
+// federation.RetryPolicy value used by federation.Origin. Returns nil
+// when the YAML block is absent so the origin client falls back to its
+// per-package default.
+func originRetryPolicy(c *config.RetryConfig) *federation.RetryPolicy {
+	if c == nil {
+		return nil
+	}
+	return &federation.RetryPolicy{
+		MaxRetries:     c.MaxRetries,
+		InitialBackoff: c.InitialBackoff,
+		MaxBackoff:     c.MaxBackoff,
+		RetryOn:        c.RetryOn,
+	}
+}
+
+// buildPageCache constructs the federated-search page cache from
+// YAML config. Returns nil — meaning "feature disabled" — when:
+//
+//   - there is no cursor secret (no cursors to key by; the paginator
+//     wouldn't run anyway), OR
+//   - the operator set `page_cache.enabled: false` explicitly.
+//
+// The default when `page_cache` is absent or `enabled` is unset is
+// ON, matching the user-stated preference: backwards navigation works
+// out of the box wherever federated pagination is already configured.
+func buildPageCache(fc *config.FederationConfig, logger *slog.Logger) *pagecache.Cache {
+	if fc == nil || fc.CursorSecret == "" {
+		return nil
+	}
+
+	// Resolve the enabled toggle: nil means default-on; explicit
+	// false means off.
+	enabled := true
+	if fc.PageCache != nil && fc.PageCache.Enabled != nil {
+		enabled = *fc.PageCache.Enabled
+	}
+	if !enabled {
+		return nil
+	}
+
+	maxEntries := 1024
+	ttl := time.Hour
+	if fc.PageCache != nil {
+		if fc.PageCache.MaxEntries > 0 {
+			maxEntries = fc.PageCache.MaxEntries
+		}
+		if fc.PageCache.TTL > 0 {
+			ttl = fc.PageCache.TTL
+		}
+	}
+
+	store := cache.NewMemoryStore(cache.MemoryConfig{MaxSize: maxEntries})
+	c, err := pagecache.New(store, ttl, []byte(fc.CursorSecret))
+	if err != nil {
+		logger.Warn("federation page cache disabled (construction failed)", "err", err)
+		return nil
+	}
+	logger.Info("Federation page cache enabled",
+		"max_entries", maxEntries,
+		"ttl", ttl,
+	)
+	return c
+}
+
+// originPaginationSpec converts the YAML-bound pagination config to
+// the federation.PaginationSpec value used by federation.Origin.
+// Returns the zero value (i.e. "auto" adapter behavior) when the
+// YAML block is absent.
+func originPaginationSpec(c *config.PaginationConfig) federation.PaginationSpec {
+	if c == nil {
+		return federation.PaginationSpec{}
+	}
+	return federation.PaginationSpec{
+		Adapter:     c.Adapter,
+		OffsetParam: c.OffsetParam,
+		TokenParam:  c.TokenParam,
+	}
+}
+
 // originAuthConfig converts the YAML-bound config to the
 // federation.AuthConfig value used by federation.Origin.
 func originAuthConfig(c *config.OriginAuthConfig) federation.AuthConfig {
@@ -787,6 +899,15 @@ func originAuthConfig(c *config.OriginAuthConfig) federation.AuthConfig {
 			ClientID:     c.OAuth2.ClientID,
 			ClientSecret: c.OAuth2.ClientSecret,
 			Scopes:       c.OAuth2.Scopes,
+			Audience:     c.OAuth2.Audience,
+		}
+	}
+	if c.AWSSigV4 != nil {
+		auth.AWSSigV4 = &federation.AWSSigV4Config{
+			Region:    c.AWSSigV4.Region,
+			Service:   c.AWSSigV4.Service,
+			AccessKey: c.AWSSigV4.AccessKey,
+			SecretKey: c.AWSSigV4.SecretKey,
 		}
 	}
 	return auth
@@ -832,7 +953,7 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 	handler, err := federation.NewHandler(federation.HandlerConfig{
 		Origins:          []*federation.Origin{origin},
 		ConflictStrategy: federation.ConflictPriorityWins,
-		ProxyBaseURL:     "",
+		ProxyBaseURL:     cfg.Server.PublicBaseURL,
 		ConformanceCaps:  caps,
 		LifetimeCtx:      ctx,
 		Logger:           logger,

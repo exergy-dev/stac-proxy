@@ -109,6 +109,28 @@ func (v *Validator) validateServer(cfg ServerConfig) {
 	if cfg.TLS.Enabled {
 		v.validateTLS(cfg.TLS)
 	}
+
+	if cfg.PublicBaseURL != "" {
+		v.validatePublicBaseURL(cfg.PublicBaseURL)
+	}
+}
+
+func (v *Validator) validatePublicBaseURL(raw string) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		v.addError("server.public_base_url is not a valid URL: %v", err)
+		return
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		v.addError("server.public_base_url scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		v.addError("server.public_base_url must include a host")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		v.addError("server.public_base_url must not include a query or fragment")
+	}
 }
 
 func (v *Validator) validateTLS(cfg TLSConfig) {
@@ -187,6 +209,18 @@ func (v *Validator) validateFederation(cfg FederationConfig) {
 	if cfg.CursorSecret == "" {
 		v.addWarning("federation.cursor_secret is empty; paginated search will be unavailable. Inject a secret from your secrets manager for production.")
 	}
+
+	if cfg.PageCache != nil {
+		if cfg.PageCache.MaxEntries < 0 {
+			v.addError("federation.page_cache.max_entries cannot be negative")
+		}
+		if cfg.PageCache.TTL < 0 {
+			v.addError("federation.page_cache.ttl cannot be negative")
+		}
+		if cfg.PageCache.Enabled != nil && *cfg.PageCache.Enabled && cfg.CursorSecret == "" {
+			v.addError("federation.page_cache.enabled is true but federation.cursor_secret is empty; the cache has no cursors to key by")
+		}
+	}
 }
 
 func (v *Validator) validateOrigin(index int, origin OriginConfig, seenIDs map[string]bool, allowPrivate bool) {
@@ -234,6 +268,16 @@ func (v *Validator) validateOrigin(index int, origin OriginConfig, seenIDs map[s
 	}
 	if origin.AssetSignTTL < 0 {
 		v.addError("%s.asset_sign_ttl cannot be negative", prefix)
+	}
+
+	// Validate pagination adapter enum (empty = "auto" default).
+	if origin.Pagination != nil {
+		switch origin.Pagination.Adapter {
+		case "", "auto", "token", "next_url", "offset", "link_header":
+		default:
+			v.addError("%s.pagination.adapter %q is not one of: auto, token, next_url, offset, link_header",
+				prefix, origin.Pagination.Adapter)
+		}
 	}
 
 	// Validate auth if present
@@ -328,8 +372,79 @@ func (v *Validator) validateMiddleware(configs []MiddlewareConfig) {
 
 	for i, mw := range configs {
 		if !validMiddleware[mw.Name] {
-			v.addWarning("middleware[%d].name '%s' is not a recognized middleware", i, mw.Name)
+			// Promoted from warning to error: a typo'd middleware name
+			// silently no-ops, which historically meant authz/ratelimit
+			// could be disabled in production by a hyphen-vs-underscore
+			// slip. Hard-fail validation so misconfigs surface at boot.
+			v.addError("middleware[%d].name '%s' is not a recognized middleware (valid: auth, authz, cache, cors, logging, rate_limit, url_remap)", i, mw.Name)
+			continue
 		}
+		switch mw.Name {
+		case "cors":
+			v.validateCorsMiddleware(i, mw.Config)
+		case "cache":
+			v.validateCacheMiddleware(i, mw.Config)
+		}
+	}
+}
+
+// validateCorsMiddleware enforces CORS-specific rules that would
+// otherwise only surface at request time (or be silently misconfigured).
+// The spec forbids the combination of credentials + wildcard origin —
+// rejecting at validation time means a bad config fails at boot rather
+// than producing a "looks fine" deployment that browsers silently
+// refuse.
+func (v *Validator) validateCorsMiddleware(idx int, cfg map[string]interface{}) {
+	if cfg == nil {
+		return
+	}
+	allowCreds := false
+	if b, ok := cfg["allow_credentials"].(bool); ok {
+		allowCreds = b
+	}
+	origins, ok := cfg["allowed_origins"]
+	if !ok || origins == nil {
+		return
+	}
+	list, ok := origins.([]interface{})
+	if !ok {
+		// Allow []string too (some YAML decoders produce it directly).
+		if _, ok := origins.([]string); ok {
+			return
+		}
+		v.addError("middleware[%d] cors: allowed_origins must be a list", idx)
+		return
+	}
+	hasWildcard := false
+	for j, item := range list {
+		s, ok := item.(string)
+		if !ok {
+			v.addError("middleware[%d] cors: allowed_origins[%d] must be a string", idx, j)
+			continue
+		}
+		if s == "*" {
+			hasWildcard = true
+		}
+	}
+	if allowCreds && hasWildcard {
+		v.addError("middleware[%d] cors: allow_credentials cannot be true with wildcard allowed_origins '*'", idx)
+	}
+}
+
+// validateCacheMiddleware rejects unsupported cache stores at config
+// load time. Without this, a config with `store: redis` parses fine and
+// the proxy boots, then errors on the first request — a much worse
+// failure mode than a clean startup error.
+func (v *Validator) validateCacheMiddleware(idx int, cfg map[string]interface{}) {
+	if cfg == nil {
+		return
+	}
+	store, ok := cfg["store"].(string)
+	if !ok || store == "" {
+		return
+	}
+	if store != "memory" {
+		v.addError("middleware[%d] cache: store %q is not supported; only \"memory\" is available", idx, store)
 	}
 }
 

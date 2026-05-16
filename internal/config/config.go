@@ -41,6 +41,14 @@ type ServerConfig struct {
 	// an internet-exposed listener. Deployments behind a load
 	// balancer / CDN must list the immediate-upstream CIDRs here.
 	TrustedProxies []string `yaml:"trusted_proxies"`
+	// PublicBaseURL is the externally reachable base URL of the proxy
+	// (e.g. https://stac.example.com). When set, the federation
+	// handler emits absolute `next` pagination links, rewrites
+	// response links through the proxy, and supports `rewrite_assets:
+	// proxy`. Leave empty to emit relative links — the historical
+	// behaviour, suitable only for deployments where the client and
+	// proxy share a host.
+	PublicBaseURL string `yaml:"public_base_url"`
 }
 
 // TLSConfig contains TLS settings.
@@ -52,9 +60,10 @@ type TLSConfig struct {
 
 // TimeoutConfig contains HTTP timeout settings.
 type TimeoutConfig struct {
-	Read  time.Duration `yaml:"read"`
-	Write time.Duration `yaml:"write"`
-	Idle  time.Duration `yaml:"idle"`
+	Read       time.Duration `yaml:"read"`
+	ReadHeader time.Duration `yaml:"read_header"`
+	Write      time.Duration `yaml:"write"`
+	Idle       time.Duration `yaml:"idle"`
 }
 
 // LoggingConfig contains logging settings.
@@ -143,6 +152,28 @@ type FederationConfig struct {
 	// therefore tamperable) without it. Inject from a secrets manager
 	// rather than checking in the YAML.
 	CursorSecret string `yaml:"cursor_secret"`
+
+	// PageCache configures the rendered-page cache that enables
+	// `rel: prev` / `rel: first` backwards navigation. Default
+	// behavior when omitted: enabled iff CursorSecret is set, with
+	// the per-field defaults below. Set `enabled: false` to opt out.
+	PageCache *PageCacheConfig `yaml:"page_cache"`
+}
+
+// PageCacheConfig configures the federation page cache.
+type PageCacheConfig struct {
+	// Enabled gates the feature. When nil/unset, the default is
+	// "enabled when CursorSecret is configured". Explicit false
+	// opts out even with a cursor secret in place.
+	Enabled *bool `yaml:"enabled"`
+
+	// MaxEntries caps the number of stored pages. LRU evicts when
+	// the cap is hit. Default 1024.
+	MaxEntries int `yaml:"max_entries"`
+
+	// TTL is the per-entry TTL. Capped at the cursor's remaining
+	// lifetime at Put time. Default 1h.
+	TTL time.Duration `yaml:"ttl"`
 }
 
 // OriginConfig contains configuration for a single upstream STAC server.
@@ -157,6 +188,11 @@ type OriginConfig struct {
 	Enabled bool          `yaml:"enabled"`
 	Timeout time.Duration `yaml:"timeout"`
 	Retry   *RetryConfig  `yaml:"retry"`
+	// MaxIdleConnsPerHost caps idle keep-alive connections to this
+	// origin's host. Zero or negative falls back to the Go default
+	// (2). Tune up for high-throughput origins; tune to a small
+	// positive value to bound long-lived idle resource usage.
+	MaxIdleConnsPerHost int `yaml:"max_idle_conns_per_host"`
 
 	// Authentication for this downstream server
 	Auth *OriginAuthConfig `yaml:"auth"`
@@ -213,6 +249,28 @@ type OriginConfig struct {
 	// AssetSignTTL is the TTL applied when RewriteAssets == "sign".
 	// Defaults to 15 minutes when zero.
 	AssetSignTTL time.Duration `yaml:"asset_sign_ttl"`
+
+	// Pagination selects the pagination convention this origin uses
+	// for STAC search next-page links. Omit (or leave Adapter empty)
+	// to default to "auto" — the proxy probes the first response and
+	// locks its choice.
+	Pagination *PaginationConfig `yaml:"pagination"`
+}
+
+// PaginationConfig configures the federation's pagination adapter for
+// a single origin.
+type PaginationConfig struct {
+	// Adapter is the canonical adapter name. Supported values:
+	// "auto" (default), "token", "next_url", "offset", "link_header".
+	Adapter string `yaml:"adapter"`
+
+	// OffsetParam overrides the query-param name the offset adapter
+	// reads/writes (default: "offset"). Some catalogues use "page".
+	OffsetParam string `yaml:"offset_param"`
+
+	// TokenParam overrides the query-param name the token adapter
+	// reads from the upstream's `rel: next` href (default: "token").
+	TokenParam string `yaml:"token_param"`
 }
 
 // RetryConfig contains retry policy settings.
@@ -247,9 +305,6 @@ type OriginAuthConfig struct {
 
 	// Custom header injection
 	CustomHeaders map[string]string `yaml:"custom_headers"`
-
-	// mTLS client certificate
-	ClientCert *ClientCertConfig `yaml:"client_cert"`
 }
 
 // OAuth2Config contains OAuth2 client credentials settings.
@@ -263,18 +318,10 @@ type OAuth2Config struct {
 
 // AWSSigV4Config contains AWS Signature V4 settings.
 type AWSSigV4Config struct {
-	Region     string `yaml:"region"`
-	Service    string `yaml:"service"`
-	AccessKey  string `yaml:"access_key"`
-	SecretKey  string `yaml:"secret_key"`
-	UseIAMRole bool   `yaml:"use_iam_role"`
-}
-
-// ClientCertConfig contains mTLS client certificate settings.
-type ClientCertConfig struct {
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
-	CAFile   string `yaml:"ca_file"`
+	Region    string `yaml:"region"`
+	Service   string `yaml:"service"`
+	AccessKey string `yaml:"access_key"`
+	SecretKey string `yaml:"secret_key"`
 }
 
 // AuthConfig contains client-facing authentication settings.
@@ -320,10 +367,9 @@ type CQL2InjectionConfig struct {
 	Combine string `yaml:"combine"`
 }
 
-// OPAConfig contains Open Policy Agent settings.
+// OPAConfig contains Open Policy Agent settings. Only embedded OPA is
+// supported; external-OPA-server mode is not implemented.
 type OPAConfig struct {
-	// External OPA server mode
-	URL        string `yaml:"url"`
 	PolicyPath string `yaml:"policy_path"`
 
 	// Embedded OPA mode
@@ -341,8 +387,7 @@ type OPAConfig struct {
 
 // CacheConfig contains caching settings.
 type CacheConfig struct {
-	Store         string        `yaml:"store"` // memory, redis
-	RedisURL      string        `yaml:"redis_url"`
+	Store         string        `yaml:"store"` // memory
 	CollectionTTL time.Duration `yaml:"collection_ttl"`
 	ItemTTL       time.Duration `yaml:"item_ttl"`
 	SearchTTL     time.Duration `yaml:"search_ttl"`
@@ -468,6 +513,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Server.Timeouts.Read == 0 {
 		c.Server.Timeouts.Read = 30 * time.Second
+	}
+	if c.Server.Timeouts.ReadHeader == 0 {
+		c.Server.Timeouts.ReadHeader = 10 * time.Second
 	}
 	if c.Server.Timeouts.Write == 0 {
 		c.Server.Timeouts.Write = 60 * time.Second

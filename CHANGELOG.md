@@ -6,11 +6,116 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-This release rolls up the post-v0.1.0 review-driven hardening pass: 5
-subsystem-snapshot commits + 4 severity-tier PRs (CRITICAL → NIT) + a
-docs PR, totaling ~80 fixes across auth, authz, federation, cache,
-ratelimit, server, config, observability, stac, and remap. Highlights
-below; see git log for the full list.
+Post-v0.1.0 hardening: a severity-tiered review pass (CRITICAL → NIT,
+~80 fixes across auth, authz, federation, cache, ratelimit, server,
+config, observability, stac, and remap) followed by a dead-feature
+purge that removed every config surface for paths that were either
+silently broken (per-origin mTLS) or never implemented (external OPA
+server, Redis cache, CloudFront/S3-presigned signers, AWS SigV4 IAM
+role, `server.hot_reload`). The `Removed` block below is the breaking
+change set; everything else is fixes and wiring. See git log for the
+full list.
+
+### Federation — backwards navigation + page cache
+
+- **New `pagecache` package** stores rendered federated-search pages
+  keyed by cursor signature so the paginator can serve `rel: prev` /
+  `rel: first` navigation without re-fanning-out to origins. Entries
+  are HMAC-keyed (cursor signature + principal hash), TTL-bounded by
+  the cursor's remaining lifetime, and stored in a dedicated in-memory
+  LRU separate from the HTTP middleware cache.
+- **Cursor v2** adds `PrevCursor`, `FirstCursor`, and `PageSeq` fields
+  to `FederatedCursor`. The paginator stamps these on each emitted
+  cursor so the link emitter can offer the full nav set. `Version`
+  bumped from 1 to 2; existing decoders accept v2 cursors via JSON
+  field tolerance, but cursors are short-lived (~1h default) so the
+  format change is operationally invisible.
+- **Link emission**: `buildPaginatedSearchResponse` now emits `rel:
+  self`, `rel: prev`, `rel: first` alongside the existing `rel: next`
+  whenever the cursor chain populates the corresponding field. All
+  four share the same POST `body.token` / GET `?token=` wire shape;
+  `cursorSearchLink` (formerly `nextSearchLink`) is the unified
+  builder.
+- **Config**: `federation.page_cache` with `enabled`, `max_entries`,
+  `ttl`. Defaults: **enabled when `cursor_secret` is set**,
+  `max_entries: 1024`, `ttl: 1h`. Set `enabled: false` to opt out
+  even with a cursor secret.
+- **Acceptance**: `tests/live/federation_live_extra_test.go ::
+  TestLive_BackwardsNavigation` paginates a federated search across
+  Earth Search + Planetary Computer forward two pages, follows
+  `rel: prev` from page 2, and asserts the response items match
+  page 1 verbatim. Plus a focused unit test
+  (`TestSearch_CursorV2_PrevFirstChain`) that proves the cache hit
+  doesn't re-call upstreams.
+
+### Federation — pluggable pagination adapters
+
+- **New `pageadapter` package** abstracts upstream pagination
+  conventions. The federation handler no longer hardcodes the STAC API
+  spec's `?token=` / POST `body.token` shape — it routes through a
+  per-origin `Adapter` that knows how to capture next-state from the
+  upstream response and how to drive the next call.
+- **Built-in adapters**: `token` (STAC spec — Planetary Computer),
+  `next_url` (Earth Search and any upstream that emits a `rel: next`
+  href the proxy can follow verbatim), `offset` (offset-based catalogs;
+  configurable param name — `offset` or `page`), `link_header` (RFC 5988
+  `Link:` header; OGC API Features gateways), and `auto` (the default
+  — probes the first response and locks its choice into the cursor for
+  the rest of the session).
+- **Fixes a real bug**: Earth Search uses `?next=<id>` for pagination.
+  The proxy previously captured the upstream's full next-URL on
+  `OriginCursor.NextURL` but never read it on follow-up calls, so
+  federated pagination against ES silently looped page 1. The
+  `next_url` adapter (and `auto` by extension) closes this gap.
+- **Per-origin config**: `federation.origins[].pagination` with
+  `adapter`, `offset_param`, and `token_param`. Omit to use `auto`.
+  Validator allowlists the adapter name; unknown names fail at boot.
+- **Internal transport fields** added to `stac.SearchRequest`:
+  `OverrideURL` and `AdapterName` (both `json:"-"`). Adapters use the
+  former to ask the origin client to fetch a verbatim next-URL with
+  GET instead of POST-ing the standard `/search`. The latter carries
+  the locked adapter name across the Searcher boundary.
+- **Cursor field**: `OriginCursor.AdapterName` (additive, no version
+  bump). Records `auto`'s lock decision so subsequent pages route to
+  the named adapter without re-probing.
+- **Acceptance test**: `tests/live/federation_live_extra_test.go ::
+  TestLive_PaginatedNextLink` paginates a federated search across
+  Earth Search and Planetary Computer (different pagination
+  conventions per upstream) and asserts page 2 doesn't repeat page 1
+  IDs from either origin. Previously skipped with a `XXX(pagination)`
+  comment.
+
+### Production readiness — config wiring
+
+- **`server.public_base_url`** is now read from YAML and threaded into
+  the federation handler in both single and federation modes.
+  Previously `HandlerConfig.ProxyBaseURL` was never set from config,
+  so `next` pagination links were path-only, `rewrite_assets: proxy`
+  silently fell back to passthrough, and link rewriting was a no-op.
+  Set this to the externally reachable URL of the proxy.
+- **Per-origin field wiring**: `retry`, `max_idle_conns_per_host`,
+  `max_response_bytes`, and `forward_user_identity` are now actually
+  copied from `OriginConfig` into the `federation.Origin` used at
+  runtime. The fields existed in YAML but were dropped on the floor.
+- **Origin auth field wiring**: `aws_sigv4` origin auth config is now
+  copied into the federation layer; previously AWS SigV4 origin auth
+  was completely unreachable from config despite the implementation
+  existing. `oauth2.audience` is now also copied. (Per-origin
+  `client_cert` was copied through too, but the transport never loaded
+  the cert — it has since been removed entirely; see `Removed` below.)
+- **STAC landing page** now emits the §1.4 required link rels (`self`,
+  `root`, `data`, `conformance`, `search` GET+POST), absolute when
+  `server.public_base_url` is set and relative otherwise. Previously
+  the `links` array was empty.
+- **Breaking — unknown middleware names** now fail validation rather
+  than emit a warning. Typos in the middleware list (e.g.
+  `rate-limit` vs `rate_limit`) historically resulted in deployments
+  with authz / rate-limit silently disabled.
+- New round-trip wiring test (`TestBuildFederationHandler_CopiesEvery
+  ConfiguredField`) asserts every documented `OriginConfig` /
+  `OriginAuthConfig` field reaches `federation.Origin` and that
+  `server.public_base_url` reaches `Handler.ProxyBaseURL()`. Adding a
+  new origin field requires extending this test — that's the point.
 
 ### Security (CRITICAL)
 
@@ -149,8 +254,6 @@ below; see git log for the full list.
   of `map[string]interface{}`. Source-only change.
 - API key storage uses HMAC digests rather than plaintext map keys —
   operators must rebuild their key store on upgrade.
-- `signer.type: cloudfront` / `signer.type: s3_presigned` now reject
-  at config validation.
 - `${VAR}` env expansion errors on undefined variables (use
   `${VAR:-}` to opt-out).
 - YAML decoder rejects unknown keys (`KnownFields(true)`).
@@ -166,6 +269,36 @@ below; see git log for the full list.
 - Stub `CloudFrontSigner` and `S3PresignedSigner` (no real signing).
 - Hand-rolled SigV4 implementation (replaced by aws-sdk-go-v2).
 - Regex-based `default`-rule dedup in `opa_embedded.go`.
+- **Breaking — per-origin `client_cert` (mTLS) removed.** The
+  `federation.origins[].auth.client_cert` block was accepted by config
+  and copied into `federation.AuthConfig` but never loaded into the
+  origin's `http.Transport`, so configuring it silently produced a
+  plain-TLS connection. Removing the field forces operators to notice;
+  it can be re-added if/when the transport wiring is implemented.
+  YAML decoder is `KnownFields(true)`, so leftover `client_cert:` keys
+  will now error at startup.
+- **Breaking — `aws_sigv4.use_iam_role` removed.** The flag was
+  accepted by config but the SigV4 provider only honors static
+  `access_key` / `secret_key`; `use_iam_role: true` produced an
+  `AWS credentials not configured` error at sign time. Drop the key;
+  set static credentials (or wait for an IAM-role provider to land).
+- **`server.hot_reload`** — never had a Go-side field, only docs
+  mentions. Roadmap claim retracted; doc references removed.
+- **Breaking — external OPA server mode removed.** `authz.opa.url` and
+  the `OPAEnforcer` HTTP client are gone — only `authz.opa.embedded:
+  true` is supported. The external-OPA path was rejected at startup
+  before, but the field, struct, and `OPAErrorMode` (`OnError: deny|
+  allow`) enum lingered in the API surface; all gone. The
+  `Final`-decision short-circuit on `CompositeEnforcer.authorizeAny`
+  stays — it's a general property of authoritative decisions.
+- **Breaking — `cache.store: redis` and `cache.redis_url` removed.**
+  Previously rejected at validation; now the enum only accepts
+  `memory`. The `github.com/redis/go-redis/v9` reference was never an
+  actual dependency.
+- **Breaking — `signer.type: cloudfront` / `signer.type: s3_presigned`
+  removed.** Previously the named-and-rejected leftover from the
+  v0.1 stub-signer removal; now they're "unknown signer type" like any
+  other typo. The stub impls were already gone in v0.1.
 
 ## [0.1.0] — 2026-05-11
 
@@ -257,3 +390,8 @@ injection, federation across N upstream STAC APIs.
   no enforcement loop yet.
 - mTLS for federation origins; AWS SigV4 IAM role chain.
 - Kubernetes manifests / Helm chart (Docker-only deploy supported).
+
+> **Note (post-v0.1.0):** several of the items above have since been
+> *removed* rather than completed. See `Unreleased > Removed` for the
+> reclassification (external OPA URL, Redis cache, `client_cert`,
+> `use_iam_role`, `hot_reload`, cloudfront/s3_presigned signers).

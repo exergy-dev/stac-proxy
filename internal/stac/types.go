@@ -81,6 +81,22 @@ type SearchRequest struct {
 	// parser translates "+x" / "x" into Include and "-x" into Exclude.
 	// POST form: {"fields": {"include": [...], "exclude": [...]}}.
 	Fields *FieldsSpec `json:"fields,omitempty"`
+
+	// OverrideURL is a federation-private transport field (NOT
+	// serialized upstream). When non-empty, the OriginClient fetches
+	// this URL verbatim (GET) instead of POST-ing the standard /search
+	// with this body. Populated by the paginator from
+	// OriginCursor.NextURL for adapters that capture full next-page
+	// URLs (next_url, link_header, offset). The OriginClient
+	// allowlist-checks the URL against its BaseURL.
+	OverrideURL string `json:"-"`
+
+	// AdapterName is a federation-private transport field (NOT
+	// serialized upstream) carrying the locked pagination adapter
+	// name from the cursor. The `auto` adapter sets this on the first
+	// response; subsequent pages use it to route to the named adapter
+	// directly without re-probing.
+	AdapterName string `json:"-"`
 }
 
 // FieldsSpec is the Fields extension include/exclude selector.

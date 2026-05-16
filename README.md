@@ -39,9 +39,9 @@ curl -fsS http://localhost:8080/health
 | **Auth** | Bearer/JWT (static HMAC or remote JWKS with key rotation), OIDC discovery (RSA/EC), API key (header or query) |
 | **AuthZ** | Embedded OPA (Rego), CQL2 filter injection, geofencing (push-down via S_INTERSECTS or response-side post-filter) |
 | **Modes** | Single-origin transparent proxy or N-origin federation with merge/dedup |
-| **Caching** | In-memory LRU + TTL (Redis store is wired in code but not in main; v0.2) |
-| **Rate limiting** | Sliding-window, per-principal or per-IP |
-| **URL rewriting** | Configurable regex rules + optional HMAC / CloudFront signing |
+| **Caching** | In-memory LRU + TTL |
+| **Rate limiting** | Token-bucket, per-principal or per-IP |
+| **URL rewriting** | Configurable regex rules + optional HMAC signing |
 | **Observability** | Prometheus metrics on every middleware, structured `log/slog` logs with UUID request IDs forwarded to upstream as `X-Request-ID` |
 | **Resilience** | Graceful shutdown drains in-flight requests up to 30s on SIGTERM |
 | **Security** | Configurable request body size cap (default 1 MiB), TLS 1.2+ with modern cipher suite |
@@ -86,7 +86,7 @@ make ci             # what GitHub Actions runs
 
 ## Roadmap
 
-- v0.2: STAC Transaction Extension, external OPA URL mode, Redis cache, config hot-reload, OpenTelemetry tracing, per-origin circuit breakers, Kubernetes / Helm artefacts.
+- v0.2: STAC Transaction Extension (POST/PUT/PATCH/DELETE).
 - See [CHANGELOG.md](CHANGELOG.md) for what shipped when.
 
 ## Contributing & security

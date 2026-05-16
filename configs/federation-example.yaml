@@ -10,8 +10,14 @@ server:
     # key_file: "/etc/ssl/private/proxy.key"
   timeouts:
     read: 30s
+    read_header: 10s
     write: 60s
     idle: 120s
+  # public_base_url is the externally reachable URL clients use to reach
+  # this proxy. Required for federated pagination (`next` links resolve
+  # back through the proxy), response-link rewriting, and the
+  # `rewrite_assets: proxy` option below.
+  # public_base_url: "https://stac.example.com"
 
 logging:
   level: "info"
