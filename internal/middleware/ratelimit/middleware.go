@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 )
 
@@ -69,23 +68,14 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 					sort.Strings(roles)
 				}
 			}
-			// Prefer the derived client IP attached by the server's
-			// trusted-proxy aware middleware. Falls back to
-			// RemoteAddr when no such derived IP is in context (e.g.
-			// when ratelimit is wired without the server's
-			// clientIPMiddleware).
-			clientIP := middleware.ClientIPFromContext(ctx)
-			if clientIP == "" {
-				// r.RemoteAddr carries "host:port"; the ephemeral
-				// source port differs per TCP connection so each
-				// would land in its own bucket and effectively
-				// disable rate limiting. Strip the port so all
-				// requests from a given host share one bucket.
-				if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-					clientIP = host
-				} else {
-					clientIP = r.RemoteAddr
-				}
+			// r.RemoteAddr is already the best client IP — chi's
+			// RealIP middleware overwrites it from X-Real-IP /
+			// X-Forwarded-For / True-Client-IP when present, and
+			// otherwise it's the TCP peer. Strip the port so all
+			// requests from a given host share one bucket.
+			clientIP := r.RemoteAddr
+			if host, _, err := net.SplitHostPort(clientIP); err == nil {
+				clientIP = host
 			}
 			key := keyFunc(ctx, principalID, clientIP)
 			quota := quotaFunc(roles, cfg.DefaultQuota)

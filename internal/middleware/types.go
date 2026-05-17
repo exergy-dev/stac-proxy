@@ -102,29 +102,7 @@ const (
 	// item ID, request type, search request) through the chi middleware
 	// chain. Set by the router before any middleware runs.
 	stacInfoKey contextKey = "stac_info"
-
-	// ClientIPKey carries the derived client IP through the chi
-	// middleware chain. Set by the trusted-proxy aware client-IP
-	// middleware (see internal/server.NewClientIPMiddleware); read by
-	// the rate-limit middleware. When the request did not come from
-	// a configured trusted-proxy CIDR, this is just the TCP
-	// RemoteAddr; when it did, X-Forwarded-For is honored.
-	ClientIPKey contextKey = "client_ip"
 )
-
-// WithClientIP attaches a derived client IP to ctx.
-func WithClientIP(ctx context.Context, ip string) context.Context {
-	return context.WithValue(ctx, ClientIPKey, ip)
-}
-
-// ClientIPFromContext returns the derived client IP previously set
-// by the client-IP middleware, or "" if no such middleware ran.
-func ClientIPFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(ClientIPKey).(string); ok {
-		return v
-	}
-	return ""
-}
 
 // STACInfo is the parsed STAC shape attached to every request's context
 // by the router. Chi middlewares read it to specialize cache keys,

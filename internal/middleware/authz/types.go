@@ -205,18 +205,10 @@ func BuildAuthzInput(r *http.Request, info *middleware.STACInfo, principal *auth
 	return input
 }
 
-// deriveClientIP returns the trusted-proxy-aware client IP from the
-// request context (set by internal/server.NewClientIPMiddleware), or
-// falls back to r.RemoteAddr with the port stripped via
-// net.SplitHostPort. The fallback handles tests / setups that have
-// not installed the client-IP middleware. M-authz-4 — the bare
-// r.RemoteAddr previously used here included the source port and
-// ignored XFF, so any policy ip_range condition that consulted
-// ClientIP saw the wrong value behind a configured trusted proxy.
+// deriveClientIP returns the client IP from r.RemoteAddr (which chi's
+// RealIP middleware overwrites in-place when X-Real-IP / X-Forwarded-For
+// / True-Client-IP are present). Port is stripped via net.SplitHostPort.
 func deriveClientIP(r *http.Request) string {
-	if ip := middleware.ClientIPFromContext(r.Context()); ip != "" {
-		return ip
-	}
 	host := r.RemoteAddr
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h

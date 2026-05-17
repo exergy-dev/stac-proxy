@@ -5,32 +5,19 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/middleware"
 )
 
-// TestBuildAuthzInput_ReadsClientIPFromContext verifies M-authz-4: the
-// authz input's ClientIP comes from the trusted-proxy-aware client-IP
-// middleware (via middleware.ClientIPKey on the context), not from the
-// raw r.RemoteAddr (which carries a port and ignores XFF).
-func TestBuildAuthzInput_ReadsClientIPFromContext(t *testing.T) {
-	r := httptest.NewRequest("GET", "/collections", nil)
-	r.RemoteAddr = "10.0.0.1:54321" // would have been used pre-fix
-	ctx := middleware.WithClientIP(r.Context(), "1.2.3.4")
-	r = r.WithContext(ctx)
-
-	input := BuildAuthzInput(r, nil, nil)
-	require.Equal(t, "1.2.3.4", input.Request.ClientIP, "ClientIP must come from ClientIPKey, not RemoteAddr")
-}
-
-// TestBuildAuthzInput_FallbackStripsPort ensures that when no
-// client-IP middleware ran, BuildAuthzInput still produces a clean
-// host (no `:port`) so policy ip_range conditions parse it.
-func TestBuildAuthzInput_FallbackStripsPort(t *testing.T) {
+// TestBuildAuthzInput_StripsPortFromRemoteAddr ensures BuildAuthzInput
+// always produces a clean host (no `:port`) for the ClientIP field so
+// policy ip_range conditions parse it. After the chi RealIP swap,
+// r.RemoteAddr is the only source — RealIP overwrites it from
+// X-Real-IP / X-Forwarded-For / True-Client-IP when present.
+func TestBuildAuthzInput_StripsPortFromRemoteAddr(t *testing.T) {
 	r := httptest.NewRequest("GET", "/collections", nil)
 	r.RemoteAddr = "10.0.0.1:54321"
 
 	input := BuildAuthzInput(r, nil, nil)
-	require.Equal(t, "10.0.0.1", input.Request.ClientIP, "ClientIP fallback")
+	require.Equal(t, "10.0.0.1", input.Request.ClientIP, "ClientIP")
 }
 
 // TestExtractHeaders_AllowlistOnly verifies M-authz-5: only headers

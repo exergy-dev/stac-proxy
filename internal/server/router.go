@@ -2,9 +2,7 @@
 package server
 
 import (
-	"net"
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -54,14 +52,6 @@ type RouterConfig struct {
 	// origins configured with `rewrite_assets: proxy`. Typically the
 	// same *federation.Handler that fronts Handler.
 	AssetHandler AssetHandler
-	// TrustedProxies is the list of CIDRs from which the proxy will
-	// honor X-Forwarded-For when deriving the client IP. When empty
-	// (the default), XFF is ignored and the client IP is taken from
-	// the TCP RemoteAddr — the safe default for an internet-exposed
-	// listener. Deployments behind a load balancer or CDN must list
-	// the immediate-upstream CIDR(s) here to get accurate rate
-	// limiting per real client.
-	TrustedProxies []string
 }
 
 // NewRouter creates a new router with STAC API endpoints.
@@ -73,13 +63,14 @@ func NewRouter(cfg RouterConfig) *Router {
 		assetHandler:  cfg.AssetHandler,
 	}
 
-	// Standard middleware. Note: chi's RealIP middleware is
-	// deliberately NOT used — it parses X-Forwarded-For
-	// unconditionally and is spoofable when the proxy is exposed
-	// directly. clientIPMiddleware below honors XFF only when the
-	// TCP peer is in TrustedProxies.
+	// Standard middleware. RealIP overwrites r.RemoteAddr from
+	// True-Client-IP / X-Real-IP / X-Forwarded-For when present so
+	// downstream middleware (ratelimit, authz, logging) sees the
+	// claimed client IP. NOTE: this trusts these headers
+	// unconditionally — deploy behind a reverse proxy that strips or
+	// overwrites them; do NOT expose this listener directly.
 	r.Use(chimiddleware.RequestID)
-	r.Use(clientIPMiddleware(cfg.TrustedProxies))
+	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.Recoverer)
 
 	// Cap inbound bodies before any handler reads them. Must run
@@ -210,101 +201,6 @@ func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, rt middlewar
 	info := &middleware.STACInfo{RequestType: rt, Collection: collection, ItemID: itemID}
 	ctx := middleware.WithSTACInfo(req.Context(), info)
 	r.handler.ServeHTTP(w, req.WithContext(ctx))
-}
-
-// clientIPMiddleware derives the client IP from either the TCP
-// RemoteAddr (default) or the right-most untrusted entry of
-// X-Forwarded-For (when the immediate connection came from a
-// configured trusted-proxy CIDR). The derived IP is attached to the
-// request context via middleware.ClientIPKey for downstream consumers
-// (rate limiter, logger, etc.).
-//
-// When trustedCIDRs is empty, X-Forwarded-For is always ignored.
-// This is the safe default for an internet-exposed listener — an
-// untrusted client cannot inflate or partition its rate-limit bucket
-// by spoofing the header.
-//
-// Malformed entries (unparseable CIDRs / IPs) are silently skipped;
-// startup-time validation of cfg.Server.TrustedProxies catches them.
-func clientIPMiddleware(trustedCIDRs []string) func(http.Handler) http.Handler {
-	nets := parseTrustedCIDRs(trustedCIDRs)
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := deriveClientIP(r, nets)
-			ctx := middleware.WithClientIP(r.Context(), ip)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-}
-
-func parseTrustedCIDRs(cidrs []string) []*net.IPNet {
-	out := make([]*net.IPNet, 0, len(cidrs))
-	for _, s := range cidrs {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		// Accept bare IPs by promoting to /32 or /128.
-		if !strings.Contains(s, "/") {
-			if ip := net.ParseIP(s); ip != nil {
-				if ip.To4() != nil {
-					s += "/32"
-				} else {
-					s += "/128"
-				}
-			}
-		}
-		if _, n, err := net.ParseCIDR(s); err == nil {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-// deriveClientIP returns the trusted client IP for r. When the peer
-// (r.RemoteAddr) is in one of the trusted CIDRs, the right-most
-// untrusted entry of X-Forwarded-For (or X-Real-IP as a fallback) is
-// honored; otherwise the peer's own IP is returned.
-func deriveClientIP(r *http.Request, trusted []*net.IPNet) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if len(trusted) == 0 {
-		return host
-	}
-	peerIP := net.ParseIP(host)
-	if peerIP == nil || !ipInAny(peerIP, trusted) {
-		return host
-	}
-	// Peer is trusted — walk XFF right-to-left, returning the first
-	// entry that is NOT itself in a trusted CIDR.
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		entries := strings.Split(xff, ",")
-		for i := len(entries) - 1; i >= 0; i-- {
-			candidate := strings.TrimSpace(entries[i])
-			ip := net.ParseIP(candidate)
-			if ip == nil {
-				continue
-			}
-			if !ipInAny(ip, trusted) {
-				return candidate
-			}
-		}
-	}
-	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
-		return xrip
-	}
-	return host
-}
-
-func ipInAny(ip net.IP, nets []*net.IPNet) bool {
-	for _, n := range nets {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 // bodyLimitMiddleware wraps every request body in http.MaxBytesReader

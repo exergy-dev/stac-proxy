@@ -33,13 +33,6 @@ type ServerConfig struct {
 	// (1 MiB); negative disables the cap. Set higher when expecting
 	// large GeoJSON intersects polygons on /search.
 	MaxBodyBytes int64 `yaml:"max_body_bytes"`
-	// TrustedProxies lists the CIDRs from which the proxy will honor
-	// X-Forwarded-For when deriving the client IP for rate limiting,
-	// logging, etc. The default empty list means XFF is ignored and
-	// client IPs come from the TCP RemoteAddr — the safe default for
-	// an internet-exposed listener. Deployments behind a load
-	// balancer / CDN must list the immediate-upstream CIDRs here.
-	TrustedProxies []string `yaml:"trusted_proxies"`
 	// PublicBaseURL is the externally reachable base URL of the proxy
 	// (e.g. https://stac.example.com). When set, the federation
 	// handler emits absolute `next` pagination links, rewrites

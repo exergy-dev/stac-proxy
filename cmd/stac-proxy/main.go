@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -179,17 +178,11 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	} else if rmMW != nil {
 		httpMiddlewares = append(httpMiddlewares, rmMW)
 	}
-	if len(cfg.Server.TrustedProxies) == 0 && !isLoopbackAddr(cfg.Server.Host) {
-		logger.Info("XFF will be ignored; set Server.TrustedProxies if behind a load balancer",
-			"host", cfg.Server.Host,
-		)
-	}
 	router := server.NewRouter(server.RouterConfig{
 		Handler:         handler,
 		HealthChecker:   healthChecker,
 		MaxBodyBytes:    cfg.Server.MaxBodyBytes,
 		HTTPMiddlewares: httpMiddlewares,
-		TrustedProxies:  cfg.Server.TrustedProxies,
 		// The federation handler implements both http.Handler (catalog
 		// routes) and server.AssetHandler (the streaming proxy
 		// endpoint). Mounting the asset endpoint is gated on the
@@ -1024,15 +1017,3 @@ func runHealthcheck(url string) int {
 	return 0
 }
 
-// isLoopbackAddr reports whether host is loopback (empty string,
-// "localhost", 127.0.0.0/8, ::1). Used to decide whether to nag the
-// operator about missing TrustedProxies — silent for dev binds.
-func isLoopbackAddr(host string) bool {
-	if host == "" || host == "localhost" {
-		return true
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
-}

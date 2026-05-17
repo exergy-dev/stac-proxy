@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
 )
 
 func TestBodyLimitMiddleware_LargeBodyRejected(t *testing.T) {
@@ -72,74 +71,40 @@ func readAll(r interface {
 	}
 }
 
-// --- H7 trusted-proxy XFF tests --------------------------------------------
+// --- chi RealIP wiring ------------------------------------------------------
 
-// TestClientIP_IgnoresUntrustedXFF: when the immediate TCP peer is
-// NOT in trusted_proxies, the X-Forwarded-For header must be ignored
-// even if present — otherwise an internet-exposed listener lets any
-// caller spoof its IP.
-func TestClientIP_IgnoresUntrustedXFF(t *testing.T) {
+// TestRealIP_RewritesRemoteAddrFromXFF confirms chi/middleware.RealIP
+// is wired before the inner handler so r.RemoteAddr reflects the
+// X-Forwarded-For / X-Real-IP / True-Client-IP source.
+func TestRealIP_RewritesRemoteAddrFromXFF(t *testing.T) {
 	var captured string
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured = middleware.ClientIPFromContext(r.Context())
+		captured = r.RemoteAddr
 		w.WriteHeader(http.StatusOK)
 	})
-	r := NewRouter(RouterConfig{
-		Handler:        inner,
-		TrustedProxies: nil, // empty — untrusted everywhere
-	})
+	r := NewRouter(RouterConfig{Handler: inner})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "203.0.113.5:54321"
+	req.RemoteAddr = "10.0.0.5:54321"
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
+	r.ServeHTTP(httptest.NewRecorder(), req)
 
-	assert.Equal(t, "203.0.113.5", captured, "XFF should be ignored when not trusted")
+	assert.Equal(t, "1.2.3.4", captured)
 }
 
-// TestClientIP_ParsesTrustedXFF: when the immediate TCP peer IS in
-// trusted_proxies, X-Forwarded-For's right-most untrusted entry is
-// honored. This is the deployment-behind-LB path.
-func TestClientIP_ParsesTrustedXFF(t *testing.T) {
+// TestRealIP_FallsBackToRemoteAddr: with no spoof headers present,
+// r.RemoteAddr stays as the TCP peer.
+func TestRealIP_FallsBackToRemoteAddr(t *testing.T) {
 	var captured string
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured = middleware.ClientIPFromContext(r.Context())
+		captured = r.RemoteAddr
 		w.WriteHeader(http.StatusOK)
 	})
-	r := NewRouter(RouterConfig{
-		Handler:        inner,
-		TrustedProxies: []string{"10.0.0.0/8"},
-	})
+	r := NewRouter(RouterConfig{Handler: inner})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.5:54321"
-	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.1")
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
+	r.ServeHTTP(httptest.NewRecorder(), req)
 
-	assert.Equal(t, "1.2.3.4", captured, "right-most untrusted XFF entry")
-}
-
-// TestClientIP_FallsBackToRemoteAddrWhenXFFAllTrusted: every XFF
-// entry is itself in a trusted CIDR; nothing untrusted to pick →
-// falls back to the peer's RemoteAddr.
-func TestClientIP_FallsBackToRemoteAddrWhenXFFAllTrusted(t *testing.T) {
-	var captured string
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured = middleware.ClientIPFromContext(r.Context())
-		w.WriteHeader(http.StatusOK)
-	})
-	r := NewRouter(RouterConfig{
-		Handler:        inner,
-		TrustedProxies: []string{"10.0.0.0/8"},
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "10.0.0.5:54321"
-	req.Header.Set("X-Forwarded-For", "10.0.0.1, 10.0.0.2") // all trusted
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	assert.Equal(t, "10.0.0.5", captured, "fallback to RemoteAddr")
+	assert.Equal(t, "10.0.0.5:54321", captured)
 }
