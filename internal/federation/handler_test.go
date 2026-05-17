@@ -1959,3 +1959,225 @@ func TestRewriteLinks_RecursesIntoFeatures(t *testing.T) {
 	href := feature["links"].([]interface{})[0].(map[string]interface{})["href"].(string)
 	assert.Equal(t, "https://proxy.example/items/x", href, "feature link not rewritten")
 }
+
+// TestReverseProxyOnce_ItemsRecastToSearchPath pins a STAC-spec
+// requirement that the federation pass-through path forgot: when the
+// proxy receives `GET /collections/{id}/items`, it must POST the
+// upstream's `/search` endpoint (with the collection scope in the body),
+// not the inbound path. Real STAC servers (Earth Search, Planetary
+// Computer, stac-fastapi) do not accept POST on
+// `/collections/{id}/items` — they return 404 — so forwarding the
+// inbound path verbatim turned a valid items request into a 404 in
+// single-origin mode.
+func TestReverseProxyOnce_ItemsRecastToSearchPath(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu       sync.Mutex
+		seenPath string
+		seenMeth string
+		seenBody []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seenPath = r.URL.Path
+		seenMeth = r.Method
+		if r.Body != nil {
+			seenBody, _ = io.ReadAll(r.Body)
+		}
+		mu.Unlock()
+		// Mimic real STAC servers: POST is only accepted on /search.
+		if r.URL.Path != "/search" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/geo+json")
+		_ = json.NewEncoder(w).Encode(stac.FeatureCollection{
+			Type: "FeatureCollection",
+			Features: []*stac.Item{
+				SampleItem("p-1", WithCollection("foo")),
+			},
+		})
+	}))
+	defer srv.Close()
+
+	handler, err := NewHandler(HandlerConfig{
+		Origins: []*Origin{{
+			ID: "u", BaseURL: srv.URL, Enabled: true, Searchable: true,
+			Collections: []string{"foo"}, Timeout: 5 * time.Second,
+		}},
+		DefaultPageSize: 10,
+		MaxPageSize:     100,
+	})
+	require.NoError(t, err, "NewHandler")
+
+	r := httptest.NewRequest(http.MethodGet, "/collections/foo/items?limit=2", nil)
+	req := &request{
+		Request:     r,
+		Context:     context.Background(),
+		RequestType: middleware.RequestTypeItems,
+		Collection:  "foo",
+	}
+	resp, err := handler.Handle(req.Context, req)
+	require.NoError(t, err, "Handle")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "items must succeed (got 404 if path not rewritten to /search)")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "/search", seenPath, "outbound path must be /search, not the inbound items path")
+	assert.Equal(t, http.MethodPost, seenMeth, "must POST")
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(seenBody, &body), "outbound body not JSON: %q", seenBody)
+	cols, _ := body["collections"].([]any)
+	require.Len(t, cols, 1, "outbound body must carry collection scope")
+	assert.Equal(t, "foo", cols[0])
+}
+
+// TestReverseProxyOnce_PaginationNextFieldPropagates pins the
+// upstream-pagination round-trip on the single-origin pass-through
+// path. Earth Search (and several other real-world STAC catalogs) emit
+// `next` rather than `token` on their POST `rel: next` link bodies.
+// Before SearchRequest carried a `Next` field, Go's JSON decoder
+// silently dropped the unknown key — so when a client followed the
+// proxy's emitted next link (POST /search with body.next=...), the
+// proxy re-serialized SearchRequest as `{"limit":N}` and the upstream
+// looped back to page 1.
+func TestReverseProxyOnce_PaginationNextFieldPropagates(t *testing.T) {
+	t.Parallel()
+
+	items := []*stac.Item{
+		SampleItem("p-1", WithCollection("foo")),
+		SampleItem("p-2", WithCollection("foo")),
+		SampleItem("p-3", WithCollection("foo")),
+		SampleItem("p-4", WithCollection("foo")),
+	}
+
+	var (
+		mu              sync.Mutex
+		lastUpstreamReq map[string]any
+		callCount       int
+	)
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+
+		mu.Lock()
+		lastUpstreamReq = body
+		callCount++
+		mu.Unlock()
+
+		// Earth-Search style: paginate by an offset stored in body.next.
+		offset := 0
+		if n, ok := body["next"].(string); ok && n != "" {
+			_, _ = fmt.Sscanf(n, "off-%d", &offset)
+		}
+		limit := 2
+		if l, ok := body["limit"].(float64); ok && int(l) > 0 {
+			limit = int(l)
+		}
+		end := offset + limit
+		if end > len(items) {
+			end = len(items)
+		}
+
+		page := items[offset:end]
+		fc := stac.FeatureCollection{
+			Type:     "FeatureCollection",
+			Features: page,
+		}
+		if end < len(items) {
+			fc.Links = append(fc.Links, &stac.Link{
+				Rel:  "next",
+				Href: srv.URL + "/search",
+				Type: "application/geo+json",
+				AdditionalFields: map[string]any{
+					"method": "POST",
+					"body": map[string]any{
+						"limit": limit,
+						"next":  fmt.Sprintf("off-%d", end),
+					},
+				},
+			})
+		}
+		w.Header().Set("Content-Type", "application/geo+json")
+		_ = json.NewEncoder(w).Encode(fc)
+	}))
+	defer srv.Close()
+
+	handler, err := NewHandler(HandlerConfig{
+		Origins: []*Origin{{
+			ID: "u", BaseURL: srv.URL, Enabled: true, Searchable: true,
+			Collections: []string{"foo"}, Timeout: 5 * time.Second,
+		}},
+		DefaultPageSize: 2,
+		MaxPageSize:     100,
+		ProxyBaseURL:    "http://proxy.example",
+	})
+	require.NoError(t, err, "NewHandler")
+
+	// --- page 1 ---
+	r1 := httptest.NewRequest(http.MethodGet, "/search?limit=2", nil)
+	resp1, err := handler.Handle(context.Background(), &request{
+		Request:     r1,
+		Context:     context.Background(),
+		RequestType: middleware.RequestTypeSearch,
+		SearchReq:   &stac.SearchRequest{Limit: 2},
+	})
+	require.NoError(t, err, "page 1 Handle")
+	require.Equal(t, http.StatusOK, resp1.StatusCode)
+
+	var fc1 stac.FeatureCollection
+	require.NoError(t, json.Unmarshal(resp1.Body, &fc1), "unmarshal page 1")
+	require.Len(t, fc1.Features, 2, "page 1 size")
+	page1IDs := []string{fc1.Features[0].ID, fc1.Features[1].ID}
+	assert.Equal(t, []string{"p-1", "p-2"}, page1IDs, "page 1 IDs")
+
+	// Find the `next` link the proxy emitted and extract body.next.
+	var token string
+	for _, l := range fc1.Links {
+		if l.Rel != "next" {
+			continue
+		}
+		body, _ := l.AdditionalFields["body"].(map[string]any)
+		if body == nil {
+			continue
+		}
+		if s, ok := body["next"].(string); ok {
+			token = s
+		}
+	}
+	require.NotEmpty(t, token, "proxy must emit a next-link carrying body.next; got links=%+v", fc1.Links)
+
+	// --- page 2: follow the proxy's emitted next-link ---
+	postBody, _ := json.Marshal(map[string]any{"limit": 2, "next": token})
+	r2 := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(postBody))
+	var sr stac.SearchRequest
+	require.NoError(t, json.Unmarshal(postBody, &sr), "parse client-style POST body")
+	resp2, err := handler.Handle(context.Background(), &request{
+		Request:     r2,
+		Context:     context.Background(),
+		RequestType: middleware.RequestTypeSearch,
+		SearchReq:   &sr,
+	})
+	require.NoError(t, err, "page 2 Handle")
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	var fc2 stac.FeatureCollection
+	require.NoError(t, json.Unmarshal(resp2.Body, &fc2), "unmarshal page 2")
+	require.Len(t, fc2.Features, 2, "page 2 size")
+	page2IDs := []string{fc2.Features[0].ID, fc2.Features[1].ID}
+	assert.Equal(t, []string{"p-3", "p-4"}, page2IDs, "page 2 must advance, not loop")
+
+	// Confirm the upstream actually received the token in the POST body.
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotNil(t, lastUpstreamReq, "upstream never saw a second request")
+	assert.Equal(t, token, lastUpstreamReq["next"], "upstream's POST body must carry the next token")
+	assert.GreaterOrEqual(t, callCount, 2, "upstream call count")
+}

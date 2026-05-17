@@ -113,6 +113,19 @@ func TestParseSearchRequest_BodyShapes(t *testing.T) {
 				assert.Equal(t, []string{"geometry"}, r.Fields.Exclude)
 			},
 		},
+		{
+			// Earth Search (and several other real-world catalogs) emit
+			// `next` as the pagination field name on POST link bodies.
+			// The proxy must capture it on inbound parse and re-emit it
+			// on outbound marshal; dropping it loops the client back to
+			// page 1.
+			"next field captured",
+			`{"limit":2,"next":"2026-05-17T13:43:40Z,SENT-1A-FOO,sentinel-1-grd"}`,
+			func(t *testing.T, r *SearchRequest) {
+				assert.Equal(t, 2, r.Limit)
+				assert.Equal(t, "2026-05-17T13:43:40Z,SENT-1A-FOO,sentinel-1-grd", r.Next)
+			},
+		},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -123,6 +136,27 @@ func TestParseSearchRequest_BodyShapes(t *testing.T) {
 			tt.assert(t, req)
 		})
 	}
+}
+
+// TestSearchRequest_NextFieldMarshalRoundTrip pins the wire-format
+// contract for the `next` pagination field: an inbound POST body that
+// carries `next` must unmarshal into SearchRequest.Next and marshal
+// back out using the same key name. Before SearchRequest had a Next
+// field, Go's JSON decoder silently dropped the unknown key, so the
+// proxy would re-serialize the SearchRequest as `{"limit":N}` (with
+// no token) and the upstream would loop back to page 1.
+func TestSearchRequest_NextFieldMarshalRoundTrip(t *testing.T) {
+	t.Parallel()
+	in := `{"limit":2,"next":"off-3"}`
+	var req SearchRequest
+	require.NoError(t, json.Unmarshal([]byte(in), &req))
+	require.Equal(t, "off-3", req.Next, "Next must be captured")
+
+	out, err := json.Marshal(req)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(out, &got))
+	assert.Equal(t, "off-3", got["next"], "Next must round-trip on marshal under the same key")
 }
 
 func TestParseSearchRequestFromHTTP(t *testing.T) {
@@ -205,6 +239,13 @@ func TestParseSearchFromQuery(t *testing.T) {
 			"/search?cursor=xyz.123",
 			func(t *testing.T, r *SearchRequest) {
 				assert.Equal(t, "xyz.123", r.Cursor)
+			},
+		},
+		{
+			"next query param",
+			"/search?next=off-12",
+			func(t *testing.T, r *SearchRequest) {
+				assert.Equal(t, "off-12", r.Next)
 			},
 		},
 		{

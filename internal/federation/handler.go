@@ -1302,6 +1302,9 @@ func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient
 		body = req.Request.Body
 	}
 
+	// Path+query — ReverseProxy.SetURL will rebase onto the origin.
+	pathQuery := req.Request.URL.RequestURI()
+
 	if req.SearchReq != nil && isSearchLike(req.RequestType) {
 		marshaled, err := json.Marshal(req.SearchReq)
 		if err != nil {
@@ -1309,10 +1312,13 @@ func (h *Handler) buildOutboundRequest(ctx context.Context, client *OriginClient
 		}
 		body = bytes.NewReader(marshaled)
 		method = http.MethodPost
+		// Search-like requests always POST to /search. The collection
+		// scope for /collections/{id}/items rides in SearchReq.Collections
+		// (set by handleItems); STAC servers do not accept POST on the
+		// items list endpoint, so forwarding the inbound path verbatim
+		// turns a valid items request into a 404.
+		pathQuery = "/search"
 	}
-
-	// Path+query — ReverseProxy.SetURL will rebase onto the origin.
-	pathQuery := req.Request.URL.RequestURI()
 
 	outReq, err := http.NewRequestWithContext(ctx, method, pathQuery, body)
 	if err != nil {

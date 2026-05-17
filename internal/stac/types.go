@@ -63,7 +63,15 @@ type SearchRequest struct {
 
 	// Pagination
 	Cursor string `json:"cursor,omitempty"` // For federated pagination
-	Token  string `json:"token,omitempty"`  // Legacy pagination token
+	Token  string `json:"token,omitempty"`  // STAC API spec pagination token
+	// Next is an alternate spelling used by several real-world STAC
+	// catalogs (notably Earth Search by Element 84). The proxy preserves
+	// whichever name the upstream emitted on a previous response so that
+	// the round-trip through the proxy honors the upstream's pagination
+	// convention. Servers that respond with `{"next":"..."}` in their
+	// pagination link body expect to see the same field name on the
+	// follow-up POST; dropping it loops the client back to page 1.
+	Next string `json:"next,omitempty"`
 
 	// Sorting
 	Sortby []SortSpec `json:"sortby,omitempty"`

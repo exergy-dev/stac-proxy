@@ -202,6 +202,14 @@ func (p *Parser) parseSearchFromQuery(r *http.Request) (*SearchRequest, error) {
 		req.Cursor = cursor
 	}
 
+	// Next — alternate spelling used by Earth Search and several other
+	// real-world STAC catalogs. Round-trips through the proxy so the
+	// upstream that emitted `?next=...` on its `rel: next` href sees
+	// the same field name on the follow-up request.
+	if next := q.Get("next"); next != "" {
+		req.Next = next
+	}
+
 	// Fields (STAC API Fields Extension, GET shorthand).
 	if fields := q.Get("fields"); fields != "" {
 		req.Fields = parseFieldsShorthand(fields)
