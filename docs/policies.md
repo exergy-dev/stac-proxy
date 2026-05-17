@@ -59,7 +59,9 @@ Every rule sees an `input` document with this shape:
 
 `request_type` is one of `landing`, `conformance`, `collections`,
 `collection`, `items`, `item`, `search`, `queryables`,
-`collection_queryables`.
+`collection_queryables`, `asset` (the proxy's own
+`/assets/{originId}/{ref}` streaming endpoint, gated by the same policy
+machinery as the STAC API endpoints).
 
 `principal` is absent for anonymous requests when the auth middleware
 allows them. Sensitive headers (`Authorization`, `Cookie`,

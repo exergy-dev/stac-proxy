@@ -44,10 +44,11 @@ Client → Middleware Chain → Router/Handler → Origins
 - `cmd/stac-proxy/` - Main entry point
 - `internal/config/` - Configuration loading and validation
 - `internal/server/` - HTTP server, chi router, search-body parser middleware, asset endpoint
-- `internal/middleware/` - Chi-style `func(http.Handler) http.Handler` middleware components:
+- `internal/middleware/` - Chi-style `func(http.Handler) http.Handler` middleware components plus shared types (`types.go`: `RequestType`, priorities, context keys, `STACInfo`, error types):
   - `auth/` - Authentication providers (JWT bearer, JWKS, OIDC discovery, API key, basic, mTLS)
-  - `authz/` - Authorization with OPA (embedded + external), CQL2 injection, geofencing
-  - `cache/` - Response caching (in-memory only)
+  - `authz/` - Authorization with embedded OPA, CQL2 injection, geofencing, and file-policy conditions (`time_range`, `ip_range`, `attribute`)
+  - `cache/` - Response caching (in-memory LRU only)
+  - `cors/` - CORS preflight + per-response headers
   - `ratelimit/` - Token-bucket rate limiting (per-IP / per-principal)
   - `remap/` - URL remapping and HMAC URL signing
   - `logging/` - Structured slog request logging with request-id propagation
@@ -57,12 +58,14 @@ Client → Middleware Chain → Router/Handler → Origins
   - `origin.go` - Per-origin HTTP client with auth and bounded response capture
   - `merger.go` - Result aggregation with conflict resolution
   - `pagination.go` - Federated cursor-based pagination with per-search dedup
-  - `cursor.go` - Principal-bound cursor encoding
-  - `auth_providers.go` - Per-origin auth (basic, bearer, oauth2 with singleflight, AWS SigV4 via aws-sdk-go-v2)
+  - `cursor.go` - Principal-bound cursor encoding (v2: `PrevCursor`/`FirstCursor`/`PageSeq`)
+  - `auth_providers.go` - Per-origin auth (basic, bearer, oauth2 with singleflight, AWS SigV4 via aws-sdk-go-v2 — static keys only)
+  - `pagecache/` - In-memory LRU of rendered pages, keyed by cursor signature + principal hash, for `rel: prev` / `rel: first` navigation without re-fanning-out
+  - `pageadapter/` - Pluggable upstream pagination adapters (`token`, `next_url`, `offset`, `link_header`, `auto`)
 - `internal/geo/` - Geospatial operations (geometry, GeoJSON, antimeridian-aware bbox, spatial index)
 - `internal/stac/` - STAC types (aliased from `go-stac-client`), parser, conformance helpers, CQL2 evaluator (incl. S_INTERSECTS)
-- `internal/httpx/` - HTTP utilities: bounded response capture, retry transport (retryablehttp), trusted-proxy XFF, hop-by-hop header stripping
-- `internal/observability/` - cached `/health` checks (alexliesenfeld/health adapter); no metrics exposition
+- `internal/httpx/` - HTTP utilities: bounded response capture, retry transport (retryablehttp), outbound `X-Forwarded-*` propagation, hop-by-hop header stripping. Inbound trusted-proxy / `RemoteAddr` rewriting is delegated to chi's `middleware.RealIP`.
+- `internal/observability/` - cached `/health`, `/health/live`, `/health/ready` checks (alexliesenfeld/health adapter); no metrics exposition
 
 ### Key Interfaces
 

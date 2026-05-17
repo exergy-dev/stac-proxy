@@ -2,66 +2,17 @@
 
 ## Metrics
 
-stac-proxy exposes Prometheus metrics on a separate port (default 9090,
-configurable via `metrics.port`) at `metrics.path` (default `/metrics`).
-All metric names are prefixed `stac_proxy_`.
+stac-proxy does **not** expose a `/metrics` endpoint. Prometheus
+exposition was intentionally removed; the binary is intended to be
+observed via its structured logs. Downstream collectors (Loki, Vector,
+Datadog logs, Elastic) can derive rate / error / latency series from
+the per-request log events described below.
 
-### HTTP / proxy hot path
+If you need a counter your environment depends on, derive it from logs:
 
-| Metric | Type | Labels | When emitted |
-|---|---|---|---|
-| `stac_proxy_requests_total` | counter | `method`, `path`, `status` | Per inbound request |
-| `stac_proxy_request_duration_seconds` | histogram | `method`, `path` | Per inbound request |
-| `stac_proxy_requests_in_flight` | gauge | — | Currently-processing requests |
-| `stac_proxy_upstream_requests_total` | counter | `origin`, `status` | Per upstream call (federation origin ID, or `"upstream"` in single mode) |
-| `stac_proxy_upstream_request_duration_seconds` | histogram | `origin` | Per upstream call |
-| `stac_proxy_upstream_errors_total` | counter | `origin`, `error_type` | Upstream call failed. `error_type` ∈ `network`, `timeout`, `canceled` |
-
-### Cache
-
-| Metric | Type | Labels |
-|---|---|---|
-| `stac_proxy_cache_hits_total` | counter | `type` (request type: search, items, collections) |
-| `stac_proxy_cache_misses_total` | counter | `type` |
-| `stac_proxy_cache_size` | gauge | — |
-
-### Auth
-
-| Metric | Type | Labels |
-|---|---|---|
-| `stac_proxy_auth_successes_total` | counter | `provider` (bearer/api_key/anonymous), `principal_type` |
-| `stac_proxy_auth_failures_total` | counter | `provider`, `reason` |
-
-### Rate limit
-
-| Metric | Type | Labels |
-|---|---|---|
-| `stac_proxy_rate_limit_exceeded_total` | counter | `key_type` (`principal` or `ip`) |
-
-### Federation
-
-| Metric | Type | Labels |
-|---|---|---|
-| `stac_proxy_federation_origins_queried_total` | counter | `origin`, `status` (`ok` / `error`) |
-| `stac_proxy_federation_items_merged_total` | counter | — |
-| `stac_proxy_federation_duplicates_total` | counter | — |
-
-### CQL2 injection
-
-| Metric | Type | Labels |
-|---|---|---|
-| `stac_proxy_cql2_injected_total` | counter | `lang` (`cql2-text` / `cql2-json`), `reason` (`policy` / `geofence` / `merged`) |
-
-`reason=merged` indicates both a policy filter and a pushed-down geofence
-were AND-combined.
-
-## Suggested Grafana panels
-
-- **Request rate by status**: `sum by (status) (rate(stac_proxy_requests_total[1m]))`
-- **p95 latency**: `histogram_quantile(0.95, sum by (le, path) (rate(stac_proxy_request_duration_seconds_bucket[5m])))`
-- **Cache hit ratio**: `rate(stac_proxy_cache_hits_total[5m]) / (rate(stac_proxy_cache_hits_total[5m]) + rate(stac_proxy_cache_misses_total[5m]))`
-- **Federation per-origin success**: `sum by (origin) (rate(stac_proxy_federation_origins_queried_total{status="ok"}[5m]))`
-- **CQL2 injection mix**: `sum by (reason) (rate(stac_proxy_cql2_injected_total[5m]))`
+- request rate by status — count of `msg="request_completed"` grouped by `status`
+- p95 latency — quantile over the `duration` field on `msg="request_completed"`
+- federation origin failures — `msg="federation_origin_search_failed"` grouped by `origin`
 
 ## Health endpoints
 
@@ -73,16 +24,17 @@ were AND-combined.
 
 ## Logs
 
-stac-proxy uses [zap](https://github.com/uber-go/zap) and emits JSON by
-default (`logging.format: json`).
+stac-proxy uses Go's standard [`log/slog`](https://pkg.go.dev/log/slog)
+and emits JSON by default (`logging.format: json`). Setting
+`logging.format: console` (or `text`) switches to the text handler for
+local development.
 
 ### Standard fields
 
 | Field | Where emitted | Notes |
 |---|---|---|
-| `timestamp` | always | ISO8601 |
-| `level` | always | debug/info/warn/error |
-| `caller` | always | `file:line` |
+| `time` | always | RFC3339Nano (slog default) |
+| `level` | always | DEBUG / INFO / WARN / ERROR |
 | `msg` | always | event name (e.g. `request_started`, `request_completed`, `federation_origin_search_failed`) |
 | `request_id` | request-scoped | UUIDv4 |
 | `method` | request-scoped | HTTP method |

@@ -24,7 +24,7 @@ Go 1.22+ required; CI runs 1.22.x and 1.23.x.
    stay green; `make lint` must stay clean.
 4. Update relevant docs:
    - `README.md` features list, if behaviour changed
-   - `docs/observability.md`, if you added a metric or log field
+   - `docs/observability.md`, if you added or renamed a log field
    - `docs/policies.md`, if you added an OPA constraint key
    - `CHANGELOG.md` under the next unreleased version
 5. Commit messages: imperative mood, first line ≤72 chars, blank line,
@@ -44,8 +44,8 @@ Go 1.22+ required; CI runs 1.22.x and 1.23.x.
 - `golangci-lint` config in `.golangci.yml`; CI gates on it.
 - Exported symbols carry doc comments (revive enforces this).
 - Errors wrap with `%w` so callers can use `errors.Is/As`.
-- Logging via `go.uber.org/zap`; use `zap.L()` for global, or take a
-  `*zap.Logger` in the constructor when it's component-level.
+- Logging via Go's standard `log/slog`; use `slog.Default()` for global,
+  or take a `*slog.Logger` in the constructor when it's component-level.
 
 ## Release process
 

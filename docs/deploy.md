@@ -39,7 +39,7 @@ YAML; `${ENV_VAR}` expansion happens at load (`os.ExpandEnv`).
 | `mode` | yes | `single` or `federation` |
 | `upstream` | iff `mode: single` | URL, timeout, `supports_filter_extension` |
 | `federation` | iff `mode: federation` | origins list + conflict strategy + page size limits |
-| `middleware` | no | ordered list: `logging`, `auth`, `cache`, `rate_limit`, `url_remap` |
+| `middleware` | no | ordered list: `logging`, `auth`, `cache`, `cors`, `rate_limit`, `url_remap` |
 | `authz` | no | OPA-backed authorization with optional CQL2 injection |
 
 ### Environment-variable injection
@@ -181,10 +181,11 @@ Configure your orchestrator's probes:
 
 ## Trust boundary: deploy behind an L7 proxy
 
-`stac-proxy` uses chi's `RealIP` middleware to populate
-`http.Request.RemoteAddr` from `X-Forwarded-For` / `X-Real-IP`. That
-middleware **does not** validate the source — any unauthenticated client
-can spoof its IP simply by adding the header.
+`stac-proxy` uses chi's `RealIP` middleware (wired automatically; no
+configuration surface) to populate `http.Request.RemoteAddr` from
+`X-Forwarded-For` / `X-Real-IP`. That middleware **does not** validate
+the source — any unauthenticated client can spoof its IP simply by
+adding the header.
 
 You MUST deploy this service behind a TLS-terminating L7 reverse proxy
 (nginx, Envoy, ALB, Cloud Run, etc.) that:

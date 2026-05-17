@@ -39,7 +39,7 @@ curl -fsS http://localhost:8080/health
 | **Auth** | Bearer/JWT (static HMAC or remote JWKS with key rotation), OIDC discovery (RSA/EC), API key (header or query) |
 | **AuthZ** | Embedded OPA (Rego), CQL2 filter injection, geofencing (push-down via S_INTERSECTS or response-side post-filter) |
 | **Modes** | Single-origin transparent proxy or N-origin federation with merge/dedup |
-| **Caching** | In-memory LRU + TTL |
+| **Caching** | In-memory LRU + TTL response cache; separate per-principal page cache for federated `prev`/`first` pagination |
 | **Rate limiting** | Token-bucket, per-principal or per-IP |
 | **URL rewriting** | Configurable regex rules + optional HMAC signing |
 | **Observability** | Structured `log/slog` logs with UUID request IDs forwarded to upstream as `X-Request-ID`; cached `/health`, `/health/live`, `/health/ready` endpoints |
@@ -64,7 +64,7 @@ Validate before deploying:
 
 - [docs/deploy.md](docs/deploy.md) — Docker / docker-compose deployment, env-var matrix, TLS, observability scrape
 - [docs/policies.md](docs/policies.md) — Writing OPA policies: AuthzInput schema, every constraint key the proxy understands, worked examples
-- [docs/observability.md](docs/observability.md) — Every metric, health endpoints, log fields, request-ID flow
+- [docs/observability.md](docs/observability.md) — Health endpoints, log fields, request-ID flow (the binary does not expose Prometheus metrics; analysis is log-based)
 - [design.md](design.md) — Architecture deep dive (3,710 lines; for contributors)
 
 ## Build & test

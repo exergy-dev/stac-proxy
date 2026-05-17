@@ -54,7 +54,7 @@ COPY --chown=stacproxy:stacproxy policies /etc/stac-proxy/policies
 USER 65532:65532
 WORKDIR /etc/stac-proxy
 
-EXPOSE 8080 9090
+EXPOSE 8080
 
 # Self-healthcheck: the binary itself probes /health, so the runtime
 # image needs neither wget nor curl.
