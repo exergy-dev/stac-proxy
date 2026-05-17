@@ -323,14 +323,13 @@ type AuthzConfig struct {
 // behaviour. When enabled, CQL2 expressions emitted by the policy
 // engine (and geofence push-down predicates) are AND-combined with any
 // client-supplied filter and forwarded to the upstream STAC API.
+//
+// AND is the only safe authorization composition (narrowing); OR /
+// REPLACE would let policy broaden or hide a client's filter, so no
+// alternative combine strategy is offered.
 type CQL2InjectionConfig struct {
 	// Enabled gates the whole feature; default false.
 	Enabled bool `yaml:"enabled"`
-
-	// Combine controls how policy and client filters are combined.
-	// Only "and" is supported today; the field is reserved for future
-	// strategies (e.g. "or", "replace").
-	Combine string `yaml:"combine"`
 }
 
 // OPAConfig contains Open Policy Agent settings. Only embedded OPA is

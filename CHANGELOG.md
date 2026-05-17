@@ -299,6 +299,13 @@ full list.
   removed.** Previously the named-and-rejected leftover from the
   v0.1 stub-signer removal; now they're "unknown signer type" like any
   other typo. The stub impls were already gone in v0.1.
+- **Breaking — `authz.cql2_injection.combine` removed.** The field was
+  parsed and stored on `CQL2InjectionConfig` but never read; the
+  injector always AND-folds via `andNonNil`. AND is the only safe
+  authorization composition (narrowing); `or`/`replace` would let
+  policy broaden or hide a client's filter and were never going to
+  ship. With the `KnownFields(true)` decoder, leftover `combine:`
+  keys will now error at startup.
 
 ## [0.1.0] — 2026-05-11
 

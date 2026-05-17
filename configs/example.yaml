@@ -51,7 +51,6 @@ upstream:
 #   # skipped for requests whose geofence was successfully pushed down.
 #   cql2_injection:
 #     enabled: true
-#     combine: and    # reserved for future strategies; only "and" today
 
 # Middleware configuration (order matters for priority)
 middleware:

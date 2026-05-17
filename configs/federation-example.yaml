@@ -122,7 +122,6 @@ middleware:
 #   # request rather than post-filtering responses.
 #   cql2_injection:
 #     enabled: true
-#     combine: and    # reserved for future strategies; only "and" today
 
   # - name: rate_limit
   #   config:
