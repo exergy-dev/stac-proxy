@@ -96,11 +96,6 @@ type MetricsConfig struct {
 // HealthConfig contains health check settings.
 type HealthConfig struct {
 	Path string `yaml:"path"`
-	// Verbose controls whether per-check `message` and `details`
-	// fields are included in the JSON response. The default false
-	// keeps `/health` responses generic so upstream URLs and error
-	// strings don't leak topology to whoever can reach the endpoint.
-	Verbose bool `yaml:"verbose"`
 }
 
 // MiddlewareConfig contains configuration for a single middleware.

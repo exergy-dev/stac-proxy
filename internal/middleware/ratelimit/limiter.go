@@ -1,132 +1,72 @@
-// Package ratelimit provides rate limiting middleware.
+// Package ratelimit: token-bucket limiter backed by golang.org/x/time/rate.
+//
+// Per-key buckets are kept in a bounded hashicorp/golang-lru/v2 cache so
+// attacker-rotated source IPs cannot grow the map unboundedly
+// (HIGH H-observability-1). LRU eviction also subsumes the previous
+// idle-bucket cleanup goroutine: idle keys naturally fall out as new
+// ones push them down the list.
 package ratelimit
 
 import (
-	"container/list"
 	"context"
 	"math"
-	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"golang.org/x/time/rate"
 )
 
-// Default LRU bound for the per-key bucket map. Caps memory growth
-// under attacker-rotated source IPs (HIGH H-observability-1).
 const defaultMaxEntries = 50000
 
-// Limiter defines the interface for rate limiters.
+// Limiter abstracts a token-bucket-style decision. Kept as an interface
+// so the HTTP middleware can be tested without scheduling real time.
 type Limiter interface {
-	// Allow checks if a request is allowed for the given key.
-	// Returns true if allowed, along with rate limit info.
 	Allow(ctx context.Context, key string, quota Quota) (bool, Info, error)
 }
 
-// Quota defines a rate limit quota. Requests/Window sets the sustained
-// rate; Burst is the maximum burst capacity (defaults to Requests when 0).
+// Quota defines the sustained rate (Requests over Window) and the
+// burst capacity. Burst defaults to Requests when zero.
 type Quota struct {
 	Requests int
 	Window   time.Duration
 	Burst    int
 }
 
-// Info contains rate limit information for response headers.
-//
-// See TokenBucketLimiter.Allow for the precise semantics of each
-// field; in particular Remaining is pre-reservation capacity and
-// ResetAt accounts for the bucket's current fill state, not a
-// constant derived from the quota shape.
+// Info populates the X-RateLimit-* response headers. Remaining is the
+// pre-reservation floor of available tokens; ResetAt is the unix time
+// at which the bucket would refill to its burst.
 type Info struct {
-	Limit      int   // Maximum requests allowed
-	Remaining  int   // Pre-reservation available capacity (tokens visible to the caller before this Allow consumed any)
-	ResetAt    int64 // Unix timestamp at which the bucket would refill to full from its current state
-	RetryAfter int   // Seconds until retry is allowed (if limited)
+	Limit      int
+	Remaining  int
+	ResetAt    int64
+	RetryAfter int
 }
 
-// TokenBucketLimiter is the default Limiter, backed by golang.org/x/time/rate.
-// It maintains one rate.Limiter per key.
-//
-// HIGH H-observability-1: the per-key map is bounded by maxEntries
-// using LRU eviction (container/list + map[string]*list.Element).
-// Without the bound, attacker-rotated source IPs could grow the map
-// arbitrarily before the (originally 2-hour) cleanup ran. The
-// idle-bucket cleanup cutoff is also tightened to 2*Window so idle
-// principals/IPs are reclaimed at the natural token-refill cadence.
+// TokenBucketLimiter is the default Limiter implementation.
 type TokenBucketLimiter struct {
-	mu              sync.Mutex
-	buckets         map[string]*bucket
-	lru             *list.List // values: string keys; front = MRU, back = LRU
-	maxEntries      int
-	cleanupInterval time.Duration
-	stop            chan struct{}
-	stopOnce        sync.Once
+	buckets *lru.Cache[string, *bucket]
 }
 
 type bucket struct {
-	limiter  *rate.Limiter
-	quota    Quota
-	lastSeen time.Time
-	elem     *list.Element // points into TokenBucketLimiter.lru
+	limiter *rate.Limiter
+	quota   Quota
 }
 
-// NewSlidingWindowLimiter creates a TokenBucketLimiter with the
-// default LRU cap (defaultMaxEntries).
-//
-// Deprecated: the implementation is a token-bucket limiter despite
-// the historical name. Use NewTokenBucketLimiter(defaultMaxEntries)
-// or the no-arg NewDefaultTokenBucketLimiter convenience. This alias
-// is retained so existing wiring compiles unchanged.
-func NewSlidingWindowLimiter() *TokenBucketLimiter {
-	return NewDefaultTokenBucketLimiter()
-}
-
-// NewDefaultTokenBucketLimiter constructs a TokenBucketLimiter with
-// the default LRU cap. Equivalent to NewTokenBucketLimiter(defaultMaxEntries).
-func NewDefaultTokenBucketLimiter() *TokenBucketLimiter {
-	return NewTokenBucketLimiter(defaultMaxEntries)
-}
-
-// NewTokenBucketLimiter constructs a TokenBucketLimiter capped at
-// maxEntries keys. Values <=0 fall back to defaultMaxEntries.
-//
-// (HIGH H-observability-1)
+// NewTokenBucketLimiter constructs a limiter capped at maxEntries keys.
+// Values <=0 fall back to defaultMaxEntries.
 func NewTokenBucketLimiter(maxEntries int) *TokenBucketLimiter {
 	if maxEntries <= 0 {
 		maxEntries = defaultMaxEntries
 	}
-	l := &TokenBucketLimiter{
-		buckets:         make(map[string]*bucket, maxEntries),
-		lru:             list.New(),
-		maxEntries:      maxEntries,
-		cleanupInterval: 10 * time.Minute,
-		stop:            make(chan struct{}),
-	}
-	go l.cleanupLoop()
-	return l
+	c, _ := lru.New[string, *bucket](maxEntries)
+	return &TokenBucketLimiter{buckets: c}
 }
 
-// Stop terminates the background cleanup goroutine. Safe to call
-// multiple times.
-func (l *TokenBucketLimiter) Stop() {
-	l.stopOnce.Do(func() { close(l.stop) })
-}
+// Stop is a no-op kept for API compatibility with callers that defer it.
+func (l *TokenBucketLimiter) Stop() {}
 
-// Allow checks if a request is allowed under the rate limit.
-//
-// Info field semantics (M-ratelimit-2):
-//
-//   - Remaining is the *pre-reservation* available capacity at "now"
-//     — the floor of TokensAt(now) before this call has consumed any
-//     token. This matches the X-RateLimit-Remaining convention used
-//     by GitHub, Twitter, etc., where the response header reports
-//     what the caller had before being charged.
-//   - ResetAt is the unix timestamp at which the bucket would refill
-//     to its full burst given the *current* token state, not a
-//     constant derived only from the quota shape. The previous
-//     formula, burst*Window/Requests, ignored the bucket fill and
-//     therefore produced a constant value regardless of usage,
-//     making the X-RateLimit-Reset header useless for clients trying
-//     to back off intelligently.
+// Allow consumes one token from the per-key bucket. On deny the
+// reservation is cancelled so the bucket isn't permanently held down.
 func (l *TokenBucketLimiter) Allow(_ context.Context, key string, quota Quota) (bool, Info, error) {
 	b := l.getOrCreate(key, quota)
 
@@ -136,13 +76,11 @@ func (l *TokenBucketLimiter) Allow(_ context.Context, key string, quota Quota) (
 		burst = quota.Requests
 	}
 
-	// Snapshot pre-reservation capacity for the Info report.
 	preTokens := b.limiter.TokensAt(now)
 	preRem := int(math.Floor(preTokens))
 	if preRem < 0 {
 		preRem = 0
 	}
-
 	info := Info{
 		Limit:     quota.Requests,
 		Remaining: preRem,
@@ -151,10 +89,7 @@ func (l *TokenBucketLimiter) Allow(_ context.Context, key string, quota Quota) (
 
 	res := b.limiter.ReserveN(now, 1)
 	delay := res.DelayFrom(now)
-
 	if delay > 0 {
-		// Over capacity: cancel the reservation so we don't block the
-		// bucket, then report Retry-After.
 		res.CancelAt(now)
 		info.RetryAfter = int(math.Ceil(delay.Seconds()))
 		if info.RetryAfter < 1 {
@@ -162,17 +97,25 @@ func (l *TokenBucketLimiter) Allow(_ context.Context, key string, quota Quota) (
 		}
 		return false, info, nil
 	}
-
 	return true, info, nil
 }
 
-// resetAt returns the time at which a token bucket holding `tokens`
-// out of `burst`, refilling at quota.Requests/quota.Window per second,
-// will be back to full. When the bucket is already full, returns now.
-//
-// Implements the M-ratelimit-2 contract for Info.ResetAt: the value
-// reflects current bucket state rather than a constant derived only
-// from the quota shape.
+func (l *TokenBucketLimiter) getOrCreate(key string, quota Quota) *bucket {
+	if b, ok := l.buckets.Get(key); ok && b.quota == quota {
+		return b
+	}
+	burst := quota.Burst
+	if burst == 0 {
+		burst = quota.Requests
+	}
+	limit := rate.Limit(float64(quota.Requests) / quota.Window.Seconds())
+	b := &bucket{limiter: rate.NewLimiter(limit, burst), quota: quota}
+	l.buckets.Add(key, b)
+	return b
+}
+
+// resetAt returns when the bucket would refill from `tokens` to `burst`
+// at the quota's refill rate. Returns now when already full.
 func resetAt(now time.Time, tokens, burst float64, quota Quota) time.Time {
 	if tokens >= burst || quota.Requests <= 0 || quota.Window <= 0 {
 		return now
@@ -180,169 +123,11 @@ func resetAt(now time.Time, tokens, burst float64, quota Quota) time.Time {
 	if tokens < 0 {
 		tokens = 0
 	}
-	deficit := burst - tokens
-	rate := float64(quota.Requests) / quota.Window.Seconds() // tokens / sec
+	rate := float64(quota.Requests) / quota.Window.Seconds()
 	if rate <= 0 {
 		return now
 	}
-	secs := deficit / rate
-	return now.Add(time.Duration(secs * float64(time.Second)))
-}
-
-// getOrCreate looks up the per-key bucket or creates one. When the
-// quota shape changes for an existing key (rare; happens if QuotaFunc
-// returns a different Quota for the same key), the bucket is rebuilt.
-//
-// On insert, evicts the LRU bucket(s) until len(buckets) < maxEntries.
-// Existing-key access bumps the bucket to MRU. (HIGH H-observability-1)
-func (l *TokenBucketLimiter) getOrCreate(key string, quota Quota) *bucket {
-	burst := quota.Burst
-	if burst == 0 {
-		burst = quota.Requests
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if b, ok := l.buckets[key]; ok && b.quota == quota {
-		b.lastSeen = time.Now()
-		if b.elem != nil {
-			l.lru.MoveToFront(b.elem)
-		}
-		return b
-	}
-
-	// Either new key, or existing key with a changed quota shape.
-	// M-ratelimit-1: when the quota changes for an existing key, carry
-	// the *remaining* tokens across to the rebuilt bucket scaled by the
-	// burst ratio rather than dropping the old bucket entirely. The
-	// previous reset-on-change behavior let a caller flip back and
-	// forth between two quotas (a non-deterministic QuotaFunc, an
-	// edited config) and never accumulate any throttle pressure. If
-	// the new quota is *smaller* the carried tokens are capped at the
-	// new burst, so the bucket cannot become permanently over-issued;
-	// in the opposite direction the caller simply gets the headroom
-	// the new (larger) quota implies.
-	var carryTokens float64 = -1 // sentinel: no carry
-	if existing, ok := l.buckets[key]; ok {
-		now := time.Now()
-		oldBurst := existing.quota.Burst
-		if oldBurst == 0 {
-			oldBurst = existing.quota.Requests
-		}
-		oldTokens := existing.limiter.TokensAt(now)
-		if oldBurst > 0 {
-			ratio := oldTokens / float64(oldBurst)
-			if ratio < 0 {
-				ratio = 0
-			}
-			if ratio > 1 {
-				ratio = 1
-			}
-			carryTokens = ratio * float64(burst)
-		}
-		if existing.elem != nil {
-			l.lru.Remove(existing.elem)
-		}
-		delete(l.buckets, key)
-	}
-
-	// Evict the LRU until we're under cap. Loop in case maxEntries
-	// was lowered or multiple stale entries are present.
-	for len(l.buckets) >= l.maxEntries {
-		if !l.evictLRU() {
-			break
-		}
-	}
-
-	limit := rate.Limit(float64(quota.Requests) / quota.Window.Seconds())
-	rl := rate.NewLimiter(limit, burst)
-	if carryTokens >= 0 {
-		// rate.Limiter starts full at `burst` tokens; deduct the
-		// difference so the rebuilt bucket holds exactly `carryTokens`.
-		drain := float64(burst) - carryTokens
-		if drain > 0 {
-			// AllowN-style consumption that bypasses time-based
-			// refilling: ReserveN with the carry-deficit, then
-			// immediately let the reservation stand (it adjusts the
-			// internal token state to reflect the consumption).
-			now := time.Now()
-			res := rl.ReserveN(now, int(drain))
-			if !res.OK() {
-				// drain > burst — shouldn't happen given the cap
-				// above, but be defensive.
-				_ = res
-			}
-		}
-	}
-	elem := l.lru.PushFront(key)
-	b := &bucket{
-		limiter:  rl,
-		quota:    quota,
-		lastSeen: time.Now(),
-		elem:     elem,
-	}
-	l.buckets[key] = b
-	return b
-}
-
-// evictLRU removes the least-recently-used bucket. Returns false if
-// the LRU list was empty. Caller must hold l.mu.
-func (l *TokenBucketLimiter) evictLRU() bool {
-	back := l.lru.Back()
-	if back == nil {
-		return false
-	}
-	key, _ := back.Value.(string)
-	l.lru.Remove(back)
-	delete(l.buckets, key)
-	return true
-}
-
-// cleanupLoop periodically evicts idle buckets to bound memory.
-func (l *TokenBucketLimiter) cleanupLoop() {
-	ticker := time.NewTicker(l.cleanupInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			l.cleanup()
-		case <-l.stop:
-			return
-		}
-	}
-}
-
-// cleanup evicts buckets that haven't been seen within 2*Window of
-// their per-bucket quota. The 2*Window cutoff matches the natural
-// token-refill cadence (a bucket idle longer than that has refilled
-// to full and carries no useful state). (HIGH H-observability-1)
-//
-// The previous unconditional 2-hour cutoff allowed an attacker-driven
-// IP rotation to grow the map ~120x the active set before reclaim;
-// the LRU cap above bounds the worst case anyway, but the shorter
-// cutoff keeps steady-state memory close to the active set size.
-func (l *TokenBucketLimiter) cleanup() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := time.Now()
-	for k, b := range l.buckets {
-		cutoff := now.Add(-2 * b.quota.Window)
-		if b.lastSeen.Before(cutoff) {
-			if b.elem != nil {
-				l.lru.Remove(b.elem)
-			}
-			delete(l.buckets, k)
-		}
-	}
-}
-
-// Reset clears all rate limit data.
-func (l *TokenBucketLimiter) Reset() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.buckets = make(map[string]*bucket, l.maxEntries)
-	l.lru = list.New()
+	return now.Add(time.Duration((burst - tokens) / rate * float64(time.Second)))
 }
 
 // KeyFunc generates a rate limit key from a request.
@@ -360,6 +145,4 @@ func DefaultKeyFunc(_ context.Context, principalID, clientIP string) string {
 type QuotaFunc func(roles []string, defaultQuota Quota) Quota
 
 // DefaultQuotaFunc returns the default quota.
-func DefaultQuotaFunc(_ []string, defaultQuota Quota) Quota {
-	return defaultQuota
-}
+func DefaultQuotaFunc(_ []string, defaultQuota Quota) Quota { return defaultQuota }

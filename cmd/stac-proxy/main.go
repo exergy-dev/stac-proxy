@@ -126,9 +126,10 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	metrics := observability.NewMetrics("stac_proxy")
 	observability.SetDefault(metrics)
 
-	// Initialize health checker
+	// Initialize health checker. Checks are appended as origins are
+	// built; the underlying alexliesenfeld/health.Checker is lazily
+	// constructed on first request to /health.
 	healthChecker := observability.NewHealthChecker()
-	healthChecker.Verbose = cfg.Health.Verbose
 
 	// Build the federation handler. Single-origin mode is modeled as a
 	// federation-of-1 — the single-origin code path collapses into
@@ -416,9 +417,7 @@ func buildAuthProvider(pMap map[string]interface{}, _ *slog.Logger) (auth.Provid
 		return auth.NewOIDCProvider(auth.OIDCConfig{
 			Name:              "oidc",
 			IssuerURL:         getStringConfig(pMap, "issuer_url"),
-			Issuer:            getStringConfig(pMap, "issuer"),
 			Audience:          getStringConfig(pMap, "audience"),
-			JWKSURL:           getStringConfig(pMap, "jwks_url"),
 			AllowInsecureHTTP: getBoolConfig(pMap, "allow_insecure_http"),
 		})
 	case "basic":

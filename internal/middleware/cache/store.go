@@ -58,13 +58,6 @@ type CacheableRequest struct {
 	PrincipalClass string
 }
 
-// Stats contains cache statistics.
-type Stats struct {
-	Hits   int64
-	Misses int64
-	Size   int64
-}
-
 // CacheEntry is the faithful representation of a cached upstream
 // response. The middleware JSON-encodes it into the Store's []byte
 // payload so status code and headers are restored on hit.

@@ -8,11 +8,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -88,6 +90,10 @@ func TestAuthProviderWiring_AllConfiguredTypesAreActive(t *testing.T) {
 	// Generate a CA cert for mTLS and a basic htpasswd-style hash.
 	caFile := writeSelfSignedCAForAuthTest(t)
 
+	// OIDC discovery now uses go-oidc which requires a live discovery
+	// endpoint at provider construction time.
+	oidcSrv := newAuthWiringOIDCDiscovery(t)
+
 	cfg := &config.Config{
 		Middleware: []config.MiddlewareConfig{{
 			Name: "auth",
@@ -106,9 +112,8 @@ func TestAuthProviderWiring_AllConfiguredTypesAreActive(t *testing.T) {
 					},
 					map[string]interface{}{
 						"type":                "oidc",
-						"issuer":              "https://issuer.example.com",
+						"issuer_url":          oidcSrv.URL,
 						"audience":            "test",
-						"jwks_url":            "https://issuer.example.com/.well-known/jwks.json",
 						"allow_insecure_http": true,
 					},
 					map[string]interface{}{
@@ -509,4 +514,27 @@ func TestBuildFederationHandler_SingleModeWiresPublicBaseURL(t *testing.T) {
 	if got, want := handler.ProxyBaseURL(), publicBaseURL; got != want {
 		t.Errorf("ProxyBaseURL = %q, want %q (single-mode dropped server.public_base_url)", got, want)
 	}
+}
+
+// newAuthWiringOIDCDiscovery spins up a minimal OIDC discovery server
+// for the auth-wiring smoke test. It only needs to serve a valid
+// discovery document — token verification is not exercised here.
+func newAuthWiringOIDCDiscovery(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":   srv.URL,
+			"jwks_uri": srv.URL + "/jwks",
+		})
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
 }

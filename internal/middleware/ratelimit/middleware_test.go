@@ -226,73 +226,12 @@ func TestRoleBasedQuotaFunc(t *testing.T) {
 	}
 }
 
-func TestDefaultKeyFunc(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	if got := DefaultKeyFunc(ctx, "alice", "203.0.113.7"); !contains(got, "alice") {
-		t.Errorf("with principal: should include alice, got %q", got)
-	}
-	if got := DefaultKeyFunc(ctx, "", "203.0.113.7"); !contains(got, "203.0.113.7") {
-		t.Errorf("anon: should include IP, got %q", got)
-	}
-}
-
 func TestDefaultQuotaFunc(t *testing.T) {
 	t.Parallel()
 	q := Quota{Requests: 42, Window: time.Minute}
 	if got := DefaultQuotaFunc(nil, q); got.Requests != 42 {
 		t.Errorf("DefaultQuotaFunc should return the default: %+v", got)
 	}
-}
-
-func TestSlidingWindowLimiter_Allow(t *testing.T) {
-	t.Parallel()
-	lim := NewSlidingWindowLimiter()
-	ctx := context.Background()
-	q := Quota{Requests: 3, Window: time.Minute}
-
-	for i := 0; i < 3; i++ {
-		allowed, _, err := lim.Allow(ctx, "k", q)
-		if err != nil {
-			t.Fatalf("attempt %d: err=%v", i, err)
-		}
-		if !allowed {
-			t.Errorf("attempt %d: should be allowed (under quota)", i)
-		}
-	}
-	allowed, _, err := lim.Allow(ctx, "k", q)
-	if err != nil {
-		t.Fatalf("4th attempt err=%v", err)
-	}
-	if allowed {
-		t.Error("4th attempt should be denied")
-	}
-}
-
-func TestSlidingWindowLimiter_MultipleKeys(t *testing.T) {
-	t.Parallel()
-	lim := NewSlidingWindowLimiter()
-	ctx := context.Background()
-	q := Quota{Requests: 1, Window: time.Minute}
-	for _, k := range []string{"a", "b", "c"} {
-		allowed, _, _ := lim.Allow(ctx, k, q)
-		if !allowed {
-			t.Errorf("first attempt on key %q should be allowed", k)
-		}
-	}
-}
-
-func TestSlidingWindowLimiter_ConcurrentAccess(t *testing.T) {
-	t.Parallel()
-	lim := NewSlidingWindowLimiter()
-	ctx := context.Background()
-	q := Quota{Requests: 100, Window: time.Minute}
-	var wg sync.WaitGroup
-	for i := 0; i < 200; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); _, _, _ = lim.Allow(ctx, "shared", q) }()
-	}
-	wg.Wait()
 }
 
 // TestKeyFunc_StripsRemoteAddrPort verifies that when the derived

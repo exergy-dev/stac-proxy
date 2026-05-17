@@ -37,7 +37,7 @@ type Config struct {
 func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	limiter := cfg.Limiter
 	if limiter == nil {
-		limiter = NewDefaultTokenBucketLimiter()
+		limiter = NewTokenBucketLimiter(0)
 	}
 	keyFunc := cfg.KeyFunc
 	if keyFunc == nil {

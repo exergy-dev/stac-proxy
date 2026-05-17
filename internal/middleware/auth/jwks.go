@@ -2,9 +2,15 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,6 +18,83 @@ import (
 
 	"golang.org/x/sync/singleflight"
 )
+
+// JWKSResponse represents the JWKS response.
+type JWKSResponse struct {
+	Keys []JWK `json:"keys"`
+}
+
+// JWK represents a JSON Web Key.
+type JWK struct {
+	Kty string `json:"kty"`
+	Kid string `json:"kid"`
+	Use string `json:"use"`
+	Alg string `json:"alg"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+	Crv string `json:"crv"`
+	X   string `json:"x"`
+	Y   string `json:"y"`
+}
+
+// parseJWK parses a JWK into a crypto key.
+func parseJWK(jwk JWK) (interface{}, error) {
+	switch jwk.Kty {
+	case "RSA":
+		return parseRSAKey(jwk)
+	case "EC":
+		return parseECKey(jwk)
+	default:
+		return nil, fmt.Errorf("unsupported key type: %s", jwk.Kty)
+	}
+}
+
+// parseRSAKey reconstructs an *rsa.PublicKey from a JWK (RFC 7518 §6.3.1).
+func parseRSAKey(jwk JWK) (interface{}, error) {
+	if jwk.N == "" || jwk.E == "" {
+		return nil, errors.New("RSA JWK missing n or e")
+	}
+	nBytes, err := base64.RawURLEncoding.DecodeString(jwk.N)
+	if err != nil {
+		return nil, fmt.Errorf("RSA n decode: %w", err)
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(jwk.E)
+	if err != nil {
+		return nil, fmt.Errorf("RSA e decode: %w", err)
+	}
+	e := 0
+	for _, b := range eBytes {
+		e = e<<8 | int(b)
+	}
+	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}, nil
+}
+
+// parseECKey reconstructs an *ecdsa.PublicKey from a JWK (RFC 7518 §6.2.1).
+func parseECKey(jwk JWK) (interface{}, error) {
+	if jwk.X == "" || jwk.Y == "" || jwk.Crv == "" {
+		return nil, errors.New("EC JWK missing x, y, or crv")
+	}
+	var curve elliptic.Curve
+	switch jwk.Crv {
+	case "P-256":
+		curve = elliptic.P256()
+	case "P-384":
+		curve = elliptic.P384()
+	case "P-521":
+		curve = elliptic.P521()
+	default:
+		return nil, fmt.Errorf("unsupported EC curve: %s", jwk.Crv)
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	if err != nil {
+		return nil, fmt.Errorf("EC x decode: %w", err)
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(jwk.Y)
+	if err != nil {
+		return nil, fmt.Errorf("EC y decode: %w", err)
+	}
+	return &ecdsa.PublicKey{Curve: curve, X: new(big.Int).SetBytes(xBytes), Y: new(big.Int).SetBytes(yBytes)}, nil
+}
 
 // JWKSClientConfig is the optional configuration for NewJWKSClientFromConfig.
 // Prefer NewJWKSClient unless you specifically need to override the safe
