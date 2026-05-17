@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -68,55 +70,38 @@ func makeResult() *SearchResult {
 
 func TestNew_RejectsEmptySecret(t *testing.T) {
 	t.Parallel()
-	if _, err := New(newMemStore(), time.Hour, nil); err == nil {
-		t.Fatal("expected error for empty secret; got nil")
-	}
+	_, err := New(newMemStore(), time.Hour, nil)
+	require.Error(t, err, "expected error for empty secret")
 }
 
 func TestNew_RejectsNonPositiveTTL(t *testing.T) {
 	t.Parallel()
-	if _, err := New(newMemStore(), 0, []byte("k")); err == nil {
-		t.Fatal("expected error for zero TTL; got nil")
-	}
+	_, err := New(newMemStore(), 0, []byte("k"))
+	require.Error(t, err, "expected error for zero TTL")
 }
 
 func TestNew_NilStoreReturnsNil(t *testing.T) {
 	t.Parallel()
 	c, err := New(nil, time.Hour, []byte("k"))
-	if err != nil {
-		t.Fatalf("New(nil store): %v", err)
-	}
-	if c != nil {
-		t.Errorf("expected nil cache when store is nil, got %v", c)
-	}
+	require.NoError(t, err, "New(nil store)")
+	assert.Nil(t, c, "expected nil cache when store is nil")
 }
 
 func TestCache_RoundTrip(t *testing.T) {
 	t.Parallel()
 	c, err := New(newMemStore(), time.Hour, []byte("secret-key-do-not-share"))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	require.NoError(t, err, "New")
 
 	const sig = "cursor-signature-abc"
 	const principal = "ph-deadbeef"
 
-	if err := c.Put(context.Background(), sig, principal, makeResult(), time.Hour); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
+	require.NoError(t, c.Put(context.Background(), sig, principal, makeResult(), time.Hour), "Put")
 	got, ok := c.Get(context.Background(), sig, principal)
-	if !ok {
-		t.Fatal("Get: cache miss after Put")
-	}
-	if got.TotalCount != 42 {
-		t.Errorf("TotalCount = %d, want 42", got.TotalCount)
-	}
-	if got.NextCursor != "next.sig" {
-		t.Errorf("NextCursor = %q, want %q", got.NextCursor, "next.sig")
-	}
-	if len(got.Items) != 2 || got.Items[0].ID != "item-1" {
-		t.Errorf("Items not preserved: %+v", got.Items)
-	}
+	require.True(t, ok, "Get: cache miss after Put")
+	assert.Equal(t, 42, got.TotalCount, "TotalCount")
+	assert.Equal(t, "next.sig", got.NextCursor, "NextCursor")
+	require.Len(t, got.Items, 2, "Items not preserved")
+	assert.Equal(t, "item-1", got.Items[0].ID, "Items not preserved")
 }
 
 func TestCache_PrincipalIsolation(t *testing.T) {
@@ -124,16 +109,13 @@ func TestCache_PrincipalIsolation(t *testing.T) {
 	c, _ := New(newMemStore(), time.Hour, []byte("k"))
 
 	const sig = "cursor-signature"
-	if err := c.Put(context.Background(), sig, "principal-A", makeResult(), time.Hour); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
+	require.NoError(t, c.Put(context.Background(), sig, "principal-A", makeResult(), time.Hour), "Put")
 	// Same signature, different principal → MUST miss. Defends
 	// against a leaked cache key being usable by a different
 	// principal even though the underlying cursor encoder already
 	// binds to principal.
-	if _, ok := c.Get(context.Background(), sig, "principal-B"); ok {
-		t.Error("Get: principal-B got principal-A's cached page (isolation failed)")
-	}
+	_, ok := c.Get(context.Background(), sig, "principal-B")
+	assert.False(t, ok, "Get: principal-B got principal-A's cached page (isolation failed)")
 }
 
 func TestCache_TTLCapping(t *testing.T) {
@@ -142,16 +124,12 @@ func TestCache_TTLCapping(t *testing.T) {
 
 	// Put with a remaining of 50ms — Put should use the smaller
 	// remaining value rather than the cache's default TTL.
-	if err := c.Put(context.Background(), "sig", "ph", makeResult(), 50*time.Millisecond); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	if _, ok := c.Get(context.Background(), "sig", "ph"); !ok {
-		t.Fatal("Get: should hit before TTL expiry")
-	}
+	require.NoError(t, c.Put(context.Background(), "sig", "ph", makeResult(), 50*time.Millisecond), "Put")
+	_, ok := c.Get(context.Background(), "sig", "ph")
+	require.True(t, ok, "Get: should hit before TTL expiry")
 	time.Sleep(80 * time.Millisecond)
-	if _, ok := c.Get(context.Background(), "sig", "ph"); ok {
-		t.Error("Get: should miss after capped TTL expiry")
-	}
+	_, ok = c.Get(context.Background(), "sig", "ph")
+	assert.False(t, ok, "Get: should miss after capped TTL expiry")
 }
 
 func TestCache_NoOpsWhenNonPositiveRemaining(t *testing.T) {
@@ -160,26 +138,18 @@ func TestCache_NoOpsWhenNonPositiveRemaining(t *testing.T) {
 
 	// remaining=0 → no-op (cursor already expired); cache must NOT
 	// store this entry.
-	if err := c.Put(context.Background(), "sig", "ph", makeResult(), 0); err != nil {
-		t.Fatalf("Put with 0 remaining: %v", err)
-	}
-	if _, ok := c.Get(context.Background(), "sig", "ph"); ok {
-		t.Error("Get: cache should not hold entries put with non-positive remaining")
-	}
+	require.NoError(t, c.Put(context.Background(), "sig", "ph", makeResult(), 0), "Put with 0 remaining")
+	_, ok := c.Get(context.Background(), "sig", "ph")
+	assert.False(t, ok, "Get: cache should not hold entries put with non-positive remaining")
 }
 
 func TestCache_NilSafeOps(t *testing.T) {
 	t.Parallel()
 	var c *Cache // nil
-	if _, ok := c.Get(context.Background(), "sig", "ph"); ok {
-		t.Error("nil cache Get returned a hit")
-	}
-	if err := c.Put(context.Background(), "sig", "ph", makeResult(), time.Hour); err != nil {
-		t.Errorf("nil cache Put returned an error: %v", err)
-	}
-	if got := c.TTL(); got != 0 {
-		t.Errorf("nil cache TTL = %v, want 0", got)
-	}
+	_, ok := c.Get(context.Background(), "sig", "ph")
+	assert.False(t, ok, "nil cache Get returned a hit")
+	assert.NoError(t, c.Put(context.Background(), "sig", "ph", makeResult(), time.Hour), "nil cache Put returned an error")
+	assert.Equal(t, time.Duration(0), c.TTL(), "nil cache TTL")
 }
 
 func TestSignatureOf(t *testing.T) {
@@ -189,16 +159,14 @@ func TestSignatureOf(t *testing.T) {
 		want string
 	}{
 		{"payload.signature", "signature"},
-		{"a.b.c", "c"},              // takes the LAST dot
-		{"nosignaturesplit", ""},    // no dot
-		{"trailingdot.", ""},        // signature half is empty
-		{"", ""},                    // empty
+		{"a.b.c", "c"},           // takes the LAST dot
+		{"nosignaturesplit", ""}, // no dot
+		{"trailingdot.", ""},     // signature half is empty
+		{"", ""},                 // empty
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
-			if got := SignatureOf(c.in); got != c.want {
-				t.Errorf("SignatureOf(%q) = %q, want %q", c.in, got, c.want)
-			}
+			assert.Equal(t, c.want, SignatureOf(c.in), "SignatureOf(%q)", c.in)
 		})
 	}
 }

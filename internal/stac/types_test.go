@@ -2,8 +2,10 @@ package stac
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestTypeAliasesRoundTrip is a smoke test that the library-backed
@@ -33,36 +35,18 @@ func TestTypeAliasesRoundTrip(t *testing.T) {
 	}`
 
 	var item Item
-	if err := json.Unmarshal([]byte(raw), &item); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &item))
 
-	if item.ID != "test-1" {
-		t.Errorf("ID = %q, want test-1", item.ID)
-	}
-	if len(item.Extensions) != 1 {
-		t.Fatalf("Extensions len = %d, want 1", len(item.Extensions))
-	}
-	if !strings.Contains(item.Extensions[0], "/eo/") {
-		t.Errorf("Extensions[0] = %q, want eo extension", item.Extensions[0])
-	}
-	if got := item.Properties["eo:cloud_cover"]; got != 5.5 {
-		t.Errorf("eo:cloud_cover = %v, want 5.5", got)
-	}
-	if got := item.AdditionalFields["custom:foreign"]; got != "preserved" {
-		t.Errorf("custom:foreign foreign member dropped, got %v", got)
-	}
+	assert.Equal(t, "test-1", item.ID)
+	require.Len(t, item.Extensions, 1)
+	assert.Contains(t, item.Extensions[0], "/eo/", "Extensions[0] = %q, want eo extension", item.Extensions[0])
+	assert.Equal(t, 5.5, item.Properties["eo:cloud_cover"])
+	assert.Equal(t, "preserved", item.AdditionalFields["custom:foreign"], "custom:foreign foreign member dropped")
 
 	out, err := json.Marshal(&item)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(out), `"custom:foreign":"preserved"`) {
-		t.Error("foreign member dropped on re-marshal")
-	}
-	if !strings.Contains(string(out), `"stac_extensions"`) {
-		t.Error("stac_extensions dropped on re-marshal")
-	}
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"custom:foreign":"preserved"`, "foreign member dropped on re-marshal")
+	assert.Contains(t, string(out), `"stac_extensions"`, "stac_extensions dropped on re-marshal")
 }
 
 // TestItemDatetimeHelper covers the typed helper that bridges the
@@ -90,9 +74,7 @@ func TestItemDatetimeHelper(t *testing.T) {
 			t.Parallel()
 			item := &Item{Properties: tt.props}
 			_, ok := ItemDatetime(item)
-			if ok != tt.want {
-				t.Errorf("ItemDatetime ok = %v, want %v", ok, tt.want)
-			}
+			assert.Equal(t, tt.want, ok, "ItemDatetime ok = %v, want %v", ok, tt.want)
 		})
 	}
 }
@@ -105,15 +87,11 @@ func TestForeignMemberHelpers(t *testing.T) {
 
 	item := &Item{ID: "x"}
 	SetItemForeignMember(item, "stac_proxy:origin", "origin-a")
-	if item.AdditionalFields["stac_proxy:origin"] != "origin-a" {
-		t.Errorf("item foreign member not set")
-	}
+	assert.Equal(t, "origin-a", item.AdditionalFields["stac_proxy:origin"], "item foreign member not set")
 
 	coll := &Collection{ID: "x"}
 	SetCollectionForeignMember(coll, "stac_proxy:origin", "origin-a")
-	if coll.AdditionalFields["stac_proxy:origin"] != "origin-a" {
-		t.Errorf("collection foreign member not set")
-	}
+	assert.Equal(t, "origin-a", coll.AdditionalFields["stac_proxy:origin"], "collection foreign member not set")
 }
 
 // TestSearchContextOfHandlesMapForm verifies that SearchContextOf
@@ -126,23 +104,19 @@ func TestSearchContextOfHandlesMapForm(t *testing.T) {
 		Type:    "FeatureCollection",
 		Context: &SearchContext{Returned: 3, Matched: 10, Limit: 5},
 	}
-	if sc := SearchContextOf(fc); sc == nil || sc.Returned != 3 || sc.Matched != 10 {
-		t.Fatalf("typed: got %+v", sc)
-	}
+	sc := SearchContextOf(fc)
+	require.NotNil(t, sc, "typed: got nil")
+	assert.Equal(t, 3, sc.Returned)
+	assert.Equal(t, 10, sc.Matched)
 
 	out, _ := json.Marshal(fc)
 	var parsed FeatureCollection
-	if err := json.Unmarshal(out, &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if sc := SearchContextOf(&parsed); sc == nil || sc.Returned != 3 || sc.Matched != 10 {
-		t.Fatalf("after round-trip: got %+v", sc)
-	}
+	require.NoError(t, json.Unmarshal(out, &parsed))
+	sc = SearchContextOf(&parsed)
+	require.NotNil(t, sc, "after round-trip: got nil")
+	assert.Equal(t, 3, sc.Returned)
+	assert.Equal(t, 10, sc.Matched)
 
-	if SearchContextOf(nil) != nil {
-		t.Errorf("nil fc should yield nil context")
-	}
-	if SearchContextOf(&FeatureCollection{}) != nil {
-		t.Errorf("absent context should yield nil")
-	}
+	assert.Nil(t, SearchContextOf(nil), "nil fc should yield nil context")
+	assert.Nil(t, SearchContextOf(&FeatureCollection{}), "absent context should yield nil")
 }

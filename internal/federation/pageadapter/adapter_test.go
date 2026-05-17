@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -22,31 +24,22 @@ func fcWithNext(href string, body map[string]any) *stac.FeatureCollection {
 }
 
 func TestNew_RejectsUnknownAdapter(t *testing.T) {
-	if _, err := New(Config{Adapter: "bogus"}); err == nil {
-		t.Fatal("expected error for unknown adapter, got nil")
-	}
+	_, err := New(Config{Adapter: "bogus"})
+	require.Error(t, err, "expected error for unknown adapter")
 }
 
 func TestNew_DefaultsToAuto(t *testing.T) {
 	a, err := New(Config{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if a.Name() != "auto" {
-		t.Errorf("New(Config{}).Name() = %q, want %q", a.Name(), "auto")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "auto", a.Name(), "New(Config{}).Name()")
 }
 
 func TestKnownAdapters(t *testing.T) {
 	want := []string{"auto", "token", "next_url", "offset", "link_header"}
 	got := KnownAdapters()
-	if len(got) != len(want) {
-		t.Fatalf("KnownAdapters() len = %d, want %d", len(got), len(want))
-	}
+	require.Len(t, got, len(want), "KnownAdapters() length")
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("KnownAdapters()[%d] = %q, want %q", i, got[i], want[i])
-		}
+		assert.Equalf(t, want[i], got[i], "KnownAdapters()[%d]", i)
 	}
 }
 
@@ -67,9 +60,7 @@ func TestSameOrigin(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := SameOrigin(c.rawURL, c.baseURL); got != c.want {
-				t.Errorf("SameOrigin(%q, %q) = %v, want %v", c.rawURL, c.baseURL, got, c.want)
-			}
+			assert.Equalf(t, c.want, SameOrigin(c.rawURL, c.baseURL), "SameOrigin(%q, %q)", c.rawURL, c.baseURL)
 		})
 	}
 }
@@ -82,15 +73,9 @@ func TestToken_CapturesTokenQueryParam(t *testing.T) {
 		FC:      fcWithNext("https://api.example.com/search?token=ABC", nil),
 		BaseURL: "https://api.example.com",
 	})
-	if err != nil {
-		t.Fatalf("Capture: %v", err)
-	}
-	if st.Token != "ABC" {
-		t.Errorf("Token = %q, want %q", st.Token, "ABC")
-	}
-	if st.Done {
-		t.Error("Done = true; want false (cursor present)")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "ABC", st.Token, "Token")
+	assert.False(t, st.Done, "Done; want false (cursor present)")
 }
 
 func TestToken_CapturesPOSTBodyToken(t *testing.T) {
@@ -99,12 +84,8 @@ func TestToken_CapturesPOSTBodyToken(t *testing.T) {
 		FC:      fcWithNext("https://api.example.com/search", map[string]any{"token": "PC-CURSOR"}),
 		BaseURL: "https://api.example.com",
 	})
-	if err != nil {
-		t.Fatalf("Capture: %v", err)
-	}
-	if st.Token != "PC-CURSOR" {
-		t.Errorf("Token = %q, want %q", st.Token, "PC-CURSOR")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "PC-CURSOR", st.Token, "Token")
 }
 
 func TestToken_CustomParamName(t *testing.T) {
@@ -113,9 +94,7 @@ func TestToken_CustomParamName(t *testing.T) {
 		FC:      fcWithNext("https://api.example.com/search?next=XYZ", nil),
 		BaseURL: "https://api.example.com",
 	})
-	if st.Token != "XYZ" {
-		t.Errorf("Token = %q, want %q (custom param name)", st.Token, "XYZ")
-	}
+	assert.Equal(t, "XYZ", st.Token, "Token (custom param name)")
 }
 
 func TestToken_DoneOnNoNextLink(t *testing.T) {
@@ -124,9 +103,7 @@ func TestToken_DoneOnNoNextLink(t *testing.T) {
 		FC:      &stac.FeatureCollection{},
 		BaseURL: "https://api.example.com",
 	})
-	if !st.Done {
-		t.Errorf("Done = false; want true (no next link)")
-	}
+	assert.True(t, st.Done, "Done; want true (no next link)")
 }
 
 // --- next_url adapter -----------------------------------------------
@@ -138,12 +115,8 @@ func TestNextURL_CapturesVerbatimHref(t *testing.T) {
 		FC:      fcWithNext(href, nil),
 		BaseURL: "https://earth-search.aws.element84.com/v1",
 	})
-	if err != nil {
-		t.Fatalf("Capture: %v", err)
-	}
-	if st.URL != href {
-		t.Errorf("URL = %q, want %q", st.URL, href)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, href, st.URL, "URL")
 }
 
 func TestNextURL_RejectsCrossOriginHref(t *testing.T) {
@@ -152,9 +125,7 @@ func TestNextURL_RejectsCrossOriginHref(t *testing.T) {
 		FC:      fcWithNext("https://evil.example.com/v1/search?next=x", nil),
 		BaseURL: "https://api.example.com/v1",
 	})
-	if err == nil {
-		t.Fatal("expected SSRF guard to error on cross-origin href; got nil")
-	}
+	require.Error(t, err, "expected SSRF guard to error on cross-origin href")
 }
 
 // --- offset adapter --------------------------------------------------
@@ -165,9 +136,7 @@ func TestOffset_CapturesOffset(t *testing.T) {
 		FC:      fcWithNext("https://api.example.com/search?offset=50&limit=25", nil),
 		BaseURL: "https://api.example.com",
 	})
-	if st.Offset != 50 {
-		t.Errorf("Offset = %d, want 50", st.Offset)
-	}
+	assert.Equal(t, 50, st.Offset, "Offset")
 }
 
 func TestOffset_CustomParamName(t *testing.T) {
@@ -176,9 +145,7 @@ func TestOffset_CustomParamName(t *testing.T) {
 		FC:      fcWithNext("https://api.example.com/search?page=3", nil),
 		BaseURL: "https://api.example.com",
 	})
-	if st.Offset != 3 {
-		t.Errorf("Offset = %d, want 3", st.Offset)
-	}
+	assert.Equal(t, 3, st.Offset, "Offset")
 }
 
 // --- link_header adapter --------------------------------------------
@@ -191,12 +158,8 @@ func TestLinkHeader_CapturesRelNext(t *testing.T) {
 		Header:  hdr,
 		BaseURL: "https://api.example.com/v1",
 	})
-	if err != nil {
-		t.Fatalf("Capture: %v", err)
-	}
-	if st.URL != "https://api.example.com/v1/search?offset=50" {
-		t.Errorf("URL = %q, want absolute next-page URL", st.URL)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.example.com/v1/search?offset=50", st.URL, "URL; want absolute next-page URL")
 }
 
 func TestLinkHeader_HandlesMultipleLinksPerHeader(t *testing.T) {
@@ -207,9 +170,7 @@ func TestLinkHeader_HandlesMultipleLinksPerHeader(t *testing.T) {
 		Header:  hdr,
 		BaseURL: "https://api.example.com/v1",
 	})
-	if st.URL == "" || st.URL != "https://api.example.com/v1/search?offset=50" {
-		t.Errorf("URL = %q, want the rel=next entry", st.URL)
-	}
+	assert.Equal(t, "https://api.example.com/v1/search?offset=50", st.URL, "URL; want the rel=next entry")
 }
 
 func TestLinkHeader_RejectsCrossOriginHref(t *testing.T) {
@@ -220,9 +181,7 @@ func TestLinkHeader_RejectsCrossOriginHref(t *testing.T) {
 		Header:  hdr,
 		BaseURL: "https://api.example.com/v1",
 	})
-	if err == nil {
-		t.Fatal("expected SSRF guard to error on cross-origin Link header; got nil")
-	}
+	require.Error(t, err, "expected SSRF guard to error on cross-origin Link header")
 }
 
 // --- auto adapter ---------------------------------------------------
@@ -235,15 +194,9 @@ func TestAuto_PicksTokenOverNextURL(t *testing.T) {
 		FC:      fcWithNext("https://api.example.com/search?token=ABC", nil),
 		BaseURL: "https://api.example.com",
 	})
-	if err != nil {
-		t.Fatalf("Capture: %v", err)
-	}
-	if st.AdapterName != "token" {
-		t.Errorf("AdapterName = %q, want %q (auto should prefer token over next_url)", st.AdapterName, "token")
-	}
-	if st.Token != "ABC" {
-		t.Errorf("Token = %q, want %q", st.Token, "ABC")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "token", st.AdapterName, "AdapterName; auto should prefer token over next_url")
+	assert.Equal(t, "ABC", st.Token, "Token")
 }
 
 func TestAuto_FallsBackToNextURL(t *testing.T) {
@@ -253,15 +206,9 @@ func TestAuto_FallsBackToNextURL(t *testing.T) {
 		FC:      fcWithNext("https://earth-search.example.com/v1/search?next=ABC", nil),
 		BaseURL: "https://earth-search.example.com/v1",
 	})
-	if err != nil {
-		t.Fatalf("Capture: %v", err)
-	}
-	if st.AdapterName != "next_url" {
-		t.Errorf("AdapterName = %q, want %q (auto should fall back to next_url for Earth Search shape)", st.AdapterName, "next_url")
-	}
-	if st.URL == "" {
-		t.Error("URL not captured by next_url")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "next_url", st.AdapterName, "AdapterName; auto should fall back to next_url for Earth Search shape")
+	assert.NotEmpty(t, st.URL, "URL not captured by next_url")
 }
 
 func TestAuto_DoneOnNoMatch(t *testing.T) {
@@ -270,7 +217,5 @@ func TestAuto_DoneOnNoMatch(t *testing.T) {
 		FC:      &stac.FeatureCollection{}, // no next link at all
 		BaseURL: "https://api.example.com",
 	})
-	if !st.Done {
-		t.Errorf("Done = false; want true (no next link, no match)")
-	}
+	assert.True(t, st.Done, "Done; want true (no next link, no match)")
 }

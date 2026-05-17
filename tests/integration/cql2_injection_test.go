@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
@@ -53,9 +55,7 @@ func newSingleOriginFederation(t *testing.T, upstreamURL string) *federation.Han
 		}},
 		ConflictStrategy: federation.ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("federation.NewHandler: %v", err)
-	}
+	require.NoError(t, err, "federation.NewHandler")
 	return h
 }
 
@@ -116,34 +116,19 @@ func TestIntegration_PolicyCQL2FlowsToUpstreamSingleOrigin(t *testing.T) {
 		SearchReq:   sr,
 	})
 
-	if cap.method != http.MethodPost {
-		t.Fatalf("upstream method = %q, want POST", cap.method)
-	}
-	if cap.path != "/search" {
-		t.Fatalf("upstream path = %q, want /search", cap.path)
-	}
+	require.Equal(t, http.MethodPost, cap.method, "upstream method")
+	require.Equal(t, "/search", cap.path, "upstream path")
 
 	// The upstream body should contain BOTH predicates AND-combined.
 	var body map[string]interface{}
-	if err := json.Unmarshal(cap.body, &body); err != nil {
-		t.Fatalf("upstream body not JSON: %v\n%s", err, cap.body)
-	}
+	require.NoError(t, json.Unmarshal(cap.body, &body), "upstream body not JSON: %s", cap.body)
 	filter, ok := body["filter"].(string)
-	if !ok {
-		t.Fatalf("upstream filter not a string: %T %v", body["filter"], body["filter"])
-	}
-	if !strings.Contains(filter, "eo:cloud_cover") {
-		t.Errorf("upstream missing policy predicate, got %q", filter)
-	}
-	if !strings.Contains(filter, "datetime") {
-		t.Errorf("upstream missing client predicate, got %q", filter)
-	}
-	if !strings.Contains(filter, "AND") {
-		t.Errorf("upstream filter not AND-combined: %q", filter)
-	}
-	if lang, _ := body["filter-lang"].(string); lang != "cql2-text" {
-		t.Errorf("upstream filter-lang = %q, want cql2-text", lang)
-	}
+	require.True(t, ok, "upstream filter not a string: %T %v", body["filter"], body["filter"])
+	assert.Contains(t, filter, "eo:cloud_cover", "upstream missing policy predicate")
+	assert.Contains(t, filter, "datetime", "upstream missing client predicate")
+	assert.Contains(t, filter, "AND", "upstream filter not AND-combined")
+	lang, _ := body["filter-lang"].(string)
+	assert.Equal(t, "cql2-text", lang, "upstream filter-lang")
 }
 
 func TestIntegration_GeofencePushdownThroughProxy(t *testing.T) {
@@ -185,13 +170,9 @@ func TestIntegration_GeofencePushdownThroughProxy(t *testing.T) {
 	})
 
 	var body map[string]interface{}
-	if err := json.Unmarshal(cap.body, &body); err != nil {
-		t.Fatalf("upstream body not JSON: %v\n%s", err, cap.body)
-	}
+	require.NoError(t, json.Unmarshal(cap.body, &body), "upstream body not JSON: %s", cap.body)
 	filter, _ := body["filter"].(string)
-	if !strings.Contains(strings.ToUpper(filter), "S_INTERSECTS") {
-		t.Errorf("upstream filter missing S_INTERSECTS, got %q", filter)
-	}
+	assert.Contains(t, strings.ToUpper(filter), "S_INTERSECTS", "upstream filter missing S_INTERSECTS")
 }
 
 func TestIntegration_DisabledByDefault(t *testing.T) {
@@ -217,7 +198,5 @@ func TestIntegration_DisabledByDefault(t *testing.T) {
 	})
 
 	// Body should not contain the policy filter — injection was off.
-	if strings.Contains(string(cap.body), "eo:cloud_cover") {
-		t.Errorf("policy filter leaked despite injection disabled: %s", cap.body)
-	}
+	assert.NotContains(t, string(cap.body), "eo:cloud_cover", "policy filter leaked despite injection disabled")
 }

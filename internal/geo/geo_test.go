@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/geo"
 )
 
@@ -43,12 +45,8 @@ const (
 func mustParse(t *testing.T, s string) *geo.Geometry {
 	t.Helper()
 	g, err := geo.ParseGeoJSON([]byte(s))
-	if err != nil {
-		t.Fatalf("ParseGeoJSON(%q) failed: %v", s, err)
-	}
-	if g == nil {
-		t.Fatalf("ParseGeoJSON(%q) returned nil geometry without error", s)
-	}
+	require.NoErrorf(t, err, "ParseGeoJSON(%q) failed", s)
+	require.NotNilf(t, g, "ParseGeoJSON(%q) returned nil geometry without error", s)
 	return g
 }
 
@@ -117,17 +115,11 @@ func TestParseGeoJSON_Inputs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g, err := geo.ParseGeoJSON(tc.input)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got nil (geometry=%v)", g)
-				}
+				require.Errorf(t, err, "expected error, got nil (geometry=%v)", g)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if g == nil {
-				t.Fatalf("expected non-nil geometry")
-			}
+			require.NoError(t, err, "unexpected error")
+			require.NotNil(t, g, "expected non-nil geometry")
 		})
 	}
 }
@@ -139,16 +131,11 @@ func TestParseGeoJSON_PassThroughGeometry(t *testing.T) {
 	// We accept either the same pointer or an equivalent geometry; we verify
 	// equivalence via the predicate contract (mutual Contains on identical bodies).
 	again, err := geo.ParseGeoJSON(orig)
-	if err != nil {
-		t.Fatalf("ParseGeoJSON(*Geometry) returned error: %v", err)
-	}
-	if again == nil {
-		t.Fatalf("ParseGeoJSON(*Geometry) returned nil")
-	}
+	require.NoError(t, err, "ParseGeoJSON(*Geometry) returned error")
+	require.NotNil(t, again, "ParseGeoJSON(*Geometry) returned nil")
 
-	if !orig.Contains(again) || !again.Contains(orig) {
-		t.Fatalf("expected pass-through geometry to be mutually contained with original")
-	}
+	require.Truef(t, orig.Contains(again) && again.Contains(orig),
+		"expected pass-through geometry to be mutually contained with original")
 }
 
 // --- Contains (TRUE geometric) ----------------------------------------------
@@ -157,24 +144,16 @@ func TestContains_OuterContainsInner(t *testing.T) {
 	outer := mustParse(t, outerPolygonJSON)
 	inner := mustParse(t, innerPolygonJSON)
 
-	if !outer.Contains(inner) {
-		t.Fatalf("expected outer polygon to contain inner polygon")
-	}
-	if inner.Contains(outer) {
-		t.Fatalf("expected inner polygon NOT to contain outer polygon")
-	}
+	require.True(t, outer.Contains(inner), "expected outer polygon to contain inner polygon")
+	require.False(t, inner.Contains(outer), "expected inner polygon NOT to contain outer polygon")
 }
 
 func TestContains_Disjoint(t *testing.T) {
 	a := mustParse(t, outerPolygonJSON)
 	b := mustParse(t, disjointPolygonJSON)
 
-	if a.Contains(b) {
-		t.Fatalf("expected disjoint polygons to not contain each other (a.Contains(b))")
-	}
-	if b.Contains(a) {
-		t.Fatalf("expected disjoint polygons to not contain each other (b.Contains(a))")
-	}
+	require.False(t, a.Contains(b), "expected disjoint polygons to not contain each other (a.Contains(b))")
+	require.False(t, b.Contains(a), "expected disjoint polygons to not contain each other (b.Contains(a))")
 }
 
 func TestContains_NilReceiver(t *testing.T) {
@@ -186,9 +165,7 @@ func TestContains_NilReceiver(t *testing.T) {
 
 	other := mustParse(t, innerPolygonJSON)
 	var nilGeom *geo.Geometry
-	if nilGeom.Contains(other) {
-		t.Fatalf("expected nil-receiver Contains to return false")
-	}
+	require.False(t, nilGeom.Contains(other), "expected nil-receiver Contains to return false")
 }
 
 func TestContains_NilArgument(t *testing.T) {
@@ -199,9 +176,7 @@ func TestContains_NilArgument(t *testing.T) {
 	}()
 
 	g := mustParse(t, outerPolygonJSON)
-	if g.Contains(nil) {
-		t.Fatalf("expected Contains(nil) to return false")
-	}
+	require.False(t, g.Contains(nil), "expected Contains(nil) to return false")
 }
 
 // TestContains_ConcaveBBoxFalsePositive is the behavior-shift lock-in test.
@@ -214,12 +189,10 @@ func TestContains_ConcaveBBoxFalsePositive(t *testing.T) {
 	pointInBBoxOutsideBody := mustParse(t, pointInLBBoxOutsideBodyJSON)
 	pointInsideBody := mustParse(t, pointInsideLBodyJSON)
 
-	if lShape.Contains(pointInBBoxOutsideBody) {
-		t.Fatalf("L-shape must NOT contain point (1.5,1.5) which is in the bbox but outside the body; this would indicate the old bbox-only Contains")
-	}
-	if !lShape.Contains(pointInsideBody) {
-		t.Fatalf("L-shape must contain point (0.5,0.5) which lies inside its body")
-	}
+	require.False(t, lShape.Contains(pointInBBoxOutsideBody),
+		"L-shape must NOT contain point (1.5,1.5) which is in the bbox but outside the body; this would indicate the old bbox-only Contains")
+	require.True(t, lShape.Contains(pointInsideBody),
+		"L-shape must contain point (0.5,0.5) which lies inside its body")
 }
 
 // --- Intersects (TRUE geometric) --------------------------------------------
@@ -228,21 +201,15 @@ func TestIntersects_Overlapping(t *testing.T) {
 	a := mustParse(t, outerPolygonJSON)
 	b := mustParse(t, overlappingPolygonJSON)
 
-	if !a.Intersects(b) {
-		t.Fatalf("expected overlapping polygons to intersect (a.Intersects(b))")
-	}
-	if !b.Intersects(a) {
-		t.Fatalf("expected overlapping polygons to intersect (b.Intersects(a))")
-	}
+	require.True(t, a.Intersects(b), "expected overlapping polygons to intersect (a.Intersects(b))")
+	require.True(t, b.Intersects(a), "expected overlapping polygons to intersect (b.Intersects(a))")
 }
 
 func TestIntersects_Disjoint(t *testing.T) {
 	a := mustParse(t, outerPolygonJSON)
 	b := mustParse(t, disjointPolygonJSON)
 
-	if a.Intersects(b) {
-		t.Fatalf("expected disjoint polygons to not intersect")
-	}
+	require.False(t, a.Intersects(b), "expected disjoint polygons to not intersect")
 }
 
 // TestIntersects_EdgeTouching documents whatever the library returns for two
@@ -271,16 +238,10 @@ func roundTrip(t *testing.T, src string) (orig, again *geo.Geometry) {
 	t.Helper()
 	orig = mustParse(t, src)
 	out := orig.ToGeoJSON()
-	if out == nil {
-		t.Fatalf("ToGeoJSON returned nil")
-	}
+	require.NotNil(t, out, "ToGeoJSON returned nil")
 	again, err := geo.ParseGeoJSON(out)
-	if err != nil {
-		t.Fatalf("ParseGeoJSON(ToGeoJSON(g)) failed: %v", err)
-	}
-	if again == nil {
-		t.Fatalf("ParseGeoJSON(ToGeoJSON(g)) returned nil geometry")
-	}
+	require.NoError(t, err, "ParseGeoJSON(ToGeoJSON(g)) failed")
+	require.NotNil(t, again, "ParseGeoJSON(ToGeoJSON(g)) returned nil geometry")
 	return orig, again
 }
 
@@ -288,45 +249,36 @@ func TestRoundTrip_Point(t *testing.T) {
 	orig, again := roundTrip(t, pointJSON)
 
 	// Self-Contains must hold for the round-tripped geometry.
-	if !again.Contains(again) {
-		t.Fatalf("round-tripped point does not self-contain")
-	}
+	require.True(t, again.Contains(again), "round-tripped point does not self-contain")
 
 	// Predicate equivalence against a fixed reference polygon: both should
 	// intersect the outer square (the point (1,1) is inside it).
 	ref := mustParse(t, outerPolygonJSON)
-	if orig.Intersects(ref) != again.Intersects(ref) {
-		t.Fatalf("round-tripped point disagrees with original on Intersects(ref): orig=%v again=%v",
-			orig.Intersects(ref), again.Intersects(ref))
-	}
-	if ref.Contains(orig) != ref.Contains(again) {
-		t.Fatalf("round-tripped point disagrees with original on ref.Contains: orig=%v again=%v",
-			ref.Contains(orig), ref.Contains(again))
-	}
+	assert.Equalf(t, orig.Intersects(ref), again.Intersects(ref),
+		"round-tripped point disagrees with original on Intersects(ref): orig=%v again=%v",
+		orig.Intersects(ref), again.Intersects(ref))
+	assert.Equalf(t, ref.Contains(orig), ref.Contains(again),
+		"round-tripped point disagrees with original on ref.Contains: orig=%v again=%v",
+		ref.Contains(orig), ref.Contains(again))
 }
 
 func TestRoundTrip_Polygon(t *testing.T) {
 	orig, again := roundTrip(t, innerPolygonJSON)
 
-	if !again.Contains(again) {
-		t.Fatalf("round-tripped polygon does not self-contain")
-	}
+	require.True(t, again.Contains(again), "round-tripped polygon does not self-contain")
 
 	// Reference: outer polygon. Should contain both orig and again.
 	ref := mustParse(t, outerPolygonJSON)
-	if ref.Contains(orig) != ref.Contains(again) {
-		t.Fatalf("round-tripped polygon disagrees with original on ref.Contains: orig=%v again=%v",
-			ref.Contains(orig), ref.Contains(again))
-	}
-	if orig.Intersects(ref) != again.Intersects(ref) {
-		t.Fatalf("round-tripped polygon disagrees with original on Intersects(ref): orig=%v again=%v",
-			orig.Intersects(ref), again.Intersects(ref))
-	}
+	assert.Equalf(t, ref.Contains(orig), ref.Contains(again),
+		"round-tripped polygon disagrees with original on ref.Contains: orig=%v again=%v",
+		ref.Contains(orig), ref.Contains(again))
+	assert.Equalf(t, orig.Intersects(ref), again.Intersects(ref),
+		"round-tripped polygon disagrees with original on Intersects(ref): orig=%v again=%v",
+		orig.Intersects(ref), again.Intersects(ref))
 
 	// And mutual Contains (equivalence) against the original.
-	if !orig.Contains(again) || !again.Contains(orig) {
-		t.Fatalf("expected round-tripped polygon to be mutually contained with original")
-	}
+	require.Truef(t, orig.Contains(again) && again.Contains(orig),
+		"expected round-tripped polygon to be mutually contained with original")
 }
 
 // --- BboxToGeometry ----------------------------------------------------------
@@ -336,17 +288,11 @@ func TestRoundTrip_Polygon(t *testing.T) {
 // shape) and not a MultiPolygon.
 func TestBboxToGeometry_NormalBbox_StillSinglePolygon(t *testing.T) {
 	g, err := geo.BboxToGeometry([]float64{0, 0, 10, 10})
-	if err != nil {
-		t.Fatalf("BboxToGeometry: %v", err)
-	}
+	require.NoError(t, err, "BboxToGeometry")
 	gj := g.ToGeoJSON()
 	m, ok := gj.(map[string]interface{})
-	if !ok {
-		t.Fatalf("ToGeoJSON returned %T, want map[string]interface{}", gj)
-	}
-	if m["type"] != "Polygon" {
-		t.Fatalf("type = %v, want Polygon", m["type"])
-	}
+	require.Truef(t, ok, "ToGeoJSON returned %T, want map[string]interface{}", gj)
+	require.Equalf(t, "Polygon", m["type"], "type = %v, want Polygon", m["type"])
 }
 
 // TestBboxToGeometry_AntimeridianSplit verifies that a bbox with
@@ -354,38 +300,26 @@ func TestBboxToGeometry_NormalBbox_StillSinglePolygon(t *testing.T) {
 // a MultiPolygon with two polygons (one per side of ±180).
 func TestBboxToGeometry_AntimeridianSplit(t *testing.T) {
 	g, err := geo.BboxToGeometry([]float64{170, -10, -170, 10})
-	if err != nil {
-		t.Fatalf("BboxToGeometry: %v", err)
-	}
+	require.NoError(t, err, "BboxToGeometry")
 	gj := g.ToGeoJSON()
 	// The library may emit the geometry as either a MultiPolygon (if it
 	// preserves the input shape) or as a GeometryCollection. We only
 	// require that it round-trip *as* a MultiPolygon since that is the
 	// shape we constructed.
 	raw, err := json.Marshal(gj)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var probe struct {
 		Type        string          `json:"type"`
 		Coordinates [][][][]float64 `json:"coordinates"`
 	}
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		t.Fatalf("unmarshal: %v; raw=%s", err, raw)
-	}
-	if probe.Type != "MultiPolygon" {
-		t.Fatalf("type = %q, want MultiPolygon; raw=%s", probe.Type, raw)
-	}
-	if got := len(probe.Coordinates); got != 2 {
-		t.Fatalf("expected 2 polygons in MultiPolygon, got %d; raw=%s", got, raw)
-	}
+	require.NoErrorf(t, json.Unmarshal(raw, &probe), "unmarshal; raw=%s", raw)
+	require.Equalf(t, "MultiPolygon", probe.Type, "type = %q, want MultiPolygon; raw=%s", probe.Type, raw)
+	require.Lenf(t, probe.Coordinates, 2, "expected 2 polygons in MultiPolygon, got %d; raw=%s", len(probe.Coordinates), raw)
 }
 
 // TestBboxToGeometry_LatitudeStillRejected ensures we don't accidentally
 // also "wrap" latitude — minY > maxY remains an error.
 func TestBboxToGeometry_LatitudeStillRejected(t *testing.T) {
 	_, err := geo.BboxToGeometry([]float64{0, 10, 10, -10})
-	if err == nil {
-		t.Fatal("expected error for minY > maxY, got nil")
-	}
+	require.Error(t, err, "expected error for minY > maxY, got nil")
 }

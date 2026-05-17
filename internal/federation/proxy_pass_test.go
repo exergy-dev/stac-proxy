@@ -4,11 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
@@ -28,9 +29,7 @@ func newFederationOfOne(t *testing.T, upstreamURL string) *Handler {
 		}},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 	return h
 }
 
@@ -57,17 +56,11 @@ func TestHandle_StripsHopByHopHeadersFromUpstream(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(stacReq.Context, stacReq)
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	require.NoError(t, err, "Handle")
 	for _, name := range []string{"Connection", "Keep-Alive", "Transfer-Encoding", "Proxy-Connection"} {
-		if v := resp.Headers.Get(name); v != "" {
-			t.Errorf("hop-by-hop header %s leaked from upstream: %q", name, v)
-		}
+		assert.Emptyf(t, resp.Headers.Get(name), "hop-by-hop header %s leaked from upstream", name)
 	}
-	if v := resp.Headers.Get("X-Custom"); v != "kept" {
-		t.Errorf("end-to-end header X-Custom dropped: %q", v)
-	}
+	assert.Equal(t, "kept", resp.Headers.Get("X-Custom"), "end-to-end header X-Custom dropped")
 }
 
 // TestHandle_StripsConnectionListedHeaders verifies hop-by-hop hygiene
@@ -86,12 +79,8 @@ func TestHandle_StripsConnectionListedHeaders(t *testing.T) {
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeQueryables,
 	})
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if v := resp.Headers.Get("X-Private"); v != "" {
-		t.Errorf("Connection-listed header X-Private leaked: %q", v)
-	}
+	require.NoError(t, err, "Handle")
+	assert.Empty(t, resp.Headers.Get("X-Private"), "Connection-listed header X-Private leaked")
 }
 
 // TestHandle_ETagPassesThrough verifies M-14: caching/validation
@@ -116,17 +105,13 @@ func TestHandle_ETagPassesThrough(t *testing.T) {
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeQueryables,
 	})
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	require.NoError(t, err, "Handle")
 	for k, want := range map[string]string{
 		"ETag":          `"v42"`,
 		"Last-Modified": "Tue, 12 May 2026 12:00:00 GMT",
 		"Cache-Control": "max-age=60, public",
 	} {
-		if got := resp.Headers.Get(k); got != want {
-			t.Errorf("%s: want %q, got %q", k, want, got)
-		}
+		assert.Equalf(t, want, resp.Headers.Get(k), "%s mismatch", k)
 	}
 }
 
@@ -151,18 +136,10 @@ func TestHandle_SetsXForwardedHeaders(t *testing.T) {
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeCollections,
 	})
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if got := seen.Get("X-Forwarded-For"); !strings.Contains(got, "203.0.113.10") {
-		t.Errorf("X-Forwarded-For: want 203.0.113.10, got %q", got)
-	}
-	if got := seen.Get("X-Forwarded-Host"); got != "edge.example.com" {
-		t.Errorf("X-Forwarded-Host: want edge.example.com, got %q", got)
-	}
-	if got := seen.Get("X-Forwarded-Proto"); got != "http" {
-		t.Errorf("X-Forwarded-Proto: want http, got %q", got)
-	}
+	require.NoError(t, err, "Handle")
+	assert.Containsf(t, seen.Get("X-Forwarded-For"), "203.0.113.10", "X-Forwarded-For")
+	assert.Equal(t, "edge.example.com", seen.Get("X-Forwarded-Host"), "X-Forwarded-Host")
+	assert.Equal(t, "http", seen.Get("X-Forwarded-Proto"), "X-Forwarded-Proto")
 }
 
 // --- C4 / H6 regression tests ----------------------------------------------
@@ -185,19 +162,16 @@ func TestHandle_StripsAuthorizationHeader(t *testing.T) {
 	httpReq := httptest.NewRequest("GET", "/", nil)
 	httpReq.Header.Set("Authorization", "Bearer client-user-token")
 
-	if _, err := handler.Handle(context.Background(), &request{
+	_, err := handler.Handle(context.Background(), &request{
 		Request:     httpReq,
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeQueryables,
-	}); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	})
+	require.NoError(t, err, "Handle")
 
 	seen.RLock()
 	defer seen.RUnlock()
-	if got != "" {
-		t.Errorf("Authorization leaked upstream: %q", got)
-	}
+	assert.Emptyf(t, got, "Authorization leaked upstream: %q", got)
 }
 
 // TestHandle_StripsCookieHeader (C4).
@@ -216,19 +190,16 @@ func TestHandle_StripsCookieHeader(t *testing.T) {
 	httpReq := httptest.NewRequest("GET", "/", nil)
 	httpReq.Header.Set("Cookie", "session=abc123")
 
-	if _, err := handler.Handle(context.Background(), &request{
+	_, err := handler.Handle(context.Background(), &request{
 		Request:     httpReq,
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeQueryables,
-	}); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	})
+	require.NoError(t, err, "Handle")
 
 	seen.RLock()
 	defer seen.RUnlock()
-	if got != "" {
-		t.Errorf("Cookie leaked upstream: %q", got)
-	}
+	assert.Emptyf(t, got, "Cookie leaked upstream: %q", got)
 }
 
 // TestHandle_StripsXAPIKeyHeader (C4).
@@ -247,19 +218,16 @@ func TestHandle_StripsXAPIKeyHeader(t *testing.T) {
 	httpReq := httptest.NewRequest("GET", "/", nil)
 	httpReq.Header.Set("X-Api-Key", "client-supplied-key")
 
-	if _, err := handler.Handle(context.Background(), &request{
+	_, err := handler.Handle(context.Background(), &request{
 		Request:     httpReq,
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeQueryables,
-	}); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	})
+	require.NoError(t, err, "Handle")
 
 	seen.RLock()
 	defer seen.RUnlock()
-	if got != "" {
-		t.Errorf("X-Api-Key leaked upstream: %q", got)
-	}
+	assert.Emptyf(t, got, "X-Api-Key leaked upstream: %q", got)
 }
 
 // TestHandle_ForwardsAuthWhenConfigured (C4 opt-in).
@@ -286,25 +254,20 @@ func TestHandle_ForwardsAuthWhenConfigured(t *testing.T) {
 		}},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	httpReq := httptest.NewRequest("GET", "/", nil)
 	httpReq.Header.Set("Authorization", "Bearer client-user-token")
-	if _, err := handler.Handle(context.Background(), &request{
+	_, err = handler.Handle(context.Background(), &request{
 		Request:     httpReq,
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeQueryables,
-	}); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	})
+	require.NoError(t, err, "Handle")
 
 	seen.RLock()
 	defer seen.RUnlock()
-	if got != "Bearer client-user-token" {
-		t.Errorf("Authorization not forwarded when ForwardUserIdentity=true: got %q", got)
-	}
+	assert.Equalf(t, "Bearer client-user-token", got, "Authorization not forwarded when ForwardUserIdentity=true")
 }
 
 // TestFanOutSearch_PanicRecovery (H6): a panic inside one origin's
@@ -340,9 +303,7 @@ func TestFanOutSearch_PanicRecovery(t *testing.T) {
 		ConflictStrategy: ConflictPriorityWins,
 		AggregateTimeout: 5 * time.Second,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 	// Replace the "bad" origin's transport with one that panics.
 	h.origins["bad"].transport = panicRoundTripper{}
 
@@ -356,12 +317,8 @@ func TestFanOutSearch_PanicRecovery(t *testing.T) {
 		RequestType: middleware.RequestTypeSearch,
 		SearchReq:   searchReq,
 	})
-	if err != nil {
-		t.Fatalf("Handle returned error after panic: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (panic should not propagate)", resp.StatusCode)
-	}
+	require.NoError(t, err, "Handle returned error after panic")
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "status; want 200 (panic should not propagate)")
 }
 
 // panicRoundTripper panics from inside RoundTrip — used to exercise
@@ -416,27 +373,19 @@ func TestReverseProxy_OversizedUpstreamReturns502(t *testing.T) {
 		}},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	resp, err := handler.Handle(context.Background(), &request{
 		Request:     httptest.NewRequest("GET", "/queryables", nil),
 		Context:     context.Background(),
 		RequestType: middleware.RequestTypeQueryables,
 	})
-	if err != nil {
-		t.Fatalf("Handle returned error: %v", err)
-	}
+	require.NoError(t, err, "Handle returned error")
 
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("status = %d, want %d (oversized upstream must surface 502)", resp.StatusCode, http.StatusBadGateway)
-	}
+	assert.Equalf(t, http.StatusBadGateway, resp.StatusCode, "status (oversized upstream must surface 502)")
 
 	// The proxy must not have buffered the full upstream body. Even
 	// allowing for the small JSON error envelope, the response body
 	// MUST be far below the upstream's 1 MiB.
-	if len(resp.Body) > maxCap {
-		t.Errorf("response body length %d exceeds cap %d — capture was not bounded", len(resp.Body), maxCap)
-	}
+	assert.LessOrEqualf(t, len(resp.Body), maxCap, "response body length %d exceeds cap %d — capture was not bounded", len(resp.Body), maxCap)
 }

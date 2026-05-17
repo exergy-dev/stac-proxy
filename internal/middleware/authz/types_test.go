@@ -4,6 +4,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 )
 
@@ -18,9 +19,7 @@ func TestBuildAuthzInput_ReadsClientIPFromContext(t *testing.T) {
 	r = r.WithContext(ctx)
 
 	input := BuildAuthzInput(r, nil, nil)
-	if got, want := input.Request.ClientIP, "1.2.3.4"; got != want {
-		t.Fatalf("ClientIP: got %q, want %q (must come from ClientIPKey, not RemoteAddr)", got, want)
-	}
+	require.Equal(t, "1.2.3.4", input.Request.ClientIP, "ClientIP must come from ClientIPKey, not RemoteAddr")
 }
 
 // TestBuildAuthzInput_FallbackStripsPort ensures that when no
@@ -31,9 +30,7 @@ func TestBuildAuthzInput_FallbackStripsPort(t *testing.T) {
 	r.RemoteAddr = "10.0.0.1:54321"
 
 	input := BuildAuthzInput(r, nil, nil)
-	if got, want := input.Request.ClientIP, "10.0.0.1"; got != want {
-		t.Fatalf("ClientIP fallback: got %q, want %q", got, want)
-	}
+	require.Equal(t, "10.0.0.1", input.Request.ClientIP, "ClientIP fallback")
 }
 
 // TestExtractHeaders_AllowlistOnly verifies M-authz-5: only headers
@@ -43,27 +40,28 @@ func TestBuildAuthzInput_FallbackStripsPort(t *testing.T) {
 // happily forwarded e.g. X-Custom-Token to OPA / audit logs.
 func TestExtractHeaders_AllowlistOnly(t *testing.T) {
 	headers := map[string][]string{
-		"User-Agent":      {"curl/7.0"},
-		"Authorization":   {"Bearer secret"},
-		"X-Custom-Token":  {"super-secret"},
-		"X-Auth-Token":    {"another-secret"},
-		"Accept":          {"application/json"},
-		"Cookie":          {"session=abc"},
+		"User-Agent":          {"curl/7.0"},
+		"Authorization":       {"Bearer secret"},
+		"X-Custom-Token":      {"super-secret"},
+		"X-Auth-Token":        {"another-secret"},
+		"Accept":              {"application/json"},
+		"Cookie":              {"session=abc"},
 		"Proxy-Authorization": {"Basic xxx"},
 	}
 
 	got := extractHeaders(headers)
 
-	if v, ok := got["User-Agent"]; !ok || v != "curl/7.0" {
-		t.Fatalf("want User-Agent in output, got %v", got)
-	}
-	if v, ok := got["Accept"]; !ok || v != "application/json" {
-		t.Fatalf("want Accept in output, got %v", got)
-	}
+	v, ok := got["User-Agent"]
+	require.True(t, ok, "want User-Agent in output, got %v", got)
+	require.Equal(t, "curl/7.0", v, "want User-Agent in output, got %v", got)
+
+	v, ok = got["Accept"]
+	require.True(t, ok, "want Accept in output, got %v", got)
+	require.Equal(t, "application/json", v, "want Accept in output, got %v", got)
+
 	for _, banned := range []string{"Authorization", "X-Custom-Token", "X-Auth-Token", "Cookie", "Proxy-Authorization"} {
-		if _, present := got[banned]; present {
-			t.Fatalf("%s must NOT be forwarded by allowlist; got %v", banned, got)
-		}
+		_, present := got[banned]
+		require.False(t, present, "%s must NOT be forwarded by allowlist; got %v", banned, got)
 	}
 }
 
@@ -75,13 +73,13 @@ func TestConfigureHeaderAllowlist_Extends(t *testing.T) {
 	ConfigureHeaderAllowlist([]string{"X-Tenant-Id"})
 
 	got := extractHeaders(map[string][]string{
-		"X-Tenant-Id":    {"acme"},
-		"Authorization":  {"Bearer secret"},
+		"X-Tenant-Id":   {"acme"},
+		"Authorization": {"Bearer secret"},
 	})
-	if v, ok := got["X-Tenant-Id"]; !ok || v != "acme" {
-		t.Fatalf("want extended X-Tenant-Id, got %v", got)
-	}
-	if _, ok := got["Authorization"]; ok {
-		t.Fatalf("Authorization must remain dropped after extending allowlist; got %v", got)
-	}
+	v, ok := got["X-Tenant-Id"]
+	require.True(t, ok, "want extended X-Tenant-Id, got %v", got)
+	require.Equal(t, "acme", v, "want extended X-Tenant-Id, got %v", got)
+
+	_, ok = got["Authorization"]
+	require.False(t, ok, "Authorization must remain dropped after extending allowlist; got %v", got)
 }

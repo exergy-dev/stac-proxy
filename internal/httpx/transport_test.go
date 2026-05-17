@@ -2,7 +2,6 @@ package httpx
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeRT is a per-test http.RoundTripper that drives a sequence of
@@ -66,12 +68,8 @@ func newPOST(t *testing.T, body string) *http.Request {
 		http.MethodPost, "http://example/test",
 		strings.NewReader(body),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := BufferAndSetGetBody(req); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, BufferAndSetGetBody(req))
 	return req
 }
 
@@ -94,19 +92,11 @@ func TestRetryTransport_503ThenSuccess_ReplaysPOSTBody(t *testing.T) {
 
 	req := newPOST(t, "hello")
 	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("got %d, want 200", resp.StatusCode)
-	}
-	if len(f.bodies) != 2 {
-		t.Fatalf("expected 2 attempts, got %d", len(f.bodies))
-	}
+	require.NoError(t, err, "unexpected err")
+	require.Equal(t, 200, resp.StatusCode)
+	require.Len(t, f.bodies, 2, "expected 2 attempts")
 	for i, b := range f.bodies {
-		if b != "hello" {
-			t.Errorf("attempt %d saw body %q, want %q", i, b, "hello")
-		}
+		assert.Equal(t, "hello", b, "attempt %d body", i)
 	}
 }
 
@@ -124,13 +114,9 @@ func TestRetryTransport_RetryAfterZero_NoDelay(t *testing.T) {
 	start := time.Now()
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
 	dur := time.Since(start)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	resp.Body.Close()
-	if dur > 500*time.Millisecond {
-		t.Fatalf("Retry-After: 0 should be near-instant; took %s", dur)
-	}
+	require.LessOrEqual(t, dur, 500*time.Millisecond, "Retry-After: 0 should be near-instant; took %s", dur)
 }
 
 func TestRetryTransport_RetryAfterOne_Honored(t *testing.T) {
@@ -147,13 +133,9 @@ func TestRetryTransport_RetryAfterOne_Honored(t *testing.T) {
 	start := time.Now()
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
 	dur := time.Since(start)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	resp.Body.Close()
-	if dur < 900*time.Millisecond {
-		t.Fatalf("Retry-After: 1 should wait ~1s; took %s", dur)
-	}
+	require.GreaterOrEqual(t, dur, 900*time.Millisecond, "Retry-After: 1 should wait ~1s; took %s", dur)
 }
 
 func TestRetryTransport_GivesUpAfterMaxRetries(t *testing.T) {
@@ -169,16 +151,10 @@ func TestRetryTransport_GivesUpAfterMaxRetries(t *testing.T) {
 		RetryNonIdempotent: true,
 	})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
-	if err != nil {
-		t.Fatalf("retry exhaustion should surface the final response, not an error: %v", err)
-	}
+	require.NoError(t, err, "retry exhaustion should surface the final response, not an error")
 	resp.Body.Close()
-	if resp.StatusCode != 503 {
-		t.Fatalf("final status = %d, want 503", resp.StatusCode)
-	}
-	if int(f.attempt.Load()) != 3 {
-		t.Fatalf("attempts = %d, want 3", f.attempt.Load())
-	}
+	require.Equal(t, 503, resp.StatusCode, "final status")
+	require.Equal(t, int32(3), f.attempt.Load(), "attempts")
 }
 
 func TestRetryTransport_NoRetryOn4xx(t *testing.T) {
@@ -192,15 +168,9 @@ func TestRetryTransport_NoRetryOn4xx(t *testing.T) {
 		RetryNonIdempotent: true,
 	})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != 404 {
-		t.Fatalf("got %d, want 404", resp.StatusCode)
-	}
-	if int(f.attempt.Load()) != 1 {
-		t.Fatalf("attempts = %d, want 1", f.attempt.Load())
-	}
+	require.NoError(t, err)
+	require.Equal(t, 404, resp.StatusCode)
+	require.Equal(t, int32(1), f.attempt.Load(), "attempts")
 }
 
 func TestRetryTransport_NoRetryOn200(t *testing.T) {
@@ -212,15 +182,9 @@ func TestRetryTransport_NoRetryOn200(t *testing.T) {
 		RetryNonIdempotent: true,
 	})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("got %d, want 200", resp.StatusCode)
-	}
-	if int(f.attempt.Load()) != 1 {
-		t.Fatalf("attempts = %d, want 1", f.attempt.Load())
-	}
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, int32(1), f.attempt.Load(), "attempts")
 }
 
 func TestRetryTransport_ContextCancellationAbortsBackoff(t *testing.T) {
@@ -238,12 +202,8 @@ func TestRetryTransport_ContextCancellationAbortsBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://example/test", strings.NewReader("x"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := BufferAndSetGetBody(req); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, BufferAndSetGetBody(req))
 
 	// Cancel shortly after the call starts.
 	go func() {
@@ -256,14 +216,10 @@ func TestRetryTransport_ContextCancellationAbortsBackoff(t *testing.T) {
 	dur := time.Since(start)
 	if err == nil {
 		resp.Body.Close()
-		t.Fatal("expected context cancellation error")
+		require.Fail(t, "expected context cancellation error")
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want context.Canceled", err)
-	}
-	if dur > 400*time.Millisecond {
-		t.Fatalf("cancellation should abort the 500ms backoff fast; took %s", dur)
-	}
+	require.ErrorIs(t, err, context.Canceled)
+	require.LessOrEqual(t, dur, 400*time.Millisecond, "cancellation should abort the 500ms backoff fast; took %s", dur)
 }
 
 func TestRetryTransport_CustomRetryOn(t *testing.T) {
@@ -280,15 +236,9 @@ func TestRetryTransport_CustomRetryOn(t *testing.T) {
 		RetryNonIdempotent: true,
 	})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("got %d, want 200", resp.StatusCode)
-	}
-	if int(f.attempt.Load()) != 2 {
-		t.Fatalf("attempts = %d, want 2", f.attempt.Load())
-	}
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, int32(2), f.attempt.Load(), "attempts")
 }
 
 func TestRetryTransport_ZeroMaxRetries_PassesThrough(t *testing.T) {
@@ -297,15 +247,9 @@ func TestRetryTransport_ZeroMaxRetries_PassesThrough(t *testing.T) {
 	f := &fakeRT{responses: []fakeResp{{status: 503}}}
 	rt := NewRetryTransport(f, RetryConfig{MaxRetries: 0})
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != 503 {
-		t.Fatalf("got %d, want 503 (no retry)", resp.StatusCode)
-	}
-	if int(f.attempt.Load()) != 1 {
-		t.Fatalf("attempts = %d, want 1", f.attempt.Load())
-	}
+	require.NoError(t, err)
+	require.Equal(t, 503, resp.StatusCode, "no retry")
+	require.Equal(t, int32(1), f.attempt.Load(), "attempts")
 }
 
 // TestRetryTransport_DoesNotRetryPOSTByDefault (HIGH H-httpx-1):
@@ -338,25 +282,15 @@ func TestRetryTransport_DoesNotRetryPOSTByDefault(t *testing.T) {
 	})
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader("payload"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := BufferAndSetGetBody(req); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, BufferAndSetGetBody(req))
 
 	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
+	require.NoError(t, err, "unexpected err")
 	resp.Body.Close()
 
-	if got := int(hits.Load()); got != 1 {
-		t.Errorf("upstream attempts = %d, want 1 (POST must not be retried by default)", got)
-	}
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want %d (first failure surfaced as-is)", resp.StatusCode, http.StatusServiceUnavailable)
-	}
+	assert.Equal(t, int32(1), hits.Load(), "upstream attempts (POST must not be retried by default)")
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "first failure surfaced as-is")
 }
 
 // TestRetryTransport_RetriesPOSTWhenOptedIn covers the opt-in path:
@@ -382,25 +316,15 @@ func TestRetryTransport_RetriesPOSTWhenOptedIn(t *testing.T) {
 	})
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader("payload"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := BufferAndSetGetBody(req); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, BufferAndSetGetBody(req))
 
 	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
+	require.NoError(t, err, "unexpected err")
 	resp.Body.Close()
 
-	if got := int(hits.Load()); got != 2 {
-		t.Errorf("upstream attempts = %d, want 2 (POST should retry when opted in)", got)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200 (retry recovered)", resp.StatusCode)
-	}
+	assert.Equal(t, int32(2), hits.Load(), "upstream attempts (POST should retry when opted in)")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "retry recovered")
 }
 
 // TestRetryTransport_StillRetriesGETByDefault is a sanity check: the
@@ -425,66 +349,38 @@ func TestRetryTransport_StillRetriesGETByDefault(t *testing.T) {
 	})
 
 	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
+	require.NoError(t, err, "unexpected err")
 	resp.Body.Close()
 
-	if got := int(hits.Load()); got != 2 {
-		t.Errorf("upstream attempts = %d, want 2 (GET should still retry)", got)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
-	}
+	assert.Equal(t, int32(2), hits.Load(), "upstream attempts (GET should still retry)")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestBufferAndSetGetBody(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, "http://x", strings.NewReader("payload"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := BufferAndSetGetBody(req); err != nil {
-		t.Fatal(err)
-	}
-	if req.GetBody == nil {
-		t.Fatal("GetBody not installed")
-	}
-	if req.ContentLength != int64(len("payload")) {
-		t.Fatalf("ContentLength = %d, want %d", req.ContentLength, len("payload"))
-	}
+	require.NoError(t, err)
+	require.NoError(t, BufferAndSetGetBody(req))
+	require.NotNil(t, req.GetBody, "GetBody not installed")
+	require.Equal(t, int64(len("payload")), req.ContentLength, "ContentLength")
 
 	// Drain the first body.
 	b1, _ := io.ReadAll(req.Body)
-	if string(b1) != "payload" {
-		t.Fatalf("first body = %q", b1)
-	}
+	require.Equal(t, "payload", string(b1), "first body")
 
 	// Replay via GetBody twice.
 	for i := 0; i < 2; i++ {
 		rc, err := req.GetBody()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		b, _ := io.ReadAll(rc)
-		if string(b) != "payload" {
-			t.Fatalf("replay %d body = %q", i, b)
-		}
+		require.Equal(t, "payload", string(b), "replay %d body", i)
 	}
 }
 
 func TestBufferAndSetGetBody_NilBody(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "http://x", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := BufferAndSetGetBody(req); err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if req.GetBody != nil {
-		t.Fatal("GetBody should not be set for nil body")
-	}
+	require.NoError(t, err)
+	require.NoError(t, BufferAndSetGetBody(req), "unexpected err")
+	require.Nil(t, req.GetBody, "GetBody should not be set for nil body")
 }

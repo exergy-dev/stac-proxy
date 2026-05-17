@@ -1,10 +1,12 @@
 package cache
 
 import (
-	"bytes"
 	"context"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // MemoryStore is now a thin adapter over hashicorp/golang-lru/v2.
@@ -18,17 +20,13 @@ func TestMemoryStore_GetSet_RoundTrip(t *testing.T) {
 	defer store.Close()
 
 	ctx := context.Background()
-	if err := store.Set(ctx, "k", []byte("v"), time.Minute); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.Set(ctx, "k", []byte("v"), time.Minute))
 	got, ok := store.Get(ctx, "k")
-	if !ok || string(got) != "v" {
-		t.Fatalf("got=%q ok=%v", got, ok)
-	}
+	require.True(t, ok, "expected hit for key 'k'")
+	require.Equal(t, "v", string(got))
 
-	if _, ok := store.Get(ctx, "missing"); ok {
-		t.Fatal("missing key reported hit")
-	}
+	_, ok = store.Get(ctx, "missing")
+	require.False(t, ok, "missing key reported hit")
 }
 
 func TestMemoryStore_GetReturnsIndependentCopy(t *testing.T) {
@@ -46,9 +44,7 @@ func TestMemoryStore_GetReturnsIndependentCopy(t *testing.T) {
 		first[i] = 'x'
 	}
 	second, _ := store.Get(ctx, "k")
-	if !bytes.Equal(second, []byte("hello")) {
-		t.Fatalf("Get returned a shared buffer; second=%q", second)
-	}
+	require.Equal(t, []byte("hello"), second, "Get returned a shared buffer")
 }
 
 func TestMemoryStore_SetCopiesInput(t *testing.T) {
@@ -62,9 +58,7 @@ func TestMemoryStore_SetCopiesInput(t *testing.T) {
 		buf[i] = 'x'
 	}
 	got, _ := store.Get(ctx, "k")
-	if !bytes.Equal(got, []byte("hello")) {
-		t.Fatalf("Set captured a shared reference; got=%q", got)
-	}
+	require.Equal(t, []byte("hello"), got, "Set captured a shared reference")
 }
 
 func TestMemoryStore_TTLExpiry(t *testing.T) {
@@ -74,18 +68,15 @@ func TestMemoryStore_TTLExpiry(t *testing.T) {
 
 	_ = store.Set(ctx, "k", []byte("v"), 5*time.Millisecond)
 	time.Sleep(20 * time.Millisecond)
-	if _, ok := store.Get(ctx, "k"); ok {
-		t.Fatal("expired entry returned a hit")
-	}
+	_, ok := store.Get(ctx, "k")
+	assert.False(t, ok, "expired entry returned a hit")
 }
 
 func TestMemoryStore_DefaultMaxSize(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryStore(MemoryConfig{MaxSize: 0})
 	defer store.Close()
-	if err := store.Set(context.Background(), "k", []byte("v"), time.Minute); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.Set(context.Background(), "k", []byte("v"), time.Minute))
 }
 
 func TestMemoryStore_DeleteAndClear(t *testing.T) {
@@ -96,14 +87,11 @@ func TestMemoryStore_DeleteAndClear(t *testing.T) {
 	_ = store.Set(ctx, "a", []byte("1"), time.Minute)
 	_ = store.Set(ctx, "b", []byte("2"), time.Minute)
 	_ = store.Delete(ctx, "a")
-	if _, ok := store.Get(ctx, "a"); ok {
-		t.Fatal("deleted key still present")
-	}
-	if _, ok := store.Get(ctx, "b"); !ok {
-		t.Fatal("non-deleted key missing")
-	}
+	_, ok := store.Get(ctx, "a")
+	require.False(t, ok, "deleted key still present")
+	_, ok = store.Get(ctx, "b")
+	require.True(t, ok, "non-deleted key missing")
 	_ = store.Clear(ctx)
-	if _, ok := store.Get(ctx, "b"); ok {
-		t.Fatal("clear left entries behind")
-	}
+	_, ok = store.Get(ctx, "b")
+	require.False(t, ok, "clear left entries behind")
 }

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
@@ -73,9 +75,7 @@ func newFederation(t *testing.T, opts ...originOpt) *federation.Handler {
 		MaxConcurrent:    2,
 		AggregateTimeout: 30 * time.Second,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 	return h
 }
 
@@ -128,47 +128,32 @@ func TestLive_BasicSearchMerge(t *testing.T) {
 		Limit:       50,
 	}
 	body, err := json.Marshal(searchReq)
-	if err != nil {
-		t.Fatalf("marshal search: %v", err)
-	}
+	require.NoError(t, err, "marshal search")
 
 	rr := serve(t, h,
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: searchReq},
 		http.MethodPost, "/search", bytes.NewReader(body),
 	)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
 
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &fc); err != nil {
-		t.Fatalf("decode FeatureCollection: %v\n%s", err, rr.Body.String())
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &fc), "decode FeatureCollection: %s", rr.Body.String())
 
-	if len(fc.Features) == 0 {
-		t.Fatalf("no features returned; expected items from both origins")
-	}
+	require.NotEmpty(t, fc.Features, "no features returned; expected items from both origins")
 
 	originsSeen := make(map[string]int)
 	for i, item := range fc.Features {
 		if item == nil {
-			t.Errorf("feature[%d] is nil", i)
+			assert.Failf(t, "nil feature", "feature[%d] is nil", i)
 			continue
 		}
-		if item.ID == "" {
-			t.Errorf("feature[%d] has empty ID", i)
-		}
-		if len(item.Geometry) == 0 {
-			t.Errorf("feature[%d] (%s) has empty Geometry", i, item.ID)
-		}
-		if _, ok := stac.ItemDatetime(item); !ok {
-			t.Errorf("feature[%d] (%s) has no parseable datetime", i, item.ID)
-		}
+		assert.NotEmpty(t, item.ID, "feature[%d] has empty ID", i)
+		assert.NotEmpty(t, item.Geometry, "feature[%d] (%s) has empty Geometry", i, item.ID)
+		_, ok := stac.ItemDatetime(item)
+		assert.True(t, ok, "feature[%d] (%s) has no parseable datetime", i, item.ID)
 		marker := itemOriginMarker(t, item)
-		if marker == "" {
-			t.Errorf("feature[%d] (%s) missing stac_proxy:origin marker", i, item.ID)
-		}
+		assert.NotEmpty(t, marker, "feature[%d] (%s) missing stac_proxy:origin marker", i, item.ID)
 		originsSeen[marker]++
 	}
 
@@ -176,15 +161,13 @@ func TestLive_BasicSearchMerge(t *testing.T) {
 	// of them didn't, that's a legitimate failure — the federation
 	// merge isn't actually federating.
 	for _, want := range []string{"earth-search", "planetary-computer"} {
-		if originsSeen[want] == 0 {
-			t.Errorf("no items tagged with stac_proxy:origin=%q; merge did not include this origin (origins seen: %v)", want, originsSeen)
-		}
+		assert.NotZero(t, originsSeen[want], "no items tagged with stac_proxy:origin=%q; merge did not include this origin (origins seen: %v)", want, originsSeen)
 	}
 
 	if sc := stac.SearchContextOf(&fc); sc == nil {
-		t.Error("SearchContext missing from FeatureCollection")
-	} else if sc.Returned != len(fc.Features) {
-		t.Errorf("SearchContext.Returned = %d, want %d", sc.Returned, len(fc.Features))
+		assert.Fail(t, "SearchContext missing from FeatureCollection")
+	} else {
+		assert.Equal(t, len(fc.Features), sc.Returned, "SearchContext.Returned = %d, want %d", sc.Returned, len(fc.Features))
 	}
 }
 
@@ -228,19 +211,13 @@ func TestLive_CollectionRoutingSkipsIrrelevantOrigins(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: pcOnlyReq},
 		http.MethodPost, "/search", bytes.NewReader(pcBody),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("PC-only search: status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "PC-only search: status = %d, body = %s", rr.Code, rr.Body.String())
 	var pcFC stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &pcFC); err != nil {
-		t.Fatalf("decode PC-only FC: %v\n%s", err, rr.Body.String())
-	}
-	if len(pcFC.Features) == 0 {
-		t.Errorf("PC-only search returned no features (routing may have failed)")
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &pcFC), "decode PC-only FC: %s", rr.Body.String())
+	assert.NotEmpty(t, pcFC.Features, "PC-only search returned no features (routing may have failed)")
 	for _, item := range pcFC.Features {
-		if item.Collection != "" && item.Collection != "3dep-lidar-dsm" {
-			t.Errorf("PC-only feature %s belongs to %q, want 3dep-lidar-dsm",
+		if item.Collection != "" {
+			assert.Equal(t, "3dep-lidar-dsm", item.Collection, "PC-only feature %s belongs to %q, want 3dep-lidar-dsm",
 				item.ID, item.Collection)
 		}
 	}
@@ -256,27 +233,20 @@ func TestLive_CollectionRoutingSkipsIrrelevantOrigins(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: esOnlyReq},
 		http.MethodPost, "/search", bytes.NewReader(esBody),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("ES-only search: status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "ES-only search: status = %d, body = %s", rr.Code, rr.Body.String())
 	var esFC stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &esFC); err != nil {
-		t.Fatalf("decode ES-only FC: %v\n%s", err, rr.Body.String())
-	}
-	if len(esFC.Features) == 0 {
-		t.Errorf("ES-only search returned no features (routing may have failed)")
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &esFC), "decode ES-only FC: %s", rr.Body.String())
+	assert.NotEmpty(t, esFC.Features, "ES-only search returned no features (routing may have failed)")
 	for _, item := range esFC.Features {
-		if item.Collection != "" && item.Collection != "sentinel-2-l2a" {
-			t.Errorf("ES-only feature %s belongs to %q, want sentinel-2-l2a",
+		if item.Collection != "" {
+			assert.Equal(t, "sentinel-2-l2a", item.Collection, "ES-only feature %s belongs to %q, want sentinel-2-l2a",
 				item.ID, item.Collection)
 		}
 		// Earth Search Sentinel-2 IDs follow the pattern
 		// "S2A_..." or "S2B_..." — a strong signal the response
 		// genuinely came from Earth Search rather than from PC.
-		if !strings.HasPrefix(item.ID, "S2A_") && !strings.HasPrefix(item.ID, "S2B_") {
-			t.Errorf("ES-only feature ID %q does not look like an Earth Search S2 item", item.ID)
-		}
+		assert.True(t, strings.HasPrefix(item.ID, "S2A_") || strings.HasPrefix(item.ID, "S2B_"),
+			"ES-only feature ID %q does not look like an Earth Search S2 item", item.ID)
 	}
 
 	// 3) A collection neither origin advertises → expect an empty
@@ -291,16 +261,10 @@ func TestLive_CollectionRoutingSkipsIrrelevantOrigins(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: noneReq},
 		http.MethodPost, "/search", bytes.NewReader(noneBody),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("no-match search: status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "no-match search: status = %d, body = %s", rr.Code, rr.Body.String())
 	var noneFC stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &noneFC); err != nil {
-		t.Fatalf("decode no-match FC: %v\n%s", err, rr.Body.String())
-	}
-	if len(noneFC.Features) != 0 {
-		t.Errorf("no-match search returned %d features, want 0", len(noneFC.Features))
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &noneFC), "decode no-match FC: %s", rr.Body.String())
+	assert.Len(t, noneFC.Features, 0, "no-match search returned %d features, want 0", len(noneFC.Features))
 }
 
 // TestLive_CollectionsAggregate hits /collections and verifies both
@@ -327,9 +291,7 @@ func TestLive_CollectionsAggregate(t *testing.T) {
 		http.MethodGet, "/collections", nil,
 	)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
 
 	// Decode into a generic shape to avoid the library's
 	// dual-pass UnmarshalJSON on stac.Collection (see test
@@ -337,18 +299,15 @@ func TestLive_CollectionsAggregate(t *testing.T) {
 	var resp struct {
 		Collections []map[string]any `json:"collections"`
 	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode CollectionsResponse: %v\n%s", err, rr.Body.String())
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp), "decode CollectionsResponse: %s", rr.Body.String())
 
 	// Sanity floor: PC alone publishes far more than this. If the
 	// total is suspiciously small, one origin probably didn't
 	// contribute at all.
 	const sanityFloor = 30
-	if len(resp.Collections) < sanityFloor {
-		t.Errorf("got %d collections, want > %d (one origin may not have contributed)",
-			len(resp.Collections), sanityFloor)
-	}
+	assert.Greater(t, len(resp.Collections), sanityFloor,
+		"got %d collections, want > %d (one origin may not have contributed)",
+		len(resp.Collections), sanityFloor)
 
 	originsSeen := make(map[string]int)
 	idCounts := make(map[string]int)
@@ -357,23 +316,20 @@ func TestLive_CollectionsAggregate(t *testing.T) {
 		idCounts[id]++
 		marker := originLinkTitle(coll)
 		if marker == "" {
-			t.Errorf("collection %q has no stac_proxy:origin link", id)
+			assert.Failf(t, "missing origin marker", "collection %q has no stac_proxy:origin link", id)
 			continue
 		}
 		originsSeen[marker]++
 	}
 
 	for _, want := range []string{"earth-search", "planetary-computer"} {
-		if originsSeen[want] == 0 {
-			t.Errorf("no collections from origin %q (origins seen: %v)", want, originsSeen)
-		}
+		assert.NotZero(t, originsSeen[want], "no collections from origin %q (origins seen: %v)", want, originsSeen)
 	}
 
 	// Both origins serve sentinel-2-l2a; dedupe must collapse it to
 	// a single entry in the response.
-	if count := idCounts["sentinel-2-l2a"]; count != 1 {
-		t.Errorf("sentinel-2-l2a appears %d times in response, want 1 (dedupe failed)", count)
-	}
+	assert.Equal(t, 1, idCounts["sentinel-2-l2a"],
+		"sentinel-2-l2a appears %d times in response, want 1 (dedupe failed)", idCounts["sentinel-2-l2a"])
 }
 
 // originLinkTitle finds the stac_proxy:origin link in a generic
@@ -408,16 +364,12 @@ func TestLive_ConformanceIntersection(t *testing.T) {
 		http.MethodGet, "/conformance", nil,
 	)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
 
 	var resp struct {
 		ConformsTo []string `json:"conformsTo"`
 	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode conformance: %v\n%s", err, rr.Body.String())
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp), "decode conformance: %s", rr.Body.String())
 
 	seen := make(map[string]bool, len(resp.ConformsTo))
 	for _, c := range resp.ConformsTo {
@@ -430,9 +382,7 @@ func TestLive_ConformanceIntersection(t *testing.T) {
 		"https://api.stacspec.org/v1.0.0/core",
 		"https://api.stacspec.org/v1.0.0/item-search",
 	} {
-		if !seen[want] {
-			t.Errorf("conformance missing required class %q", want)
-		}
+		assert.True(t, seen[want], "conformance missing required class %q", want)
 	}
 
 	// Intersection guarantee: nothing that is not in
@@ -441,9 +391,8 @@ func TestLive_ConformanceIntersection(t *testing.T) {
 	// URIs are extension *manifests*, not conformance classes, and
 	// must never leak into /conformance.
 	for _, c := range resp.ConformsTo {
-		if strings.Contains(c, "stac-extensions.github.io") {
-			t.Errorf("non-conformance extension URI leaked into /conformance: %q", c)
-		}
+		assert.False(t, strings.Contains(c, "stac-extensions.github.io"),
+			"non-conformance extension URI leaked into /conformance: %q", c)
 	}
 
 	// We do NOT pin len(resp.ConformsTo) — both providers add

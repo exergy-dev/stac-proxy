@@ -7,8 +7,8 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/pem"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"log/slog"
 	"math/big"
@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/config"
 	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
@@ -53,9 +55,7 @@ func TestNewMetricsServer_ShutdownDrainsListener(t *testing.T) {
 	// We need to bind explicitly so we know the port — ListenAndServe
 	// would block. Use a separate listener and Serve.
 	ln, err := net.Listen("tcp", srv.Addr)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -64,17 +64,15 @@ func TestNewMetricsServer_ShutdownDrainsListener(t *testing.T) {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
+	require.NoError(t, srv.Shutdown(shutdownCtx), "Shutdown")
 
 	select {
 	case err := <-serveErr:
 		if err != nil && err != http.ErrServerClosed {
-			t.Fatalf("Serve returned unexpected error: %v", err)
+			require.Failf(t, "unexpected Serve error", "Serve returned unexpected error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Serve did not return within 5s of Shutdown")
+		require.Fail(t, "Serve did not return within 5s of Shutdown")
 	}
 }
 
@@ -145,12 +143,8 @@ func TestAuthProviderWiring_AllConfiguredTypesAreActive(t *testing.T) {
 	got := make([]auth.Provider, 0, len(providersRaw))
 	for i, pCfg := range providersRaw {
 		p, err := buildAuthProvider(pCfg.(map[string]interface{}), logger)
-		if err != nil {
-			t.Fatalf("providers[%d]: %v", i, err)
-		}
-		if p == nil {
-			t.Fatalf("providers[%d]: returned nil without error", i)
-		}
+		require.NoErrorf(t, err, "providers[%d]", i)
+		require.NotNilf(t, p, "providers[%d]: returned nil without error", i)
 		got = append(got, p)
 	}
 
@@ -161,20 +155,15 @@ func TestAuthProviderWiring_AllConfiguredTypesAreActive(t *testing.T) {
 		"*auth.BasicAuthProvider",
 		"*auth.MTLSProvider",
 	}
-	if len(got) != len(wantTypes) {
-		t.Fatalf("provider count = %d, want %d", len(got), len(wantTypes))
-	}
+	require.Len(t, got, len(wantTypes), "provider count")
 	for i, p := range got {
 		typ := reflect.TypeOf(p).String()
-		if typ != wantTypes[i] {
-			t.Errorf("providers[%d] = %s, want %s", i, typ, wantTypes[i])
-		}
+		assert.Equalf(t, wantTypes[i], typ, "providers[%d]", i)
 	}
 
 	// Unknown type should produce an error rather than silently drop.
-	if _, err := buildAuthProvider(map[string]interface{}{"type": "made_up"}, logger); err == nil {
-		t.Error("expected error for unknown auth provider type, got nil")
-	}
+	_, err := buildAuthProvider(map[string]interface{}{"type": "made_up"}, logger)
+	assert.Error(t, err, "expected error for unknown auth provider type")
 }
 
 // writeSelfSignedCAForAuthTest writes a minimal self-signed CA cert
@@ -182,9 +171,7 @@ func TestAuthProviderWiring_AllConfiguredTypesAreActive(t *testing.T) {
 func writeSelfSignedCAForAuthTest(t *testing.T) string {
 	t.Helper()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("genkey: %v", err)
-	}
+	require.NoError(t, err, "genkey")
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(2),
 		Subject:               pkix.Name{CommonName: "test-ca"},
@@ -195,14 +182,10 @@ func writeSelfSignedCAForAuthTest(t *testing.T) string {
 		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
-	if err != nil {
-		t.Fatalf("createcert: %v", err)
-	}
+	require.NoError(t, err, "createcert")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ca.pem")
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
-		t.Fatalf("writefile: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600), "writefile")
 	return path
 }
 
@@ -215,9 +198,7 @@ func TestParallelShutdown_BothServersDrain(t *testing.T) {
 
 	mkServer := func() (*http.Server, net.Listener) {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("listen: %v", err)
-		}
+		require.NoError(t, err, "listen")
 		s := &http.Server{
 			Handler:           http.NewServeMux(),
 			ReadHeaderTimeout: time.Second,
@@ -255,7 +236,7 @@ func TestParallelShutdown_BothServersDrain(t *testing.T) {
 	case <-done:
 		// Success: both shut down cleanly.
 	case <-time.After(5 * time.Second):
-		t.Fatal("parallel Shutdown did not complete within 5s")
+		require.Fail(t, "parallel Shutdown did not complete within 5s")
 	}
 }
 
@@ -291,13 +272,13 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 			DefaultPageSize:     42,
 			MaxPageSize:         420,
 			Origins: []config.OriginConfig{{
-				ID:                      "primary",
-				Name:                    "Primary",
-				Description:             "An origin with every field set.",
-				BaseURL:                 "https://upstream.example.com/stac",
-				Enabled:                 true,
-				Timeout:                 13 * time.Second,
-				MaxIdleConnsPerHost:     17,
+				ID:                  "primary",
+				Name:                "Primary",
+				Description:         "An origin with every field set.",
+				BaseURL:             "https://upstream.example.com/stac",
+				Enabled:             true,
+				Timeout:             13 * time.Second,
+				MaxIdleConnsPerHost: 17,
 				Retry: &config.RetryConfig{
 					MaxRetries:     3,
 					InitialBackoff: 250 * time.Millisecond,
@@ -350,26 +331,18 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 			}},
 		},
 	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
-	}
+	require.NoError(t, cfg.Validate(), "Validate")
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	health := observability.NewHealthChecker()
 
 	handler, err := buildFederationHandler(context.Background(), cfg, logger, health, nil)
-	if err != nil {
-		t.Fatalf("buildFederationHandler: %v", err)
-	}
+	require.NoError(t, err, "buildFederationHandler")
 
-	if got, want := handler.ProxyBaseURL(), publicBaseURL; got != want {
-		t.Errorf("ProxyBaseURL = %q, want %q", got, want)
-	}
+	assert.Equal(t, publicBaseURL, handler.ProxyBaseURL(), "ProxyBaseURL")
 
 	oc := handler.OriginClient("primary")
-	if oc == nil {
-		t.Fatal("origin client 'primary' missing")
-	}
+	require.NotNil(t, oc, "origin client 'primary' missing")
 	got := oc.Origin()
 	in := cfg.Federation.Origins[0]
 
@@ -402,9 +375,7 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 		{"AssetSignTTL", got.AssetSignTTL, in.AssetSignTTL},
 	}
 	for _, c := range checks {
-		if !reflect.DeepEqual(c.got, c.expect) {
-			t.Errorf("Origin.%s = %v, want %v", c.name, c.got, c.expect)
-		}
+		assert.Equalf(t, c.expect, c.got, "Origin.%s", c.name)
 	}
 
 	// Pagination round-trip
@@ -413,14 +384,10 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 		OffsetParam: in.Pagination.OffsetParam,
 		TokenParam:  in.Pagination.TokenParam,
 	}
-	if !reflect.DeepEqual(got.Pagination, wantPag) {
-		t.Errorf("Origin.Pagination = %+v, want %+v", got.Pagination, wantPag)
-	}
+	assert.Equal(t, wantPag, got.Pagination, "Origin.Pagination")
 
 	// Retry policy round-trip
-	if got.Retry == nil {
-		t.Fatalf("Origin.Retry nil; want %+v", in.Retry)
-	}
+	require.NotNilf(t, got.Retry, "Origin.Retry nil; want %+v", in.Retry)
 	wantRetry := struct {
 		MaxRetries     int
 		InitialBackoff time.Duration
@@ -433,9 +400,7 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 		MaxBackoff     time.Duration
 		RetryOn        []int
 	}{got.Retry.MaxRetries, got.Retry.InitialBackoff, got.Retry.MaxBackoff, got.Retry.RetryOn}
-	if !reflect.DeepEqual(gotRetry, wantRetry) {
-		t.Errorf("Origin.Retry = %+v, want %+v", gotRetry, wantRetry)
-	}
+	assert.Equal(t, wantRetry, gotRetry, "Origin.Retry")
 
 	// Auth scalars
 	a := got.Auth
@@ -454,28 +419,22 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 		{"CustomHeaders", a.CustomHeaders, ia.CustomHeaders},
 	}
 	for _, c := range authChecks {
-		if !reflect.DeepEqual(c.got, c.expect) {
-			t.Errorf("Origin.Auth.%s = %v, want %v", c.name, c.got, c.expect)
-		}
+		assert.Equalf(t, c.expect, c.got, "Origin.Auth.%s", c.name)
 	}
-	if a.OAuth2 == nil {
-		t.Fatal("Origin.Auth.OAuth2 nil")
-	}
+	require.NotNil(t, a.OAuth2, "Origin.Auth.OAuth2 nil")
 	if a.OAuth2.TokenURL != ia.OAuth2.TokenURL ||
 		a.OAuth2.ClientID != ia.OAuth2.ClientID ||
 		a.OAuth2.ClientSecret != ia.OAuth2.ClientSecret ||
 		a.OAuth2.Audience != ia.OAuth2.Audience ||
 		!reflect.DeepEqual(a.OAuth2.Scopes, ia.OAuth2.Scopes) {
-		t.Errorf("Origin.Auth.OAuth2 mismatch: got %+v, want %+v", a.OAuth2, ia.OAuth2)
+		assert.Failf(t, "Origin.Auth.OAuth2 mismatch", "got %+v, want %+v", a.OAuth2, ia.OAuth2)
 	}
-	if a.AWSSigV4 == nil {
-		t.Fatal("Origin.Auth.AWSSigV4 nil — config field dropped on the floor")
-	}
+	require.NotNil(t, a.AWSSigV4, "Origin.Auth.AWSSigV4 nil — config field dropped on the floor")
 	if a.AWSSigV4.Region != ia.AWSSigV4.Region ||
 		a.AWSSigV4.Service != ia.AWSSigV4.Service ||
 		a.AWSSigV4.AccessKey != ia.AWSSigV4.AccessKey ||
 		a.AWSSigV4.SecretKey != ia.AWSSigV4.SecretKey {
-		t.Errorf("Origin.Auth.AWSSigV4 mismatch: got %+v, want %+v", a.AWSSigV4, ia.AWSSigV4)
+		assert.Failf(t, "Origin.Auth.AWSSigV4 mismatch", "got %+v, want %+v", a.AWSSigV4, ia.AWSSigV4)
 	}
 }
 
@@ -501,19 +460,13 @@ func TestBuildFederationHandler_SingleModeWiresPublicBaseURL(t *testing.T) {
 			SupportsFilterExtension: true,
 		},
 	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
-	}
+	require.NoError(t, cfg.Validate(), "Validate")
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	health := observability.NewHealthChecker()
 	handler, err := buildFederationHandler(context.Background(), cfg, logger, health, nil)
-	if err != nil {
-		t.Fatalf("buildFederationHandler: %v", err)
-	}
-	if got, want := handler.ProxyBaseURL(), publicBaseURL; got != want {
-		t.Errorf("ProxyBaseURL = %q, want %q (single-mode dropped server.public_base_url)", got, want)
-	}
+	require.NoError(t, err, "buildFederationHandler")
+	assert.Equalf(t, publicBaseURL, handler.ProxyBaseURL(), "ProxyBaseURL (single-mode dropped server.public_base_url)")
 }
 
 // newAuthWiringOIDCDiscovery spins up a minimal OIDC discovery server

@@ -5,14 +5,14 @@ import (
 
 	cql2 "github.com/exergy-dev/go-cql2"
 	_ "github.com/exergy-dev/go-cql2/codecs"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func mustParse(t *testing.T, s string) cql2.Node {
 	t.Helper()
 	n, err := cql2.Parse([]byte(s))
-	if err != nil {
-		t.Fatalf("parse %q: %v", s, err)
-	}
+	require.NoErrorf(t, err, "parse %q", s)
 	return n
 }
 
@@ -23,13 +23,11 @@ func TestEvalCQL2_NumericComparison(t *testing.T) {
 		},
 	}
 	got, err := EvalCQL2(mustParse(t, "eo:cloud_cover < 20"), item)
-	if err != nil || !got {
-		t.Fatalf("want true/nil, got %v/%v", got, err)
-	}
+	require.NoError(t, err)
+	require.True(t, got)
 	got, err = EvalCQL2(mustParse(t, "eo:cloud_cover < 10"), item)
-	if err != nil || got {
-		t.Fatalf("want false/nil, got %v/%v", got, err)
-	}
+	require.NoError(t, err)
+	require.False(t, got)
 }
 
 func TestEvalCQL2_AndOrNot(t *testing.T) {
@@ -50,13 +48,10 @@ func TestEvalCQL2_AndOrNot(t *testing.T) {
 	}
 	for _, c := range cases {
 		got, err := EvalCQL2(mustParse(t, c.expr), item)
-		if err != nil {
-			t.Errorf("%s: err=%v", c.expr, err)
+		if !assert.NoErrorf(t, err, "%s", c.expr) {
 			continue
 		}
-		if got != c.want {
-			t.Errorf("%s: got=%v want=%v", c.expr, got, c.want)
-		}
+		assert.Equalf(t, c.want, got, "%s", c.expr)
 	}
 }
 
@@ -67,9 +62,8 @@ func TestEvalCQL2_TopLevelField(t *testing.T) {
 		"properties": map[string]interface{}{},
 	}
 	got, err := EvalCQL2(mustParse(t, "collection = 'sentinel-2-l2a'"), item)
-	if err != nil || !got {
-		t.Fatalf("want true, got %v err=%v", got, err)
-	}
+	require.NoError(t, err)
+	require.True(t, got)
 }
 
 func TestEvalCQL2_InOperator(t *testing.T) {
@@ -79,13 +73,11 @@ func TestEvalCQL2_InOperator(t *testing.T) {
 		},
 	}
 	got, err := EvalCQL2(mustParse(t, "platform IN ('sentinel-2a','sentinel-2b')"), item)
-	if err != nil || !got {
-		t.Fatalf("want true, got %v err=%v", got, err)
-	}
+	require.NoError(t, err)
+	require.True(t, got)
 	got, err = EvalCQL2(mustParse(t, "platform IN ('landsat-8','landsat-9')"), item)
-	if err != nil || got {
-		t.Fatalf("want false, got %v err=%v", got, err)
-	}
+	require.NoError(t, err)
+	require.False(t, got)
 }
 
 func TestEvalCQL2_IsNull(t *testing.T) {
@@ -93,9 +85,8 @@ func TestEvalCQL2_IsNull(t *testing.T) {
 		"properties": map[string]interface{}{},
 	}
 	got, err := EvalCQL2(mustParse(t, "platform IS NULL"), item)
-	if err != nil || !got {
-		t.Fatalf("want true, got %v err=%v", got, err)
-	}
+	require.NoError(t, err)
+	require.True(t, got)
 }
 
 // boxPolygon centred on (0,0) with the supplied half-extent.
@@ -121,12 +112,8 @@ func TestEvalCQL2_SIntersects_Match(t *testing.T) {
 	}
 	got, err := EvalCQL2(mustParse(t,
 		`S_INTERSECTS(geometry, POLYGON((-10 -10, 10 -10, 10 10, -10 10, -10 -10)))`), item)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !got {
-		t.Fatal("want item geometry to intersect surrounding polygon")
-	}
+	require.NoError(t, err)
+	require.True(t, got, "want item geometry to intersect surrounding polygon")
 }
 
 func TestEvalCQL2_SIntersects_NoMatch(t *testing.T) {
@@ -147,12 +134,8 @@ func TestEvalCQL2_SIntersects_NoMatch(t *testing.T) {
 	}
 	got, err := EvalCQL2(mustParse(t,
 		`S_INTERSECTS(geometry, POLYGON((-10 -10, 10 -10, 10 10, -10 10, -10 -10)))`), item)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got {
-		t.Fatal("want disjoint geometries to NOT intersect")
-	}
+	require.NoError(t, err)
+	require.False(t, got, "want disjoint geometries to NOT intersect")
 }
 
 func TestEvalCQL2_SIntersects_NullGeometry(t *testing.T) {
@@ -162,16 +145,11 @@ func TestEvalCQL2_SIntersects_NullGeometry(t *testing.T) {
 	}
 	got, err := EvalCQL2(mustParse(t,
 		`S_INTERSECTS(geometry, POLYGON((-10 -10, 10 -10, 10 10, -10 10, -10 -10)))`), item)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got {
-		t.Fatal("want false for null item geometry")
-	}
+	require.NoError(t, err)
+	require.False(t, got, "want false for null item geometry")
 }
 
 func TestEvalCQL2_TopLevelNotBoolean(t *testing.T) {
-	if _, err := EvalCQL2(mustParse(t, "42"), map[string]interface{}{}); err == nil {
-		t.Fatal("want error for non-boolean top-level")
-	}
+	_, err := EvalCQL2(mustParse(t, "42"), map[string]interface{}{})
+	require.Error(t, err, "want error for non-boolean top-level")
 }

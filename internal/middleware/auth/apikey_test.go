@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewAPIKeyProvider(t *testing.T) {
@@ -38,18 +41,10 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if p.name != "test-apikey" {
-					t.Errorf("expected name=test-apikey, got %s", p.name)
-				}
-				if p.header != "X-API-Key" {
-					t.Errorf("expected header=X-API-Key, got %s", p.header)
-				}
-				if len(p.keys) != 1 {
-					t.Errorf("expected 1 key, got %d", len(p.keys))
-				}
-				if p.keys[p.digest("key123")] == nil {
-					t.Error("expected key123 to be present")
-				}
+				assert.Equal(t, "test-apikey", p.name, "name")
+				assert.Equal(t, "X-API-Key", p.header, "header")
+				assert.Len(t, p.keys, 1, "expected 1 key")
+				assert.NotNil(t, p.keys[p.digest("key123")], "expected key123 to be present")
 			},
 		},
 		{
@@ -61,9 +56,7 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if p.name != "api_key" {
-					t.Errorf("expected default name=api_key, got %s", p.name)
-				}
+				assert.Equal(t, "api_key", p.name, "expected default name")
 			},
 		},
 		{
@@ -75,9 +68,7 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if p.header != "X-API-Key" {
-					t.Errorf("expected default header=X-API-Key, got %s", p.header)
-				}
+				assert.Equal(t, "X-API-Key", p.header, "expected default header")
 			},
 		},
 		{
@@ -90,12 +81,8 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if p.header != "" {
-					t.Errorf("expected empty header, got %s", p.header)
-				}
-				if p.queryParam != "api_key" {
-					t.Errorf("expected queryParam=api_key, got %s", p.queryParam)
-				}
+				assert.Equal(t, "", p.header, "expected empty header")
+				assert.Equal(t, "api_key", p.queryParam, "queryParam")
 			},
 		},
 		{
@@ -109,12 +96,8 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if p.header != "Authorization" {
-					t.Errorf("expected header=Authorization, got %s", p.header)
-				}
-				if p.queryParam != "token" {
-					t.Errorf("expected queryParam=token, got %s", p.queryParam)
-				}
+				assert.Equal(t, "Authorization", p.header, "header")
+				assert.Equal(t, "token", p.queryParam, "queryParam")
 			},
 		},
 		{
@@ -133,15 +116,9 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if len(p.keys) != 1 {
-					t.Errorf("expected 1 enabled key, got %d", len(p.keys))
-				}
-				if p.keys[p.digest("enabled-key")] == nil {
-					t.Error("expected enabled-key to be present")
-				}
-				if p.keys[p.digest("disabled-key")] != nil {
-					t.Error("expected disabled-key to be absent")
-				}
+				assert.Len(t, p.keys, 1, "expected 1 enabled key")
+				assert.NotNil(t, p.keys[p.digest("enabled-key")], "expected enabled-key to be present")
+				assert.Nil(t, p.keys[p.digest("disabled-key")], "expected disabled-key to be absent")
 			},
 		},
 		{
@@ -155,9 +132,7 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if len(p.keys) != 3 {
-					t.Errorf("expected 3 keys, got %d", len(p.keys))
-				}
+				assert.Len(t, p.keys, 3, "expected 3 keys")
 			},
 		},
 		{
@@ -177,24 +152,12 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
 				key := p.keys[p.digest("full-key")]
-				if key == nil {
-					t.Fatal("expected full-key to be present")
-				}
-				if key.Name != "full" {
-					t.Errorf("expected name=full, got %s", key.Name)
-				}
-				if key.Description != "Full featured key" {
-					t.Errorf("expected description, got %s", key.Description)
-				}
-				if len(key.Roles) != 2 {
-					t.Errorf("expected 2 roles, got %d", len(key.Roles))
-				}
-				if len(key.Groups) != 2 {
-					t.Errorf("expected 2 groups, got %d", len(key.Groups))
-				}
-				if len(key.Collections) != 2 {
-					t.Errorf("expected 2 collections, got %d", len(key.Collections))
-				}
+				require.NotNil(t, key, "expected full-key to be present")
+				assert.Equal(t, "full", key.Name, "name")
+				assert.Equal(t, "Full featured key", key.Description, "description")
+				assert.Len(t, key.Roles, 2, "expected 2 roles")
+				assert.Len(t, key.Groups, 2, "expected 2 groups")
+				assert.Len(t, key.Collections, 2, "expected 2 collections")
 			},
 		},
 	}
@@ -206,15 +169,11 @@ func TestNewAPIKeyProvider(t *testing.T) {
 			provider, err := NewAPIKeyProvider(tt.config)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
+				require.Error(t, err, "expected error")
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err, "unexpected error")
 
 			if tt.validate != nil {
 				tt.validate(t, provider)
@@ -256,15 +215,9 @@ func TestNewAPIKeyProvider_WithKeysFile(t *testing.T) {
 			config:  APIKeyConfig{},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if len(p.keys) != 2 {
-					t.Errorf("expected 2 keys from file, got %d", len(p.keys))
-				}
-				if p.keys[p.digest("file-key-1")] == nil {
-					t.Error("expected file-key-1 to be present")
-				}
-				if p.keys[p.digest("file-key-2")] == nil {
-					t.Error("expected file-key-2 to be present")
-				}
+				assert.Len(t, p.keys, 2, "expected 2 keys from file")
+				assert.NotNil(t, p.keys[p.digest("file-key-1")], "expected file-key-1 to be present")
+				assert.NotNil(t, p.keys[p.digest("file-key-2")], "expected file-key-2 to be present")
 			},
 		},
 		{
@@ -280,12 +233,8 @@ func TestNewAPIKeyProvider_WithKeysFile(t *testing.T) {
 			config:  APIKeyConfig{},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if len(p.keys) != 1 {
-					t.Errorf("expected 1 key, got %d", len(p.keys))
-				}
-				if p.keys[p.digest("enabled-key")] == nil {
-					t.Error("expected enabled-key to be present")
-				}
+				assert.Len(t, p.keys, 1, "expected 1 key")
+				assert.NotNil(t, p.keys[p.digest("enabled-key")], "expected enabled-key to be present")
 			},
 		},
 		{
@@ -300,9 +249,7 @@ func TestNewAPIKeyProvider_WithKeysFile(t *testing.T) {
 			config:  APIKeyConfig{},
 			wantErr: false,
 			validate: func(t *testing.T, p *APIKeyProvider) {
-				if len(p.keys) != 1 {
-					t.Errorf("expected 1 key, got %d", len(p.keys))
-				}
+				assert.Len(t, p.keys, 1, "expected 1 key")
 			},
 		},
 		{
@@ -328,9 +275,8 @@ func TestNewAPIKeyProvider_WithKeysFile(t *testing.T) {
 			var keysFile string
 			if tt.name != "non-existent file" {
 				keysFile = filepath.Join(tmpDir, tt.name+".yaml")
-				if err := os.WriteFile(keysFile, []byte(tt.fileData), 0644); err != nil {
-					t.Fatalf("failed to create test file: %v", err)
-				}
+				err := os.WriteFile(keysFile, []byte(tt.fileData), 0644)
+				require.NoError(t, err, "failed to create test file")
 			} else {
 				keysFile = filepath.Join(tmpDir, "nonexistent.yaml")
 			}
@@ -339,18 +285,14 @@ func TestNewAPIKeyProvider_WithKeysFile(t *testing.T) {
 			provider, err := NewAPIKeyProvider(tt.config)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				if tt.errContains != "" && !apiKeyContains(err.Error(), tt.errContains) {
-					t.Errorf("expected error containing %q, got %q", tt.errContains, err.Error())
+				require.Error(t, err, "expected error")
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains, "expected error containing %q", tt.errContains)
 				}
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err, "unexpected error")
 
 			if tt.validate != nil {
 				tt.validate(t, provider)
@@ -372,9 +314,8 @@ func TestNewAPIKeyProvider_CombineFileAndDirectKeys(t *testing.T) {
     roles:
       - admin
 `
-	if err := os.WriteFile(keysFile, []byte(fileData), 0644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
+	err := os.WriteFile(keysFile, []byte(fileData), 0644)
+	require.NoError(t, err, "failed to create test file")
 
 	provider, err := NewAPIKeyProvider(APIKeyConfig{
 		KeysFile: keysFile,
@@ -387,21 +328,13 @@ func TestNewAPIKeyProvider_CombineFileAndDirectKeys(t *testing.T) {
 		},
 	})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
-	if len(provider.keys) != 2 {
-		t.Errorf("expected 2 keys (file + direct), got %d", len(provider.keys))
-	}
+	assert.Len(t, provider.keys, 2, "expected 2 keys (file + direct)")
 
-	if provider.keys[provider.digest("file-key")] == nil {
-		t.Error("expected file-key to be present")
-	}
+	assert.NotNil(t, provider.keys[provider.digest("file-key")], "expected file-key to be present")
 
-	if provider.keys[provider.digest("direct-key")] == nil {
-		t.Error("expected direct-key to be present")
-	}
+	assert.NotNil(t, provider.keys[provider.digest("direct-key")], "expected direct-key to be present")
 }
 
 func TestAPIKeyProvider_Name(t *testing.T) {
@@ -434,13 +367,9 @@ func TestAPIKeyProvider_Name(t *testing.T) {
 					"test": {Enabled: true},
 				},
 			})
-			if err != nil {
-				t.Fatalf("failed to create provider: %v", err)
-			}
+			require.NoError(t, err, "failed to create provider")
 
-			if provider.Name() != tt.expected {
-				t.Errorf("expected Name()=%s, got %s", tt.expected, provider.Name())
-			}
+			assert.Equal(t, tt.expected, provider.Name(), "Name()")
 		})
 	}
 }
@@ -477,42 +406,18 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p == nil {
-					t.Fatal("expected non-nil principal")
-				}
-				if p.ID != "apikey:test-service" {
-					t.Errorf("expected ID=apikey:test-service, got %s", p.ID)
-				}
-				if p.Type != "service" {
-					t.Errorf("expected Type=service, got %s", p.Type)
-				}
-				if p.Name != "test-service" {
-					t.Errorf("expected Name=test-service, got %s", p.Name)
-				}
-				if len(p.Roles) != 2 {
-					t.Errorf("expected 2 roles, got %d", len(p.Roles))
-				}
-				if !p.HasRole("admin") {
-					t.Error("expected admin role")
-				}
-				if !p.HasRole("user") {
-					t.Error("expected user role")
-				}
-				if len(p.Groups) != 1 {
-					t.Errorf("expected 1 group, got %d", len(p.Groups))
-				}
-				if !p.HasGroup("engineering") {
-					t.Error("expected engineering group")
-				}
-				if p.Attributes == nil {
-					t.Fatal("expected attributes to be set")
-				}
-				if p.Attributes["auth_method"] != "api_key" {
-					t.Errorf("expected auth_method=api_key, got %s", p.Attributes["auth_method"])
-				}
-				if p.Attributes["key_name"] != "test-service" {
-					t.Errorf("expected key_name=test-service, got %s", p.Attributes["key_name"])
-				}
+				require.NotNil(t, p, "expected non-nil principal")
+				assert.Equal(t, "apikey:test-service", p.ID, "ID")
+				assert.Equal(t, "service", p.Type, "Type")
+				assert.Equal(t, "test-service", p.Name, "Name")
+				assert.Len(t, p.Roles, 2, "expected 2 roles")
+				assert.True(t, p.HasRole("admin"), "expected admin role")
+				assert.True(t, p.HasRole("user"), "expected user role")
+				assert.Len(t, p.Groups, 1, "expected 1 group")
+				assert.True(t, p.HasGroup("engineering"), "expected engineering group")
+				require.NotNil(t, p.Attributes, "expected attributes to be set")
+				assert.Equal(t, "api_key", p.Attributes["auth_method"], "auth_method")
+				assert.Equal(t, "test-service", p.Attributes["key_name"], "key_name")
 			},
 		},
 		{
@@ -534,12 +439,8 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p == nil {
-					t.Fatal("expected non-nil principal")
-				}
-				if p.Name != "query-service" {
-					t.Errorf("expected Name=query-service, got %s", p.Name)
-				}
+				require.NotNil(t, p, "expected non-nil principal")
+				assert.Equal(t, "query-service", p.Name, "Name")
 			},
 		},
 		{
@@ -566,9 +467,7 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.Name != "header-service" {
-					t.Errorf("expected header to take precedence, got %s", p.Name)
-				}
+				assert.Equal(t, "header-service", p.Name, "expected header to take precedence")
 			},
 		},
 		{
@@ -590,9 +489,7 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.Name != "query-service" {
-					t.Errorf("expected query parameter to be used, got %s", p.Name)
-				}
+				assert.Equal(t, "query-service", p.Name, "expected query parameter to be used")
 			},
 		},
 		{
@@ -681,15 +578,9 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if len(p.Collections) != 2 {
-					t.Errorf("expected 2 collections, got %d", len(p.Collections))
-				}
-				if !p.CanAccessCollection("collection1") {
-					t.Error("expected access to collection1")
-				}
-				if !p.CanAccessCollection("collection2") {
-					t.Error("expected access to collection2")
-				}
+				assert.Len(t, p.Collections, 2, "expected 2 collections")
+				assert.True(t, p.CanAccessCollection("collection1"), "expected access to collection1")
+				assert.True(t, p.CanAccessCollection("collection2"), "expected access to collection2")
 			},
 		},
 		{
@@ -759,12 +650,8 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.Name != "service2" {
-					t.Errorf("expected service2, got %s", p.Name)
-				}
-				if !p.HasRole("role2") {
-					t.Error("expected role2")
-				}
+				assert.Equal(t, "service2", p.Name, "expected service2")
+				assert.True(t, p.HasRole("role2"), "expected role2")
 			},
 		},
 		{
@@ -789,15 +676,9 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if len(p.Roles) != 3 {
-					t.Errorf("expected 3 roles, got %d", len(p.Roles))
-				}
-				if len(p.Groups) != 3 {
-					t.Errorf("expected 3 groups, got %d", len(p.Groups))
-				}
-				if len(p.Collections) != 2 {
-					t.Errorf("expected 2 collections, got %d", len(p.Collections))
-				}
+				assert.Len(t, p.Roles, 3, "expected 3 roles")
+				assert.Len(t, p.Groups, 3, "expected 3 groups")
+				assert.Len(t, p.Collections, 2, "expected 2 collections")
 			},
 		},
 		{
@@ -818,9 +699,7 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.Name != "auth-service" {
-					t.Errorf("expected auth-service, got %s", p.Name)
-				}
+				assert.Equal(t, "auth-service", p.Name, "expected auth-service")
 			},
 		},
 		{
@@ -841,9 +720,7 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.Name != "token-service" {
-					t.Errorf("expected token-service, got %s", p.Name)
-				}
+				assert.Equal(t, "token-service", p.Name, "expected token-service")
 			},
 		},
 	}
@@ -853,9 +730,7 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			t.Parallel()
 
 			provider, err := NewAPIKeyProvider(tt.config)
-			if err != nil {
-				t.Fatalf("failed to create provider: %v", err)
-			}
+			require.NoError(t, err, "failed to create provider")
 
 			req := tt.setupReq()
 			ctx := context.Background()
@@ -863,30 +738,20 @@ func TestAPIKeyProvider_Authenticate(t *testing.T) {
 			principal, err := provider.Authenticate(ctx, req)
 
 			if tt.wantNil {
-				if principal != nil {
-					t.Errorf("expected nil principal, got %+v", principal)
-				}
-				if err != nil {
-					t.Errorf("expected nil error for non-applicable auth, got %v", err)
-				}
+				assert.Nil(t, principal, "expected nil principal")
+				assert.NoError(t, err, "expected nil error for non-applicable auth")
 				return
 			}
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
+				require.Error(t, err, "expected error")
 				if tt.errContains != "" {
-					if !apiKeyContains(err.Error(), tt.errContains) {
-						t.Errorf("expected error containing %q, got %q", tt.errContains, err.Error())
-					}
+					assert.Contains(t, err.Error(), tt.errContains, "expected error containing %q", tt.errContains)
 				}
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err, "unexpected error")
 
 			if tt.validate != nil {
 				tt.validate(t, principal)
@@ -906,9 +771,7 @@ func TestAPIKeyProvider_AddKey(t *testing.T) {
 			},
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	// Add a new key
 	provider.AddKey("new-key", &APIKeyEntry{
@@ -918,33 +781,23 @@ func TestAPIKeyProvider_AddKey(t *testing.T) {
 	})
 
 	// Verify the key was added (looked up by HMAC digest, not plaintext)
-	if provider.keys[provider.digest("new-key")] == nil {
-		t.Error("expected new-key to be present")
-	}
+	require.NotNil(t, provider.keys[provider.digest("new-key")], "expected new-key to be present")
 
-	if provider.keys[provider.digest("new-key")].Name != "new-service" {
-		t.Errorf("expected Name=new-service, got %s", provider.keys[provider.digest("new-key")].Name)
-	}
+	assert.Equal(t, "new-service", provider.keys[provider.digest("new-key")].Name, "Name")
 
 	// Plaintext is intentionally cleared from the entry after storage
 	// so the in-memory registry never contains plaintext credentials
 	// (defense in depth against memory disclosure / accidental logging).
-	if got := provider.keys[provider.digest("new-key")].Key; got != "" {
-		t.Errorf("expected stored Key field to be empty (plaintext stripped), got %q", got)
-	}
+	assert.Equal(t, "", provider.keys[provider.digest("new-key")].Key, "expected stored Key field to be empty (plaintext stripped)")
 
 	// Verify it can be used for authentication
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("X-API-Key", "new-key")
 	principal, err := provider.Authenticate(context.Background(), req)
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
-	if principal.Name != "new-service" {
-		t.Errorf("expected principal name=new-service, got %s", principal.Name)
-	}
+	assert.Equal(t, "new-service", principal.Name, "expected principal name=new-service")
 }
 
 func TestAPIKeyProvider_RemoveKey(t *testing.T) {
@@ -962,31 +815,23 @@ func TestAPIKeyProvider_RemoveKey(t *testing.T) {
 			},
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	// Remove the key
 	provider.RemoveKey("key-to-remove")
 
 	// Verify the key was removed
-	if provider.keys[provider.digest("key-to-remove")] != nil {
-		t.Error("expected key-to-remove to be absent")
-	}
+	assert.Nil(t, provider.keys[provider.digest("key-to-remove")], "expected key-to-remove to be absent")
 
 	// Verify the other key is still present
-	if provider.keys[provider.digest("key-to-keep")] == nil {
-		t.Error("expected key-to-keep to still be present")
-	}
+	assert.NotNil(t, provider.keys[provider.digest("key-to-keep")], "expected key-to-keep to still be present")
 
 	// Verify removed key cannot be used for authentication
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("X-API-Key", "key-to-remove")
 	_, err = provider.Authenticate(context.Background(), req)
 
-	if err == nil {
-		t.Error("expected error when using removed key")
-	}
+	assert.Error(t, err, "expected error when using removed key")
 }
 
 func TestAPIKeyProvider_ReloadKeys(t *testing.T) {
@@ -1001,21 +846,16 @@ func TestAPIKeyProvider_ReloadKeys(t *testing.T) {
     name: "initial"
     enabled: true
 `
-	if err := os.WriteFile(keysFile, []byte(initialData), 0644); err != nil {
-		t.Fatalf("failed to create initial file: %v", err)
-	}
+	err := os.WriteFile(keysFile, []byte(initialData), 0644)
+	require.NoError(t, err, "failed to create initial file")
 
 	provider, err := NewAPIKeyProvider(APIKeyConfig{
 		KeysFile: keysFile,
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	// Verify initial key
-	if provider.keys[provider.digest("initial-key")] == nil {
-		t.Error("expected initial-key to be present")
-	}
+	assert.NotNil(t, provider.keys[provider.digest("initial-key")], "expected initial-key to be present")
 
 	// Update the file
 	updatedData := `keys:
@@ -1026,22 +866,16 @@ func TestAPIKeyProvider_ReloadKeys(t *testing.T) {
     name: "new"
     enabled: true
 `
-	if err := os.WriteFile(keysFile, []byte(updatedData), 0644); err != nil {
-		t.Fatalf("failed to update file: %v", err)
-	}
+	err = os.WriteFile(keysFile, []byte(updatedData), 0644)
+	require.NoError(t, err, "failed to update file")
 
 	// Reload keys
-	if err := provider.ReloadKeys(keysFile); err != nil {
-		t.Fatalf("failed to reload keys: %v", err)
-	}
+	err = provider.ReloadKeys(keysFile)
+	require.NoError(t, err, "failed to reload keys")
 
 	// Verify updated keys
-	if provider.keys[provider.digest("updated-key")] == nil {
-		t.Error("expected updated-key to be present after reload")
-	}
-	if provider.keys[provider.digest("new-key")] == nil {
-		t.Error("expected new-key to be present after reload")
-	}
+	assert.NotNil(t, provider.keys[provider.digest("updated-key")], "expected updated-key to be present after reload")
+	assert.NotNil(t, provider.keys[provider.digest("new-key")], "expected new-key to be present after reload")
 }
 
 func TestAPIKeyProvider_TimingAttackResistance(t *testing.T) {
@@ -1058,16 +892,14 @@ func TestAPIKeyProvider_TimingAttackResistance(t *testing.T) {
 			},
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	// Test with correct key
 	req1 := httptest.NewRequest("GET", "/test", nil)
 	req1.Header.Set("X-API-Key", "secret-key-with-long-value-to-test-timing")
 	p1, err1 := provider.Authenticate(context.Background(), req1)
 	if err1 != nil || p1 == nil {
-		t.Error("expected successful authentication with correct key")
+		assert.Fail(t, "expected successful authentication with correct key")
 	}
 
 	// Test with incorrect key of same length
@@ -1075,7 +907,7 @@ func TestAPIKeyProvider_TimingAttackResistance(t *testing.T) {
 	req2.Header.Set("X-API-Key", "wrong--key-with-long-value-to-test-timing")
 	p2, err2 := provider.Authenticate(context.Background(), req2)
 	if err2 == nil || p2 != nil {
-		t.Error("expected authentication to fail with wrong key")
+		assert.Fail(t, "expected authentication to fail with wrong key")
 	}
 
 	// Test with incorrect key of different length
@@ -1083,7 +915,7 @@ func TestAPIKeyProvider_TimingAttackResistance(t *testing.T) {
 	req3.Header.Set("X-API-Key", "short")
 	p3, err3 := provider.Authenticate(context.Background(), req3)
 	if err3 == nil || p3 != nil {
-		t.Error("expected authentication to fail with short wrong key")
+		assert.Fail(t, "expected authentication to fail with short wrong key")
 	}
 }
 
@@ -1099,9 +931,7 @@ func TestAPIKeyProvider_ConcurrentAccess(t *testing.T) {
 			},
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	// Simulate concurrent authentication requests
 	const numGoroutines = 100
@@ -1112,9 +942,7 @@ func TestAPIKeyProvider_ConcurrentAccess(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("X-API-Key", "concurrent-key")
 			_, err := provider.Authenticate(context.Background(), req)
-			if err != nil {
-				t.Errorf("unexpected error in concurrent auth: %v", err)
-			}
+			assert.NoError(t, err, "unexpected error in concurrent auth")
 			done <- true
 		}()
 	}
@@ -1137,9 +965,7 @@ func TestAPIKeyProvider_ConcurrentModification(t *testing.T) {
 			},
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	// Simulate concurrent reads and writes
 	const numGoroutines = 50
@@ -1183,12 +1009,8 @@ func TestAPIKeyProvider_ConcurrentModification(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("X-API-Key", "initial-key")
 	principal, err := provider.Authenticate(context.Background(), req)
-	if err != nil {
-		t.Errorf("provider not functional after concurrent modifications: %v", err)
-	}
-	if principal == nil {
-		t.Error("expected non-nil principal after concurrent modifications")
-	}
+	assert.NoError(t, err, "provider not functional after concurrent modifications")
+	assert.NotNil(t, principal, "expected non-nil principal after concurrent modifications")
 }
 
 func TestAPIKeyProvider_EmptyConfiguration(t *testing.T) {
@@ -1196,20 +1018,14 @@ func TestAPIKeyProvider_EmptyConfiguration(t *testing.T) {
 
 	// Provider with no keys
 	provider, err := NewAPIKeyProvider(APIKeyConfig{})
-	if err != nil {
-		t.Fatalf("unexpected error creating provider with no keys: %v", err)
-	}
+	require.NoError(t, err, "unexpected error creating provider with no keys")
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("X-API-Key", "any-key")
 
 	principal, err := provider.Authenticate(context.Background(), req)
-	if err == nil {
-		t.Error("expected error when no keys are configured")
-	}
-	if principal != nil {
-		t.Error("expected nil principal when no keys are configured")
-	}
+	assert.Error(t, err, "expected error when no keys are configured")
+	assert.Nil(t, principal, "expected nil principal when no keys are configured")
 }
 
 func TestAPIKeyProvider_Integration(t *testing.T) {
@@ -1247,9 +1063,8 @@ func TestAPIKeyProvider_Integration(t *testing.T) {
     name: "disabled-service"
     enabled: false
 `
-	if err := os.WriteFile(keysFile, []byte(keysData), 0644); err != nil {
-		t.Fatalf("failed to create keys file: %v", err)
-	}
+	err := os.WriteFile(keysFile, []byte(keysData), 0644)
+	require.NoError(t, err, "failed to create keys file")
 
 	provider, err := NewAPIKeyProvider(APIKeyConfig{
 		Name:            "production-api-keys",
@@ -1267,60 +1082,39 @@ func TestAPIKeyProvider_Integration(t *testing.T) {
 			},
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	// Test admin key from header
 	req1 := httptest.NewRequest("GET", "/api/collections", nil)
 	req1.Header.Set("X-API-Key", "prod-admin-key-123")
 	p1, err := provider.Authenticate(context.Background(), req1)
-	if err != nil {
-		t.Fatalf("admin key authentication failed: %v", err)
-	}
-	if !p1.HasRole("admin") || !p1.HasRole("operator") {
-		t.Error("admin key should have admin and operator roles")
-	}
-	if !p1.CanAccessCollection("production-data") {
-		t.Error("admin key should have access to production-data")
-	}
+	require.NoError(t, err, "admin key authentication failed")
+	assert.True(t, p1.HasRole("admin"), "admin key should have admin role")
+	assert.True(t, p1.HasRole("operator"), "admin key should have operator role")
+	assert.True(t, p1.CanAccessCollection("production-data"), "admin key should have access to production-data")
 
 	// Test readonly key from query parameter
 	req2 := httptest.NewRequest("GET", "/api/search?api_key=prod-readonly-key-456", nil)
 	p2, err := provider.Authenticate(context.Background(), req2)
-	if err != nil {
-		t.Fatalf("readonly key authentication failed: %v", err)
-	}
-	if !p2.HasRole("viewer") {
-		t.Error("readonly key should have viewer role")
-	}
-	if p2.HasRole("admin") {
-		t.Error("readonly key should not have admin role")
-	}
+	require.NoError(t, err, "readonly key authentication failed")
+	assert.True(t, p2.HasRole("viewer"), "readonly key should have viewer role")
+	assert.False(t, p2.HasRole("admin"), "readonly key should not have admin role")
 
 	// Test disabled key is rejected
 	req3 := httptest.NewRequest("GET", "/api/test", nil)
 	req3.Header.Set("X-API-Key", "disabled-key-789")
 	_, err = provider.Authenticate(context.Background(), req3)
-	if err == nil {
-		t.Error("disabled key should be rejected")
-	}
+	assert.Error(t, err, "disabled key should be rejected")
 
 	// Test direct config key
 	req4 := httptest.NewRequest("GET", "/api/test", nil)
 	req4.Header.Set("X-API-Key", "direct-dev-key")
 	p4, err := provider.Authenticate(context.Background(), req4)
-	if err != nil {
-		t.Fatalf("dev key authentication failed: %v", err)
-	}
-	if !p4.HasRole("developer") {
-		t.Error("dev key should have developer role")
-	}
+	require.NoError(t, err, "dev key authentication failed")
+	assert.True(t, p4.HasRole("developer"), "dev key should have developer role")
 
 	// Test provider name
-	if provider.Name() != "production-api-keys" {
-		t.Errorf("expected name=production-api-keys, got %s", provider.Name())
-	}
+	assert.Equal(t, "production-api-keys", provider.Name(), "name")
 }
 
 // BenchmarkAuthenticate_1Key measures Authenticate cost with a single key.
@@ -1388,23 +1182,15 @@ func TestAPIKey_StorageDoesNotContainPlaintextKey(t *testing.T) {
 			},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewAPIKeyProvider: %v", err)
-	}
+	require.NoError(t, err, "NewAPIKeyProvider")
 
 	for k, entry := range provider.keys {
-		if k == plaintext {
-			t.Fatalf("internal map key contains plaintext API key %q", plaintext)
-		}
-		if entry.Key == plaintext {
-			t.Fatalf("internal entry.Key contains plaintext API key %q", plaintext)
-		}
+		require.NotEqual(t, plaintext, k, "internal map key contains plaintext API key %q", plaintext)
+		require.NotEqual(t, plaintext, entry.Key, "internal entry.Key contains plaintext API key %q", plaintext)
 	}
 
 	// Sanity: the digest IS present (storage is keyed by HMAC).
-	if provider.keys[provider.digest(plaintext)] == nil {
-		t.Fatal("expected key to be stored under its HMAC digest")
-	}
+	require.NotNil(t, provider.keys[provider.digest(plaintext)], "expected key to be stored under its HMAC digest")
 }
 
 // TestAPIKey_AcceptsCorrectKey is a focused regression test for the
@@ -1419,18 +1205,13 @@ func TestAPIKey_AcceptsCorrectKey(t *testing.T) {
 			"good-key": {Name: "svc", Enabled: true},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewAPIKeyProvider: %v", err)
-	}
+	require.NoError(t, err, "NewAPIKeyProvider")
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-API-Key", "good-key")
 	princ, err := provider.Authenticate(context.Background(), req)
-	if err != nil {
-		t.Fatalf("authenticate: %v", err)
-	}
-	if princ == nil || princ.Name != "svc" {
-		t.Fatalf("want principal name=svc, got %+v", princ)
-	}
+	require.NoError(t, err, "authenticate")
+	require.NotNil(t, princ, "want principal name=svc")
+	require.Equal(t, "svc", princ.Name, "want principal name=svc")
 }
 
 // TestAPIKey_RejectsWrongKey ensures a key not in the registry is
@@ -1445,18 +1226,12 @@ func TestAPIKey_RejectsWrongKey(t *testing.T) {
 			"good-key": {Name: "svc", Enabled: true},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewAPIKeyProvider: %v", err)
-	}
+	require.NoError(t, err, "NewAPIKeyProvider")
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-API-Key", "wrong-key")
 	princ, err := provider.Authenticate(context.Background(), req)
-	if err == nil {
-		t.Fatal("want error for wrong key")
-	}
-	if princ != nil {
-		t.Fatalf("want nil principal, got %+v", princ)
-	}
+	require.Error(t, err, "want error for wrong key")
+	require.Nil(t, princ, "want nil principal")
 }
 
 // TestAPIKey_QueryParam_DisabledByDefault verifies that query-param
@@ -1472,26 +1247,18 @@ func TestAPIKey_QueryParam_DisabledByDefault(t *testing.T) {
 			"q-key": {Name: "svc", Enabled: true},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewAPIKeyProvider: %v", err)
-	}
+	require.NoError(t, err, "NewAPIKeyProvider")
 
 	req := httptest.NewRequest("GET", "/x?api_key=q-key", nil)
 	princ, err := provider.Authenticate(context.Background(), req)
-	if err != nil {
-		t.Fatalf("expected nil error when query-param auth is disabled, got %v", err)
-	}
-	if princ != nil {
-		t.Fatalf("expected nil principal when query-param auth is disabled, got %+v", princ)
-	}
+	require.NoError(t, err, "expected nil error when query-param auth is disabled")
+	require.Nil(t, princ, "expected nil principal when query-param auth is disabled")
 
 	// The chain must NOT treat query-only credentials as a presented
 	// credential when query-param is disabled — otherwise an
 	// invalid-key fall-through becomes a hard 401 against an opt-in
 	// the operator declined.
-	if provider.ClaimsCredential(req) {
-		t.Fatal("ClaimsCredential should ignore the query parameter when disabled")
-	}
+	require.False(t, provider.ClaimsCredential(req), "ClaimsCredential should ignore the query parameter when disabled")
 }
 
 // TestAPIKey_QueryParam_WarnsWhenEnabled captures slog output and
@@ -1502,7 +1269,7 @@ func TestAPIKey_QueryParam_WarnsWhenEnabled(t *testing.T) {
 	var buf apikeyLogBuffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	if _, err := NewAPIKeyProvider(APIKeyConfig{
+	_, err := NewAPIKeyProvider(APIKeyConfig{
 		Name:            "test",
 		QueryParam:      "api_key",
 		AllowQueryParam: true,
@@ -1510,20 +1277,13 @@ func TestAPIKey_QueryParam_WarnsWhenEnabled(t *testing.T) {
 		Keys: map[string]*APIKeyEntry{
 			"q-key": {Name: "svc", Enabled: true},
 		},
-	}); err != nil {
-		t.Fatalf("NewAPIKeyProvider: %v", err)
-	}
+	})
+	require.NoError(t, err, "NewAPIKeyProvider")
 
 	out := buf.String()
-	if !apiKeyContains(out, `"level":"WARN"`) {
-		t.Errorf("expected WARN-level log, got: %s", out)
-	}
-	if !apiKeyContains(out, `"query_param":"api_key"`) {
-		t.Errorf("expected query_param attribute in warning, got: %s", out)
-	}
-	if !apiKeyContains(out, "query-param authentication enabled") {
-		t.Errorf("expected security-implication wording in warning, got: %s", out)
-	}
+	assert.Contains(t, out, `"level":"WARN"`, "expected WARN-level log")
+	assert.Contains(t, out, `"query_param":"api_key"`, "expected query_param attribute in warning")
+	assert.Contains(t, out, "query-param authentication enabled", "expected security-implication wording in warning")
 }
 
 // TestAPIKey_QueryParam_AuthEmitsRateLimitedWarn covers the per-auth
@@ -1544,9 +1304,7 @@ func TestAPIKey_QueryParam_AuthEmitsRateLimitedWarn(t *testing.T) {
 			"q-key": {Name: "svc", Enabled: true},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewAPIKeyProvider: %v", err)
-	}
+	require.NoError(t, err, "NewAPIKeyProvider")
 	// Pin the clock so the rate-limit window is deterministic.
 	now := time.Now()
 	provider.now = func() time.Time { return now }
@@ -1557,25 +1315,20 @@ func TestAPIKey_QueryParam_AuthEmitsRateLimitedWarn(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		req := httptest.NewRequest("GET", "/x?api_key=q-key", nil)
-		if _, err := provider.Authenticate(context.Background(), req); err != nil {
-			t.Fatalf("authenticate %d: %v", i, err)
-		}
+		_, err := provider.Authenticate(context.Background(), req)
+		require.NoError(t, err, "authenticate %d", i)
 	}
 	out1 := buf.String()
 	warnCount := apiKeyCount(out1, "authenticated via query parameter")
-	if warnCount != 1 {
-		t.Fatalf("expected exactly 1 query-auth warning across 5 requests in the same minute, got %d\n%s", warnCount, out1)
-	}
+	require.Equal(t, 1, warnCount, "expected exactly 1 query-auth warning across 5 requests in the same minute, got %d\n%s", warnCount, out1)
 
 	// Advance past the window — the next request should warn again.
 	now = now.Add(2 * time.Minute)
 	req := httptest.NewRequest("GET", "/x?api_key=q-key", nil)
-	if _, err := provider.Authenticate(context.Background(), req); err != nil {
-		t.Fatalf("authenticate after window: %v", err)
-	}
-	if got := apiKeyCount(buf.String(), "authenticated via query parameter"); got != 2 {
-		t.Fatalf("expected 2 warnings across two windows, got %d", got)
-	}
+	_, err = provider.Authenticate(context.Background(), req)
+	require.NoError(t, err, "authenticate after window")
+	got := apiKeyCount(buf.String(), "authenticated via query parameter")
+	require.Equal(t, 2, got, "expected 2 warnings across two windows, got %d", got)
 }
 
 // apikeyLogBuffer is a tiny io.Writer for collecting slog JSON output.
@@ -1617,20 +1370,4 @@ func apiKeyCount(s, sub string) int {
 		i++
 	}
 	return n
-}
-
-// apiKeyContains checks if s contains substr
-func apiKeyContains(s, substr string) bool {
-	if len(substr) == 0 {
-		return true
-	}
-	if len(s) < len(substr) {
-		return false
-	}
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

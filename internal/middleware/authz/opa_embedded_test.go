@@ -40,6 +40,8 @@ import (
 	"time"
 
 	"github.com/open-policy-agent/opa/rego"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Test Rego policies
@@ -418,16 +420,10 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, e *EmbeddedOPAEnforcer) {
-				if e.name != "test-enforcer" {
-					t.Errorf("expected name=test-enforcer, got %s", e.name)
-				}
-				if e.queryString != "data.stac.authz.result" {
-					t.Errorf("expected query=data.stac.authz.result, got %s", e.queryString)
-				}
+				assert.Equal(t, "test-enforcer", e.name, "name")
+				assert.Equal(t, "data.stac.authz.result", e.queryString, "query")
 				// Query is a value type, check if queryString is set instead
-				if e.queryString == "" {
-					t.Error("expected query string to be set")
-				}
+				assert.NotEmpty(t, e.queryString, "expected query string to be set")
 			},
 		},
 		{
@@ -440,9 +436,7 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, e *EmbeddedOPAEnforcer) {
-				if e.queryString != "data.stac.authz" {
-					t.Errorf("expected default query=data.stac.authz, got %s", e.queryString)
-				}
+				assert.Equal(t, "data.stac.authz", e.queryString, "expected default query")
 			},
 		},
 		{
@@ -452,9 +446,7 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, e *EmbeddedOPAEnforcer) {
-				if e.queryString == "" {
-					t.Error("expected default policy to be loaded")
-				}
+				assert.NotEmpty(t, e.queryString, "expected default policy to be loaded")
 			},
 		},
 		{
@@ -476,9 +468,7 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, e *EmbeddedOPAEnforcer) {
-				if e.queryString == "" {
-					t.Error("expected policy to be loaded from file")
-				}
+				assert.NotEmpty(t, e.queryString, "expected policy to be loaded from file")
 			},
 		},
 		{
@@ -532,21 +522,15 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 			enforcer, err := NewEmbeddedOPAEnforcer(tt.config)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Errorf("expected error containing '%s', got nil", tt.errString)
-				} else if tt.errString != "" && !contains(err.Error(), tt.errString) {
-					t.Errorf("expected error containing '%s', got '%s'", tt.errString, err.Error())
+				require.Error(t, err, "expected error containing '%s'", tt.errString)
+				if tt.errString != "" {
+					require.Contains(t, err.Error(), tt.errString, "expected error containing '%s'", tt.errString)
 				}
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if enforcer == nil {
-				t.Fatal("expected non-nil enforcer")
-			}
+			require.NoError(t, err, "unexpected error")
+			require.NotNil(t, enforcer, "expected non-nil enforcer")
 
 			if tt.validate != nil {
 				tt.validate(t, enforcer)
@@ -564,21 +548,15 @@ func TestEmbeddedOPAEnforcer_NoBundleDeniesByDefault(t *testing.T) {
 		Name: "no-bundle",
 		// No PolicyPath, no PolicyPaths, no Modules.
 	})
-	if err != nil {
-		t.Fatalf("NewEmbeddedOPAEnforcer: %v", err)
-	}
+	require.NoError(t, err, "NewEmbeddedOPAEnforcer")
 
 	decision, err := enforcer.Authorize(context.Background(), &AuthzInput{
 		Principal: &PrincipalInfo{ID: "anyone"},
 		Request:   &RequestInfo{Method: "GET", Path: "/collections/x"},
 		Resource:  &ResourceInfo{Type: "collection", Collection: "x"},
 	})
-	if err != nil {
-		t.Fatalf("Authorize: %v", err)
-	}
-	if decision.Allowed {
-		t.Fatalf("default policy must deny when no operator bundle is supplied; got allowed=true reasons=%v", decision.Reasons)
-	}
+	require.NoError(t, err, "Authorize")
+	require.False(t, decision.Allowed, "default policy must deny when no operator bundle is supplied; reasons=%v", decision.Reasons)
 }
 
 func TestEmbeddedOPAEnforcer_Name(t *testing.T) {
@@ -590,13 +568,9 @@ func TestEmbeddedOPAEnforcer_Name(t *testing.T) {
 			"policy.rego": allowAllPolicy,
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
-	if enforcer.Name() != "test-name" {
-		t.Errorf("expected name=test-name, got %s", enforcer.Name())
-	}
+	assert.Equal(t, "test-name", enforcer.Name(), "name")
 }
 
 func TestEmbeddedOPAEnforcer_Authorize(t *testing.T) {
@@ -794,25 +768,12 @@ func TestEmbeddedOPAEnforcer_Authorize(t *testing.T) {
 			expectedAllowed: true,
 			expectedReasons: []string{"allowed with constraints"},
 			checkConstraints: func(t *testing.T, c *AuthzConstraints) {
-				if c == nil {
-					t.Fatal("expected constraints, got nil")
-				}
-				if len(c.AllowedCollections) != 2 {
-					t.Errorf("expected 2 allowed collections, got %d", len(c.AllowedCollections))
-				}
-				if c.MaxResults != 10 {
-					t.Errorf("expected max_results=10, got %d", c.MaxResults)
-				}
-				if c.Geofence == nil {
-					t.Error("expected geofence constraint")
-				} else {
-					if c.Geofence.AllowedArea == nil {
-						t.Error("expected allowed_area in geofence")
-					}
-					if !c.Geofence.FilterMode {
-						t.Error("expected filter_mode=true")
-					}
-				}
+				require.NotNil(t, c, "expected constraints")
+				assert.Len(t, c.AllowedCollections, 2, "expected 2 allowed collections")
+				assert.Equal(t, 10, c.MaxResults, "expected max_results=10")
+				require.NotNil(t, c.Geofence, "expected geofence constraint")
+				assert.NotNil(t, c.Geofence.AllowedArea, "expected allowed_area in geofence")
+				assert.True(t, c.Geofence.FilterMode, "expected filter_mode=true")
 			},
 		},
 		{
@@ -834,15 +795,9 @@ func TestEmbeddedOPAEnforcer_Authorize(t *testing.T) {
 			},
 			expectedAllowed: true,
 			checkConstraints: func(t *testing.T, c *AuthzConstraints) {
-				if c == nil {
-					t.Fatal("expected constraints, got nil")
-				}
-				if len(c.AllowedCollections) != 4 {
-					t.Errorf("expected 4 allowed collections, got %d", len(c.AllowedCollections))
-				}
-				if c.MaxResults != 100 {
-					t.Errorf("expected max_results=100, got %d", c.MaxResults)
-				}
+				require.NotNil(t, c, "expected constraints")
+				assert.Len(t, c.AllowedCollections, 4, "expected 4 allowed collections")
+				assert.Equal(t, 100, c.MaxResults, "expected max_results=100")
 			},
 		},
 		{
@@ -863,15 +818,9 @@ func TestEmbeddedOPAEnforcer_Authorize(t *testing.T) {
 			},
 			expectedAllowed: true,
 			checkConstraints: func(t *testing.T, c *AuthzConstraints) {
-				if c == nil {
-					t.Fatal("expected constraints, got nil")
-				}
-				if c.Geofence == nil {
-					t.Fatal("expected geofence constraint")
-				}
-				if c.Geofence.AllowedArea == nil {
-					t.Error("expected allowed_area in geofence")
-				}
+				require.NotNil(t, c, "expected constraints")
+				require.NotNil(t, c.Geofence, "expected geofence constraint")
+				assert.NotNil(t, c.Geofence.AllowedArea, "expected allowed_area in geofence")
 			},
 		},
 		{
@@ -1038,12 +987,8 @@ func TestEmbeddedOPAEnforcer_Authorize(t *testing.T) {
 			},
 			expectedAllowed: true,
 			checkConstraints: func(t *testing.T, c *AuthzConstraints) {
-				if c == nil {
-					t.Fatal("expected constraints, got nil")
-				}
-				if len(c.DeniedCollections) != 2 {
-					t.Errorf("expected 2 denied collections, got %d", len(c.DeniedCollections))
-				}
+				require.NotNil(t, c, "expected constraints")
+				assert.Len(t, c.DeniedCollections, 2, "expected 2 denied collections")
 			},
 		},
 		{
@@ -1064,18 +1009,12 @@ func TestEmbeddedOPAEnforcer_Authorize(t *testing.T) {
 			},
 			expectedAllowed: true,
 			checkConstraints: func(t *testing.T, c *AuthzConstraints) {
-				if c == nil {
-					t.Fatal("expected constraints, got nil")
-				}
-				if c.RequiredFilters == nil {
-					t.Fatal("expected required filters")
-				}
-				if _, ok := c.RequiredFilters["cloud_cover"]; !ok {
-					t.Error("expected cloud_cover filter")
-				}
-				if _, ok := c.RequiredFilters["platform"]; !ok {
-					t.Error("expected platform filter")
-				}
+				require.NotNil(t, c, "expected constraints")
+				require.NotNil(t, c.RequiredFilters, "expected required filters")
+				_, ok := c.RequiredFilters["cloud_cover"]
+				assert.True(t, ok, "expected cloud_cover filter")
+				_, ok = c.RequiredFilters["platform"]
+				assert.True(t, ok, "expected platform filter")
 			},
 		},
 	}
@@ -1090,31 +1029,19 @@ func TestEmbeddedOPAEnforcer_Authorize(t *testing.T) {
 					"policy.rego": tt.policy,
 				},
 			})
-			if err != nil {
-				t.Fatalf("failed to create enforcer: %v", err)
-			}
+			require.NoError(t, err, "failed to create enforcer")
 
 			ctx := context.Background()
 			decision, err := enforcer.Authorize(ctx, tt.input)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
+				require.Error(t, err, "expected error")
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if decision == nil {
-				t.Fatal("expected non-nil decision")
-			}
-
-			if decision.Allowed != tt.expectedAllowed {
-				t.Errorf("expected allowed=%v, got %v", tt.expectedAllowed, decision.Allowed)
-			}
+			require.NoError(t, err, "unexpected error")
+			require.NotNil(t, decision, "expected non-nil decision")
+			assert.Equal(t, tt.expectedAllowed, decision.Allowed, "allowed")
 
 			if len(tt.expectedReasons) > 0 {
 				if len(decision.Reasons) == 0 {
@@ -1140,9 +1067,7 @@ func TestEmbeddedOPAEnforcer_Authorize_ContextCancellation(t *testing.T) {
 			"policy.rego": allowAllPolicy,
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	// Create a cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1180,9 +1105,7 @@ func TestEmbeddedOPAEnforcer_Authorize_Timeout(t *testing.T) {
 			"policy.rego": allowAllPolicy,
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	// Create a context with a very short timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
@@ -1224,9 +1147,7 @@ func TestEmbeddedOPAEnforcer_Authorize_NilInput(t *testing.T) {
 			"policy.rego": allowAllPolicy,
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	ctx := context.Background()
 
@@ -1247,20 +1168,13 @@ func TestEmbeddedOPAEnforcer_Authorize_EmptyInput(t *testing.T) {
 			"policy.rego": allowAllPolicy,
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	ctx := context.Background()
 	decision, err := enforcer.Authorize(ctx, &AuthzInput{})
 
-	if err != nil {
-		t.Fatalf("unexpected error with empty input: %v", err)
-	}
-
-	if decision == nil {
-		t.Fatal("expected non-nil decision")
-	}
+	require.NoError(t, err, "unexpected error with empty input")
+	require.NotNil(t, decision, "expected non-nil decision")
 }
 
 func TestEmbeddedOPAEnforcer_Authorize_ComplexInput(t *testing.T) {
@@ -1272,9 +1186,7 @@ func TestEmbeddedOPAEnforcer_Authorize_ComplexInput(t *testing.T) {
 			"policy.rego": allowAllPolicy,
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	ctx := context.Background()
 	input := &AuthzInput{
@@ -1329,17 +1241,9 @@ func TestEmbeddedOPAEnforcer_Authorize_ComplexInput(t *testing.T) {
 
 	decision, err := enforcer.Authorize(ctx, input)
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if decision == nil {
-		t.Fatal("expected non-nil decision")
-	}
-
-	if !decision.Allowed {
-		t.Error("expected allow with allow-all policy")
-	}
+	require.NoError(t, err, "unexpected error")
+	require.NotNil(t, decision, "expected non-nil decision")
+	assert.True(t, decision.Allowed, "expected allow with allow-all policy")
 }
 
 func TestEmbeddedOPAEnforcer_ReloadPolicy(t *testing.T) {
@@ -1352,9 +1256,7 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy(t *testing.T) {
 		Name:       "reload-test",
 		PolicyPath: tmpFile,
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	ctx := context.Background()
 	input := &AuthzInput{
@@ -1373,31 +1275,19 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy(t *testing.T) {
 
 	// First check - should deny
 	decision, err := enforcer.Authorize(ctx, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if decision.Allowed {
-		t.Error("expected deny with deny-all policy")
-	}
+	require.NoError(t, err, "unexpected error")
+	assert.False(t, decision.Allowed, "expected deny with deny-all policy")
 
 	// Update the policy file
-	if err := os.WriteFile(tmpFile, []byte(allowAllPolicy), 0644); err != nil {
-		t.Fatalf("failed to update policy file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(tmpFile, []byte(allowAllPolicy), 0644), "failed to update policy file")
 
 	// Reload policy
-	if err := enforcer.ReloadPolicy(); err != nil {
-		t.Fatalf("failed to reload policy: %v", err)
-	}
+	require.NoError(t, enforcer.ReloadPolicy(), "failed to reload policy")
 
 	// Second check - should allow
 	decision, err = enforcer.Authorize(ctx, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !decision.Allowed {
-		t.Error("expected allow after reloading allow-all policy")
-	}
+	require.NoError(t, err, "unexpected error")
+	assert.True(t, decision.Allowed, "expected allow after reloading allow-all policy")
 }
 
 func TestEmbeddedOPAEnforcer_ReloadPolicy_NoPath(t *testing.T) {
@@ -1409,14 +1299,10 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy_NoPath(t *testing.T) {
 			"policy.rego": allowAllPolicy,
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	// Reload should be a no-op when no policy path is set
-	if err := enforcer.ReloadPolicy(); err != nil {
-		t.Errorf("unexpected error on reload with no path: %v", err)
-	}
+	assert.NoError(t, enforcer.ReloadPolicy(), "unexpected error on reload with no path")
 }
 
 func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidFile(t *testing.T) {
@@ -1428,19 +1314,13 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidFile(t *testing.T) {
 		Name:       "invalid-reload",
 		PolicyPath: tmpFile,
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	// Delete the file
-	if err := os.Remove(tmpFile); err != nil {
-		t.Fatalf("failed to remove temp file: %v", err)
-	}
+	require.NoError(t, os.Remove(tmpFile), "failed to remove temp file")
 
 	// Reload should fail
-	if err := enforcer.ReloadPolicy(); err == nil {
-		t.Error("expected error when reloading deleted policy file")
-	}
+	assert.Error(t, enforcer.ReloadPolicy(), "expected error when reloading deleted policy file")
 }
 
 func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidSyntax(t *testing.T) {
@@ -1452,19 +1332,13 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidSyntax(t *testing.T) {
 		Name:       "invalid-syntax-reload",
 		PolicyPath: tmpFile,
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	// Update with invalid policy
-	if err := os.WriteFile(tmpFile, []byte(invalidPolicy), 0644); err != nil {
-		t.Fatalf("failed to update policy file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(tmpFile, []byte(invalidPolicy), 0644), "failed to update policy file")
 
 	// Reload should fail
-	if err := enforcer.ReloadPolicy(); err == nil {
-		t.Error("expected error when reloading invalid policy")
-	}
+	assert.Error(t, enforcer.ReloadPolicy(), "expected error when reloading invalid policy")
 }
 
 func TestEmbeddedOPAEnforcer_ConcurrentAccess(t *testing.T) {
@@ -1476,9 +1350,7 @@ func TestEmbeddedOPAEnforcer_ConcurrentAccess(t *testing.T) {
 			"policy.rego": roleBasedPolicy,
 		},
 	})
-	if err != nil {
-		t.Fatalf("failed to create enforcer: %v", err)
-	}
+	require.NoError(t, err, "failed to create enforcer")
 
 	ctx := context.Background()
 
@@ -1565,9 +1437,7 @@ func TestParseEmbeddedResult(t *testing.T) {
 					"policy.rego": tt.policy,
 				},
 			})
-			if err != nil {
-				t.Fatalf("failed to create enforcer: %v", err)
-			}
+			require.NoError(t, err, "failed to create enforcer")
 
 			ctx := context.Background()
 			input := &AuthzInput{
@@ -1590,16 +1460,11 @@ func TestParseEmbeddedResult(t *testing.T) {
 			}
 
 			decision, err := enforcer.Authorize(ctx, input)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err, "unexpected error")
+			assert.Equal(t, tt.expectedAllowed, decision.Allowed, "allowed")
 
-			if decision.Allowed != tt.expectedAllowed {
-				t.Errorf("expected allowed=%v, got %v", tt.expectedAllowed, decision.Allowed)
-			}
-
-			if tt.hasConstraints && decision.Constraints == nil {
-				t.Error("expected constraints, got nil")
+			if tt.hasConstraints {
+				assert.NotNil(t, decision.Constraints, "expected constraints")
 			}
 		})
 	}
@@ -1624,16 +1489,10 @@ func TestStructToMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, m map[string]interface{}) {
-				if m == nil {
-					t.Fatal("expected non-nil map")
-				}
+				require.NotNil(t, m, "expected non-nil map")
 				principal, ok := m["principal"].(map[string]interface{})
-				if !ok {
-					t.Fatal("expected principal to be a map")
-				}
-				if principal["id"] != "user1" {
-					t.Errorf("expected id=user1, got %v", principal["id"])
-				}
+				require.True(t, ok, "expected principal to be a map")
+				assert.Equal(t, "user1", principal["id"], "id")
 			},
 		},
 		{
@@ -1658,16 +1517,10 @@ func TestStructToMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, m map[string]interface{}) {
-				if m == nil {
-					t.Fatal("expected non-nil map")
-				}
+				require.NotNil(t, m, "expected non-nil map")
 				request, ok := m["request"].(map[string]interface{})
-				if !ok {
-					t.Fatal("expected request to be a map")
-				}
-				if request["method"] != "GET" {
-					t.Errorf("expected method=GET, got %v", request["method"])
-				}
+				require.True(t, ok, "expected request to be a map")
+				assert.Equal(t, "GET", request["method"], "method")
 			},
 		},
 		{
@@ -1684,15 +1537,11 @@ func TestStructToMap(t *testing.T) {
 			result, err := structToMap(tt.input)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
+				require.Error(t, err, "expected error")
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err, "unexpected error")
 
 			if tt.check != nil {
 				tt.check(t, result)
@@ -1827,9 +1676,7 @@ func createTempPolicyFile(t *testing.T, content string) string {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "policy.rego")
 
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
-		t.Fatalf("failed to create temp policy file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(tmpFile, []byte(content), 0644), "failed to create temp policy file")
 
 	return tmpFile
 }
@@ -1867,7 +1714,6 @@ func mustParseURL(rawURL string) *url.URL {
 	return u
 }
 
-
 // TestEmbeddedOPA_DuplicateDefaultRules_ErrorsAtCompile is the
 // H-authz-6 regression: when an operator passes two Rego modules at
 // the same path that each declare `default allow = false`, the
@@ -1898,12 +1744,8 @@ other_rule { input.principal.id == "x" }
 			"b.rego": moduleB,
 		},
 	})
-	if err == nil {
-		t.Fatal("constructor must fail when two modules declare the same default rule")
-	}
-	if !contains(err.Error(), "multiple default rules") {
-		t.Fatalf("error must mention duplicate default rules; got %q", err.Error())
-	}
+	require.Error(t, err, "constructor must fail when two modules declare the same default rule")
+	require.Contains(t, err.Error(), "multiple default rules", "error must mention duplicate default rules")
 }
 
 // TestParseEmbeddedResult_NoAllowKey_ReturnsError verifies M-authz-6:
@@ -1924,18 +1766,11 @@ func TestParseEmbeddedResult_NoAllowKey_ReturnsError(t *testing.T) {
 	}
 
 	dec, err := parseEmbeddedResult(result, "data.stac.authz")
-	if err == nil {
-		t.Fatal("want error for missing allow key; got nil")
-	}
-	if !contains(err.Error(), "missing the `allow` key") {
-		t.Fatalf("error must mention missing allow key; got %q", err.Error())
-	}
-	if dec == nil {
-		t.Fatal("decision must be non-nil so caller can surface Reasons")
-	}
-	if len(dec.Reasons) == 0 || !contains(dec.Reasons[len(dec.Reasons)-1], "data.stac.authz") {
-		t.Fatalf("decision reasons must name the query; got %v", dec.Reasons)
-	}
+	require.Error(t, err, "want error for missing allow key")
+	require.Contains(t, err.Error(), "missing the `allow` key", "error must mention missing allow key")
+	require.NotNil(t, dec, "decision must be non-nil so caller can surface Reasons")
+	require.NotEmpty(t, dec.Reasons, "decision reasons must name the query; got %v", dec.Reasons)
+	require.Contains(t, dec.Reasons[len(dec.Reasons)-1], "data.stac.authz", "decision reasons must name the query; got %v", dec.Reasons)
 }
 
 // TestParseEmbeddedResult_AllowFalse_DenyWithReason ensures a
@@ -1955,15 +1790,10 @@ func TestParseEmbeddedResult_AllowFalse_DenyWithReason(t *testing.T) {
 	}
 
 	dec, err := parseEmbeddedResult(result, "data.stac.authz")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if dec == nil || dec.Allowed {
-		t.Fatalf("want deny decision, got %+v", dec)
-	}
-	if len(dec.Reasons) != 1 || dec.Reasons[0] != "role lacks admin" {
-		t.Fatalf("want reason from policy, got %v", dec.Reasons)
-	}
+	require.NoError(t, err, "unexpected error")
+	require.NotNil(t, dec, "want deny decision")
+	require.False(t, dec.Allowed, "want deny decision, got %+v", dec)
+	require.Equal(t, []string{"role lacks admin"}, dec.Reasons, "want reason from policy")
 }
 
 // TestEmbeddedOPA_Authorize_NoAllowKey_Returns500 wires the
@@ -1983,14 +1813,10 @@ result = {"reasons": ["missing allow"]}
 		Name:    "no-allow",
 		Modules: map[string]string{"p.rego": policy},
 	})
-	if err != nil {
-		t.Fatalf("NewEmbeddedOPAEnforcer: %v", err)
-	}
+	require.NoError(t, err, "NewEmbeddedOPAEnforcer")
 
 	_, err = enf.Authorize(context.Background(), &AuthzInput{
 		Request: &RequestInfo{Method: "GET", Path: "/"},
 	})
-	if err == nil {
-		t.Fatal("want error from Authorize when policy result lacks allow key")
-	}
+	require.Error(t, err, "want error from Authorize when policy result lacks allow key")
 }

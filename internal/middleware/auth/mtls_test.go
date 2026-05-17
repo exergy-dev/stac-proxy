@@ -3,6 +3,8 @@ package auth
 import (
 	"crypto/x509"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestMTLSProvider_ConstructorRejectsNilCAs guards the safety contract
@@ -18,9 +20,7 @@ func TestMTLSProvider_ConstructorRejectsNilCAs(t *testing.T) {
 		Name:       "mtls",
 		TrustedCAs: nil,
 	})
-	if err == nil {
-		t.Fatal("expected error for nil trustedCAs, got nil")
-	}
+	require.Error(t, err, "expected error for nil trustedCAs")
 }
 
 // TestMTLSProvider_ConstructorAcceptsEmptyButNonNilCAs documents the
@@ -33,10 +33,6 @@ func TestMTLSProvider_ConstructorAcceptsEmptyButNonNilCAs(t *testing.T) {
 		Name:       "mtls",
 		TrustedCAs: x509.NewCertPool(),
 	})
-	if err != nil {
-		t.Fatalf("unexpected error for empty (but non-nil) pool: %v", err)
-	}
-	if p == nil {
-		t.Fatal("expected provider, got nil")
-	}
+	require.NoError(t, err, "unexpected error for empty (but non-nil) pool")
+	require.NotNil(t, p, "expected provider")
 }

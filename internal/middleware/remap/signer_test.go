@@ -6,15 +6,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHMACSigner_SignVerify_RoundTrip(t *testing.T) {
 	s := NewHMACSigner("secret")
 	signed := s.Sign(context.Background(), "https://stac.example.com/items/abc?role=read&foo=bar", time.Hour)
 	ok, err := s.Verify(signed)
-	if err != nil || !ok {
-		t.Fatalf("round-trip Verify failed: ok=%v err=%v", ok, err)
-	}
+	require.NoError(t, err, "round-trip Verify failed")
+	require.True(t, ok, "round-trip Verify failed")
 }
 
 func TestHMACSigner_TamperWithQueryFails(t *testing.T) {
@@ -22,16 +24,14 @@ func TestHMACSigner_TamperWithQueryFails(t *testing.T) {
 	signed := s.Sign(context.Background(), "https://stac.example.com/items/abc?role=read", time.Hour)
 
 	u, err := url.Parse(signed)
-	if err != nil {
-		t.Fatalf("parse signed URL: %v", err)
-	}
+	require.NoError(t, err, "parse signed URL")
 	q := u.Query()
 	q.Set("role", "admin") // attacker swaps the query parameter
 	u.RawQuery = q.Encode()
 
-	if ok, err := s.Verify(u.String()); ok || err == nil {
-		t.Fatalf("tampered query must fail verification (ok=%v err=%v)", ok, err)
-	}
+	ok, err := s.Verify(u.String())
+	require.False(t, ok, "tampered query must fail verification")
+	require.Error(t, err, "tampered query must fail verification")
 }
 
 func TestHMACSigner_TamperWithHostFails(t *testing.T) {
@@ -39,9 +39,9 @@ func TestHMACSigner_TamperWithHostFails(t *testing.T) {
 	signed := s.Sign(context.Background(), "https://real.example.com/items/abc", time.Hour)
 
 	tampered := strings.Replace(signed, "real.example.com", "evil.example.com", 1)
-	if ok, err := s.Verify(tampered); ok || err == nil {
-		t.Fatalf("host swap must fail verification (ok=%v err=%v)", ok, err)
-	}
+	ok, err := s.Verify(tampered)
+	require.False(t, ok, "host swap must fail verification")
+	require.Error(t, err, "host swap must fail verification")
 }
 
 // TestNewSigner_RejectsUnknownTypes guards against signer-type typos
@@ -52,15 +52,10 @@ func TestNewSigner_RejectsUnknownTypes(t *testing.T) {
 		typ := typ
 		t.Run(typ, func(t *testing.T) {
 			s, err := NewSigner(typ, "ignored")
-			if err == nil {
-				t.Fatalf("expected error for type %q, got signer=%v", typ, s)
-			}
-			if s != nil {
-				t.Fatalf("expected nil signer for type %q, got %v", typ, s)
-			}
-			if !strings.Contains(err.Error(), "unknown signer type") {
-				t.Errorf("expected 'unknown signer type' in error, got: %v", err)
-			}
+			require.Error(t, err, "expected error for type %q", typ)
+			require.Nil(t, s, "expected nil signer for type %q", typ)
+			assert.Contains(t, err.Error(), "unknown signer type",
+				"expected 'unknown signer type' in error")
 		})
 	}
 }
@@ -80,23 +75,21 @@ func TestSigner_DoubleSlashSameAsSingleSlash(t *testing.T) {
 	// the path of the signed URL. The query (with sig + exp) stays
 	// as-is.
 	u, err := url.Parse(signed)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	require.NoError(t, err, "parse")
 	u.Path = "//foo"
 	doubled := u.String()
 
-	if ok, err := s.Verify(doubled); !ok || err != nil {
-		t.Errorf("//foo should verify against /foo signature (path.Clean normalization): ok=%v err=%v", ok, err)
-	}
+	ok, err := s.Verify(doubled)
+	assert.NoError(t, err, "//foo should verify against /foo signature (path.Clean normalization)")
+	assert.True(t, ok, "//foo should verify against /foo signature (path.Clean normalization)")
 
 	// Also confirm /a//b//c canonicalizes to /a/b/c equivalently.
 	signed2 := s.Sign(context.Background(), "https://stac.example.com/a/b/c?role=read", time.Hour)
 	u2, _ := url.Parse(signed2)
 	u2.Path = "/a//b//c"
-	if ok, err := s.Verify(u2.String()); !ok || err != nil {
-		t.Errorf("/a//b//c should verify against /a/b/c signature: ok=%v err=%v", ok, err)
-	}
+	ok2, err2 := s.Verify(u2.String())
+	assert.NoError(t, err2, "/a//b//c should verify against /a/b/c signature")
+	assert.True(t, ok2, "/a//b//c should verify against /a/b/c signature")
 }
 
 // TestSigningMessage_DoesNotMutateInput (M-remap-3): signingMessage
@@ -122,22 +115,18 @@ func TestSigningMessage_DoesNotMutateInput(t *testing.T) {
 	for k, vs := range before {
 		got, ok := in[k]
 		if !ok {
-			t.Errorf("signingMessage deleted caller's key %q", k)
+			assert.Failf(t, "key deleted", "signingMessage deleted caller's key %q", k)
 			continue
 		}
 		if len(got) != len(vs) {
-			t.Errorf("key %q: len changed (was %d, now %d)", k, len(vs), len(got))
+			assert.Failf(t, "len changed", "key %q: len changed (was %d, now %d)", k, len(vs), len(got))
 			continue
 		}
 		for i := range vs {
-			if got[i] != vs[i] {
-				t.Errorf("key %q[%d]: was %q, now %q", k, i, vs[i], got[i])
-			}
+			assert.Equal(t, vs[i], got[i], "key %q[%d]", k, i)
 		}
 	}
-	if len(in) != len(before) {
-		t.Errorf("signingMessage added/removed keys: was %d, now %d", len(before), len(in))
-	}
+	assert.Equal(t, len(before), len(in), "signingMessage added/removed keys")
 }
 
 // TestHMACSigner_RotationVerifiesOldSigs (M-remap-2): after rotating
@@ -155,53 +144,42 @@ func TestHMACSigner_RotationVerifiesOldSigs(t *testing.T) {
 	s.RotateSecret([]byte("secret-B"))
 
 	// Old A-signed URL still verifies.
-	if ok, err := s.Verify(signedA); !ok || err != nil {
-		t.Errorf("old A-signed URL must still verify after rotation: ok=%v err=%v", ok, err)
-	}
+	okA, errA := s.Verify(signedA)
+	assert.NoError(t, errA, "old A-signed URL must still verify after rotation")
+	assert.True(t, okA, "old A-signed URL must still verify after rotation")
 
 	// New signature uses B.
 	signedB := s.Sign(context.Background(), "https://stac.example.com/items/abc?role=read", time.Hour)
-	if signedB == signedA {
-		t.Errorf("after rotation, Sign should produce a new signature (B != A)")
-	}
-	if ok, err := s.Verify(signedB); !ok || err != nil {
-		t.Errorf("new B-signed URL must verify: ok=%v err=%v", ok, err)
-	}
+	assert.NotEqual(t, signedA, signedB, "after rotation, Sign should produce a new signature (B != A)")
+	okB, errB := s.Verify(signedB)
+	assert.NoError(t, errB, "new B-signed URL must verify")
+	assert.True(t, okB, "new B-signed URL must verify")
 
 	// A signer that knows ONLY B must reject the A-signed URL —
 	// proves the A-signature/B-signature distinction is real.
 	bOnly := NewHMACSigner("secret-B")
-	if ok, _ := bOnly.Verify(signedA); ok {
-		t.Errorf("A-signed URL should not verify under a B-only signer (sanity check)")
-	}
+	okBOnly, _ := bOnly.Verify(signedA)
+	assert.False(t, okBOnly, "A-signed URL should not verify under a B-only signer (sanity check)")
 }
 
 func TestNewSigner_HMACAndNoOp(t *testing.T) {
 	s, err := NewSigner("hmac", "secret")
-	if err != nil {
-		t.Fatalf("hmac: unexpected error: %v", err)
-	}
-	if _, ok := s.(*HMACSigner); !ok {
-		t.Fatalf("expected *HMACSigner, got %T", s)
-	}
+	require.NoError(t, err, "hmac: unexpected error")
+	_, ok := s.(*HMACSigner)
+	require.True(t, ok, "expected *HMACSigner, got %T", s)
 
-	if _, err := NewSigner("hmac", ""); err == nil {
-		t.Fatal("expected error for hmac with empty secret")
-	}
+	_, err = NewSigner("hmac", "")
+	require.Error(t, err, "expected error for hmac with empty secret")
 
 	for _, typ := range []string{"noop", ""} {
 		s, err := NewSigner(typ, "")
-		if err != nil {
-			t.Fatalf("noop (%q): unexpected error: %v", typ, err)
-		}
-		if _, ok := s.(*NoOpSigner); !ok {
-			t.Fatalf("expected *NoOpSigner for %q, got %T", typ, s)
-		}
+		require.NoError(t, err, "noop (%q): unexpected error", typ)
+		_, ok := s.(*NoOpSigner)
+		require.True(t, ok, "expected *NoOpSigner for %q, got %T", typ, s)
 	}
 
-	if _, err := NewSigner("bogus", ""); err == nil {
-		t.Fatal("expected error for unknown signer type")
-	}
+	_, err = NewSigner("bogus", "")
+	require.Error(t, err, "expected error for unknown signer type")
 }
 
 // TestHMACSigner_VerifyRejectsBadExpiryFormats covers the strconv
@@ -213,8 +191,7 @@ func TestHMACSigner_VerifyRejectsBadExpiryFormats(t *testing.T) {
 	for _, badExp := range []string{"-1", "12abc", "abc", " 12", "9999999999999999999999"} {
 		raw := "https://example.com/x?exp=" + badExp + "&sig=AAAA"
 		ok, err := s.Verify(raw)
-		if ok || err == nil {
-			t.Errorf("expected reject for exp=%q; ok=%v err=%v", badExp, ok, err)
-		}
+		assert.False(t, ok, "expected reject for exp=%q", badExp)
+		assert.Error(t, err, "expected reject for exp=%q", badExp)
 	}
 }

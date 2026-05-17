@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 )
@@ -64,18 +66,10 @@ func TestHTTPMiddleware_Allows_AddsHeaders(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
 
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status: want 204 (inner ran), got %d", rr.Code)
-	}
-	if got := rr.Header().Get("X-RateLimit-Limit"); got != "100" {
-		t.Errorf("X-RateLimit-Limit: want 100, got %q", got)
-	}
-	if got := rr.Header().Get("X-RateLimit-Remaining"); got != "99" {
-		t.Errorf("X-RateLimit-Remaining: want 99, got %q", got)
-	}
-	if got := rr.Header().Get("X-RateLimit-Reset"); got != "1700000000" {
-		t.Errorf("X-RateLimit-Reset: want 1700000000, got %q", got)
-	}
+	require.Equal(t, http.StatusNoContent, rr.Code, "status: want 204 (inner ran)")
+	assert.Equal(t, "100", rr.Header().Get("X-RateLimit-Limit"), "X-RateLimit-Limit")
+	assert.Equal(t, "99", rr.Header().Get("X-RateLimit-Remaining"), "X-RateLimit-Remaining")
+	assert.Equal(t, "1700000000", rr.Header().Get("X-RateLimit-Reset"), "X-RateLimit-Reset")
 }
 
 // TestHTTPMiddleware_Denies_429_NoInner: limiter says no → 429 with
@@ -91,15 +85,9 @@ func TestHTTPMiddleware_Denies_429_NoInner(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
 
-	if rr.Code != http.StatusTooManyRequests {
-		t.Fatalf("status: want 429, got %d", rr.Code)
-	}
-	if got := rr.Header().Get("Retry-After"); got != "30" {
-		t.Errorf("Retry-After: want 30, got %q", got)
-	}
-	if innerCalled {
-		t.Fatal("inner handler ran despite 429")
-	}
+	require.Equal(t, http.StatusTooManyRequests, rr.Code, "status: want 429")
+	assert.Equal(t, "30", rr.Header().Get("Retry-After"), "Retry-After")
+	require.False(t, innerCalled, "inner handler ran despite 429")
 }
 
 // TestHTTPMiddleware_LimiterError_FailOpen: a limiter error allows the
@@ -111,12 +99,8 @@ func TestHTTPMiddleware_LimiterError_FailOpen(t *testing.T) {
 	h := wrap(Config{Limiter: limiter})
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status: want 204 (fail-open), got %d", rr.Code)
-	}
-	if rr.Header().Get("X-RateLimit-Limit") != "" {
-		t.Errorf("X-RateLimit-Limit set on fail-open path")
-	}
+	require.Equal(t, http.StatusNoContent, rr.Code, "status: want 204 (fail-open)")
+	assert.Empty(t, rr.Header().Get("X-RateLimit-Limit"), "X-RateLimit-Limit set on fail-open path")
 }
 
 // TestHTTPMiddleware_KeysOnPrincipalThenIP: when an auth Principal is in
@@ -137,27 +121,12 @@ func TestHTTPMiddleware_KeysOnPrincipalThenIP(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), req2)
 
 	calls := limiter.Calls()
-	if len(calls) != 2 {
-		t.Fatalf("limiter calls: want 2, got %d", len(calls))
-	}
+	require.Len(t, calls, 2, "limiter calls")
 	// DefaultKeyFunc prefixes with "user:" / "ip:" — we just want to
 	// confirm the anon path used the IP and the authed path used the
 	// principal ID.
-	if !contains(calls[0].Key, "203.0.113.7") {
-		t.Errorf("first call (anon) should include client IP: %q", calls[0].Key)
-	}
-	if !contains(calls[1].Key, "alice") {
-		t.Errorf("second call (authed) should include principal ID: %q", calls[1].Key)
-	}
-}
-
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
+	assert.Contains(t, calls[0].Key, "203.0.113.7", "first call (anon) should include client IP")
+	assert.Contains(t, calls[1].Key, "alice", "second call (authed) should include principal ID")
 }
 
 // TestHTTPMiddleware_QuotaFunc_RoleBased: a QuotaFunc receives the
@@ -180,9 +149,7 @@ func TestHTTPMiddleware_QuotaFunc_RoleBased(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
 	calls := limiter.Calls()
-	if calls[0].Quota.Requests != 10000 {
-		t.Errorf("admin quota: want 10000 requests, got %d", calls[0].Quota.Requests)
-	}
+	assert.Equal(t, 10000, calls[0].Quota.Requests, "admin quota requests")
 }
 
 // TestHTTPMiddleware_DefaultsWired: nil Limiter/KeyFunc/QuotaFunc fall
@@ -193,9 +160,8 @@ func TestHTTPMiddleware_DefaultsWired(t *testing.T) {
 	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
-	if _, err := strconv.Atoi(rr.Header().Get("X-RateLimit-Limit")); err != nil {
-		t.Errorf("X-RateLimit-Limit not set with default limiter: %q", rr.Header().Get("X-RateLimit-Limit"))
-	}
+	_, err := strconv.Atoi(rr.Header().Get("X-RateLimit-Limit"))
+	assert.NoError(t, err, "X-RateLimit-Limit not set with default limiter: %q", rr.Header().Get("X-RateLimit-Limit"))
 }
 
 // ---------------------------------------------------------------------
@@ -212,26 +178,17 @@ func TestRoleBasedQuotaFunc(t *testing.T) {
 	}
 	qf := RoleBasedQuotaFunc(roleQuotas, defaultQ)
 
-	if got := qf([]string{"admin"}, defaultQ); got.Requests != 10000 {
-		t.Errorf("admin: want 10000 requests, got %d", got.Requests)
-	}
-	if got := qf([]string{"user"}, defaultQ); got.Requests != 1000 {
-		t.Errorf("user: want 1000, got %d", got.Requests)
-	}
-	if got := qf([]string{"unknown"}, defaultQ); got.Requests != 100 {
-		t.Errorf("unknown role: want default 100, got %d", got.Requests)
-	}
-	if got := qf(nil, defaultQ); got.Requests != 100 {
-		t.Errorf("nil roles: want default 100, got %d", got.Requests)
-	}
+	assert.Equal(t, 10000, qf([]string{"admin"}, defaultQ).Requests, "admin")
+	assert.Equal(t, 1000, qf([]string{"user"}, defaultQ).Requests, "user")
+	assert.Equal(t, 100, qf([]string{"unknown"}, defaultQ).Requests, "unknown role: want default")
+	assert.Equal(t, 100, qf(nil, defaultQ).Requests, "nil roles: want default")
 }
 
 func TestDefaultQuotaFunc(t *testing.T) {
 	t.Parallel()
 	q := Quota{Requests: 42, Window: time.Minute}
-	if got := DefaultQuotaFunc(nil, q); got.Requests != 42 {
-		t.Errorf("DefaultQuotaFunc should return the default: %+v", got)
-	}
+	got := DefaultQuotaFunc(nil, q)
+	assert.Equal(t, 42, got.Requests, "DefaultQuotaFunc should return the default")
 }
 
 // TestKeyFunc_StripsRemoteAddrPort verifies that when the derived
@@ -255,10 +212,6 @@ func TestKeyFunc_StripsRemoteAddrPort(t *testing.T) {
 
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
-	if len(mock.calls) != 2 {
-		t.Fatalf("limiter calls = %d, want 2", len(mock.calls))
-	}
-	if mock.calls[0].Key != mock.calls[1].Key {
-		t.Errorf("ports leaked into key: %q vs %q", mock.calls[0].Key, mock.calls[1].Key)
-	}
+	require.Len(t, mock.calls, 2, "limiter calls")
+	assert.Equal(t, mock.calls[0].Key, mock.calls[1].Key, "ports leaked into key")
 }

@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestNoOpAuthProvider tests the no-op authentication provider.
@@ -27,14 +30,10 @@ func TestNoOpAuthProvider(t *testing.T) {
 		ctx := context.Background()
 
 		err := provider.ApplyAuth(ctx, req)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
+		assert.NoError(t, err)
 
 		// Verify no auth headers were added
-		if auth := req.Header.Get("Authorization"); auth != "" {
-			t.Errorf("expected no Authorization header, got: %s", auth)
-		}
+		assert.Emptyf(t, req.Header.Get("Authorization"), "expected no Authorization header")
 	})
 
 	t.Run("Refresh", func(t *testing.T) {
@@ -42,9 +41,7 @@ func TestNoOpAuthProvider(t *testing.T) {
 
 		ctx := context.Background()
 		err := provider.Refresh(ctx)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
+		assert.NoError(t, err)
 	})
 }
 
@@ -80,6 +77,7 @@ func TestBasicAuthProvider(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -92,27 +90,19 @@ func TestBasicAuthProvider(t *testing.T) {
 			ctx := context.Background()
 
 			err := provider.ApplyAuth(ctx, req)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
 			// Verify Basic auth header
 			authHeader := req.Header.Get("Authorization")
-			if !strings.HasPrefix(authHeader, "Basic ") {
-				t.Errorf("expected Basic auth header, got: %s", authHeader)
-			}
+			require.Truef(t, strings.HasPrefix(authHeader, "Basic "), "expected Basic auth header, got: %s", authHeader)
 
 			// Decode and verify credentials
 			encoded := strings.TrimPrefix(authHeader, "Basic ")
 			decoded, err := base64.StdEncoding.DecodeString(encoded)
-			if err != nil {
-				t.Fatalf("failed to decode auth header: %v", err)
-			}
+			require.NoError(t, err, "failed to decode auth header")
 
 			expected := tt.username + ":" + tt.password
-			if string(decoded) != expected {
-				t.Errorf("expected credentials %q, got %q", expected, string(decoded))
-			}
+			assert.Equalf(t, expected, string(decoded), "credentials")
 		})
 	}
 
@@ -126,9 +116,7 @@ func TestBasicAuthProvider(t *testing.T) {
 
 		ctx := context.Background()
 		err := provider.Refresh(ctx)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
+		assert.NoError(t, err)
 	})
 }
 
@@ -155,6 +143,7 @@ func TestBearerAuthProvider(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -166,16 +155,10 @@ func TestBearerAuthProvider(t *testing.T) {
 			ctx := context.Background()
 
 			err := provider.ApplyAuth(ctx, req)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
 			// Verify Bearer auth header
-			authHeader := req.Header.Get("Authorization")
-			expected := "Bearer " + tt.token
-			if authHeader != expected {
-				t.Errorf("expected auth header %q, got %q", expected, authHeader)
-			}
+			assert.Equal(t, "Bearer "+tt.token, req.Header.Get("Authorization"), "auth header")
 		})
 	}
 
@@ -188,9 +171,7 @@ func TestBearerAuthProvider(t *testing.T) {
 
 		ctx := context.Background()
 		err := provider.Refresh(ctx)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
+		assert.NoError(t, err)
 	})
 }
 
@@ -231,6 +212,7 @@ func TestAPIKeyAuthProvider(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -244,27 +226,17 @@ func TestAPIKeyAuthProvider(t *testing.T) {
 			ctx := context.Background()
 
 			err := provider.ApplyAuth(ctx, req)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
 			if tt.inQuery {
 				// Verify query parameter
-				queryVal := req.URL.Query().Get(tt.header)
-				if queryVal != tt.value {
-					t.Errorf("expected query param %q=%q, got %q", tt.header, tt.value, queryVal)
-				}
+				assert.Equalf(t, tt.value, req.URL.Query().Get(tt.header), "expected query param %q", tt.header)
 
 				// Verify existing query param is preserved
-				if existing := req.URL.Query().Get("existing"); existing != "param" {
-					t.Errorf("existing query param was not preserved")
-				}
+				assert.Equal(t, "param", req.URL.Query().Get("existing"), "existing query param was not preserved")
 			} else {
 				// Verify header
-				headerVal := req.Header.Get(tt.header)
-				if headerVal != tt.value {
-					t.Errorf("expected header %q=%q, got %q", tt.header, tt.value, headerVal)
-				}
+				assert.Equalf(t, tt.value, req.Header.Get(tt.header), "expected header %q", tt.header)
 			}
 		})
 	}
@@ -279,9 +251,7 @@ func TestAPIKeyAuthProvider(t *testing.T) {
 
 		ctx := context.Background()
 		err := provider.Refresh(ctx)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
+		assert.NoError(t, err)
 	})
 }
 
@@ -320,6 +290,7 @@ func TestCustomHeadersProvider(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -331,16 +302,11 @@ func TestCustomHeadersProvider(t *testing.T) {
 			ctx := context.Background()
 
 			err := provider.ApplyAuth(ctx, req)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
 			// Verify all headers are set
 			for key, expectedVal := range tt.headers {
-				actualVal := req.Header.Get(key)
-				if actualVal != expectedVal {
-					t.Errorf("expected header %q=%q, got %q", key, expectedVal, actualVal)
-				}
+				assert.Equalf(t, expectedVal, req.Header.Get(key), "expected header %q", key)
 			}
 		})
 	}
@@ -359,13 +325,9 @@ func TestCustomHeadersProvider(t *testing.T) {
 		ctx := context.Background()
 
 		err := provider.ApplyAuth(ctx, req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
-		if val := req.Header.Get("X-Test"); val != "new-value" {
-			t.Errorf("expected header to be overwritten, got %q", val)
-		}
+		assert.Equal(t, "new-value", req.Header.Get("X-Test"), "expected header to be overwritten")
 	})
 
 	t.Run("Refresh does nothing", func(t *testing.T) {
@@ -377,9 +339,7 @@ func TestCustomHeadersProvider(t *testing.T) {
 
 		ctx := context.Background()
 		err := provider.Refresh(ctx)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
+		assert.NoError(t, err)
 	})
 }
 
@@ -413,24 +373,16 @@ func TestChainedAuthProvider(t *testing.T) {
 		ctx := context.Background()
 
 		err := provider.ApplyAuth(ctx, req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify Basic auth
-		if auth := req.Header.Get("Authorization"); !strings.HasPrefix(auth, "Basic ") {
-			t.Errorf("expected Basic auth header, got: %s", auth)
-		}
+		assert.Truef(t, strings.HasPrefix(req.Header.Get("Authorization"), "Basic "), "expected Basic auth header, got: %s", req.Header.Get("Authorization"))
 
 		// Verify custom header
-		if custom := req.Header.Get("X-Custom"); custom != "value" {
-			t.Errorf("expected X-Custom header, got: %s", custom)
-		}
+		assert.Equal(t, "value", req.Header.Get("X-Custom"), "expected X-Custom header")
 
 		// Verify API key in query
-		if apiKey := req.URL.Query().Get("api_key"); apiKey != "key123" {
-			t.Errorf("expected api_key query param, got: %s", apiKey)
-		}
+		assert.Equal(t, "key123", req.URL.Query().Get("api_key"), "expected api_key query param")
 	})
 
 	t.Run("empty providers", func(t *testing.T) {
@@ -444,9 +396,7 @@ func TestChainedAuthProvider(t *testing.T) {
 		ctx := context.Background()
 
 		err := provider.ApplyAuth(ctx, req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		assert.NoError(t, err)
 	})
 
 	t.Run("Refresh calls all providers", func(t *testing.T) {
@@ -462,9 +412,7 @@ func TestChainedAuthProvider(t *testing.T) {
 
 		ctx := context.Background()
 		err := provider.Refresh(ctx)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
+		assert.NoError(t, err)
 	})
 }
 
@@ -506,9 +454,8 @@ func TestBuildAuthProvider(t *testing.T) {
 			expectError:  false,
 			validateResult: func(t *testing.T, provider AuthProvider) {
 				p := provider.(*BasicAuthProvider)
-				if p.Username != "testuser" || p.Password != "testpass" {
-					t.Errorf("basic auth credentials not set correctly")
-				}
+				assert.Equal(t, "testuser", p.Username, "basic auth username")
+				assert.Equal(t, "testpass", p.Password, "basic auth password")
 			},
 		},
 		{
@@ -521,9 +468,7 @@ func TestBuildAuthProvider(t *testing.T) {
 			expectError:  false,
 			validateResult: func(t *testing.T, provider AuthProvider) {
 				p := provider.(*BearerAuthProvider)
-				if p.Token != "test-token-123" {
-					t.Errorf("bearer token not set correctly")
-				}
+				assert.Equal(t, "test-token-123", p.Token, "bearer token")
 			},
 		},
 		{
@@ -537,9 +482,9 @@ func TestBuildAuthProvider(t *testing.T) {
 			expectError:  false,
 			validateResult: func(t *testing.T, provider AuthProvider) {
 				p := provider.(*APIKeyAuthProvider)
-				if p.Header != "X-API-Key" || p.Value != "secret" || p.InQuery {
-					t.Errorf("api key provider not configured correctly")
-				}
+				assert.Equal(t, "X-API-Key", p.Header, "header")
+				assert.Equal(t, "secret", p.Value, "value")
+				assert.False(t, p.InQuery, "InQuery")
 			},
 		},
 		{
@@ -554,9 +499,7 @@ func TestBuildAuthProvider(t *testing.T) {
 			expectError:  false,
 			validateResult: func(t *testing.T, provider AuthProvider) {
 				p := provider.(*APIKeyAuthProvider)
-				if !p.InQuery {
-					t.Errorf("api key should be in query")
-				}
+				assert.True(t, p.InQuery, "api key should be in query")
 			},
 		},
 		{
@@ -572,9 +515,7 @@ func TestBuildAuthProvider(t *testing.T) {
 			expectError:  false,
 			validateResult: func(t *testing.T, provider AuthProvider) {
 				p := provider.(*CustomHeadersProvider)
-				if len(p.Headers) != 2 {
-					t.Errorf("expected 2 custom headers, got %d", len(p.Headers))
-				}
+				assert.Len(t, p.Headers, 2, "expected 2 custom headers")
 			},
 		},
 		{
@@ -597,27 +538,21 @@ func TestBuildAuthProvider(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			provider, err := BuildAuthProvider(tt.config)
 
 			if tt.expectError {
-				if err == nil {
-					t.Fatal("expected error but got none")
-				}
+				require.Error(t, err, "expected error but got none")
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
 			// Check type
-			actualType := getTypeName(provider)
-			if actualType != tt.expectedType {
-				t.Errorf("expected type %s, got %s", tt.expectedType, actualType)
-			}
+			assert.Equal(t, tt.expectedType, getTypeName(provider), "type")
 
 			// Additional validation
 			if tt.validateResult != nil {
@@ -641,13 +576,9 @@ func TestBuildAuthProviderOAuth2(t *testing.T) {
 		}
 
 		provider, err := BuildAuthProvider(config)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
-		if getTypeName(provider) != "*federation.OAuth2AuthProvider" {
-			t.Errorf("expected OAuth2AuthProvider, got %s", getTypeName(provider))
-		}
+		assert.Equal(t, "*federation.OAuth2AuthProvider", getTypeName(provider))
 	})
 
 	t.Run("oauth2 missing token URL", func(t *testing.T) {
@@ -660,9 +591,7 @@ func TestBuildAuthProviderOAuth2(t *testing.T) {
 		}
 
 		_, err := BuildAuthProvider(config)
-		if err == nil {
-			t.Fatal("expected error for missing token URL")
-		}
+		require.Error(t, err, "expected error for missing token URL")
 	})
 
 	t.Run("oauth2 missing client ID", func(t *testing.T) {
@@ -675,9 +604,7 @@ func TestBuildAuthProviderOAuth2(t *testing.T) {
 		}
 
 		_, err := BuildAuthProvider(config)
-		if err == nil {
-			t.Fatal("expected error for missing client ID")
-		}
+		require.Error(t, err, "expected error for missing client ID")
 	})
 
 	t.Run("oauth2 nil config defaults to no-op", func(t *testing.T) {
@@ -687,13 +614,9 @@ func TestBuildAuthProviderOAuth2(t *testing.T) {
 		}
 
 		provider, err := BuildAuthProvider(config)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
-		if getTypeName(provider) != "*federation.NoOpAuthProvider" {
-			t.Errorf("expected NoOpAuthProvider for nil OAuth2 config")
-		}
+		assert.Equal(t, "*federation.NoOpAuthProvider", getTypeName(provider), "expected NoOpAuthProvider for nil OAuth2 config")
 	})
 }
 
@@ -711,13 +634,9 @@ func TestBuildAuthProviderAWSSigV4(t *testing.T) {
 		}
 
 		provider, err := BuildAuthProvider(config)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
-		if getTypeName(provider) != "*federation.AWSSigV4Provider" {
-			t.Errorf("expected AWSSigV4Provider, got %s", getTypeName(provider))
-		}
+		assert.Equal(t, "*federation.AWSSigV4Provider", getTypeName(provider))
 	})
 
 	t.Run("sigv4 missing region", func(t *testing.T) {
@@ -731,9 +650,7 @@ func TestBuildAuthProviderAWSSigV4(t *testing.T) {
 		}
 
 		_, err := BuildAuthProvider(config)
-		if err == nil {
-			t.Fatal("expected error for missing region")
-		}
+		require.Error(t, err, "expected error for missing region")
 	})
 
 	t.Run("sigv4 nil config defaults to no-op", func(t *testing.T) {
@@ -743,13 +660,9 @@ func TestBuildAuthProviderAWSSigV4(t *testing.T) {
 		}
 
 		provider, err := BuildAuthProvider(config)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
-		if getTypeName(provider) != "*federation.NoOpAuthProvider" {
-			t.Errorf("expected NoOpAuthProvider for nil AWSSigV4 config")
-		}
+		assert.Equal(t, "*federation.NoOpAuthProvider", getTypeName(provider), "expected NoOpAuthProvider for nil AWSSigV4 config")
 	})
 }
 
@@ -773,7 +686,8 @@ func TestOAuth2AuthProvider(t *testing.T) {
 
 			// Parse form data
 			if err := r.ParseForm(); err != nil {
-				t.Fatalf("failed to parse form: %v", err)
+				t.Errorf("failed to parse form: %v", err)
+				return
 			}
 
 			if r.Form.Get("grant_type") != "client_credentials" {
@@ -798,23 +712,15 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		}
 
 		provider, err := NewOAuth2AuthProvider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		req := httptest.NewRequest(http.MethodGet, "https://example.com/test", nil)
 		ctx := context.Background()
 
 		err = provider.ApplyAuth(ctx, req)
-		if err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, err, "failed to apply auth")
 
-		authHeader := req.Header.Get("Authorization")
-		expected := "Bearer test-access-token"
-		if authHeader != expected {
-			t.Errorf("expected auth header %q, got %q", expected, authHeader)
-		}
+		assert.Equal(t, "Bearer test-access-token", req.Header.Get("Authorization"), "auth header")
 	})
 
 	t.Run("token caching and reuse", func(t *testing.T) {
@@ -835,33 +741,23 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		}
 
 		provider, err := NewOAuth2AuthProvider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		ctx := context.Background()
 
 		// First request should fetch token
 		req1 := httptest.NewRequest(http.MethodGet, "https://example.com/test1", nil)
-		if err := provider.ApplyAuth(ctx, req1); err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, provider.ApplyAuth(ctx, req1), "failed to apply auth")
 
 		// Second request should reuse cached token
 		req2 := httptest.NewRequest(http.MethodGet, "https://example.com/test2", nil)
-		if err := provider.ApplyAuth(ctx, req2); err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, provider.ApplyAuth(ctx, req2), "failed to apply auth")
 
 		// Should only call token endpoint once
-		if callCount != 1 {
-			t.Errorf("expected 1 token request, got %d", callCount)
-		}
+		assert.Equal(t, 1, callCount, "expected 1 token request")
 
 		// Both requests should have same token
-		if req1.Header.Get("Authorization") != req2.Header.Get("Authorization") {
-			t.Errorf("expected same token on both requests")
-		}
+		assert.Equal(t, req1.Header.Get("Authorization"), req2.Header.Get("Authorization"), "expected same token on both requests")
 	})
 
 	t.Run("token refresh on expiration", func(t *testing.T) {
@@ -889,31 +785,23 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		}
 
 		provider, err := NewOAuth2AuthProvider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		ctx := context.Background()
 
 		// First request
 		req1 := httptest.NewRequest(http.MethodGet, "https://example.com/test1", nil)
-		if err := provider.ApplyAuth(ctx, req1); err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, provider.ApplyAuth(ctx, req1), "failed to apply auth")
 
 		// Wait for token to expire (with buffer)
 		time.Sleep(2 * time.Second)
 
 		// Second request should fetch new token
 		req2 := httptest.NewRequest(http.MethodGet, "https://example.com/test2", nil)
-		if err := provider.ApplyAuth(ctx, req2); err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, provider.ApplyAuth(ctx, req2), "failed to apply auth")
 
 		// Should have called token endpoint twice
-		if callCount != 2 {
-			t.Errorf("expected 2 token requests, got %d", callCount)
-		}
+		assert.Equal(t, 2, callCount, "expected 2 token requests")
 	})
 
 	t.Run("concurrent requests use same token", func(t *testing.T) {
@@ -942,9 +830,7 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		}
 
 		provider, err := NewOAuth2AuthProvider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		ctx := context.Background()
 
@@ -970,15 +856,14 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		finalCount := callCount
 		mu.Unlock()
 
-		if finalCount != 1 {
-			t.Errorf("expected 1 token request for concurrent calls, got %d", finalCount)
-		}
+		assert.Equal(t, 1, finalCount, "expected 1 token request for concurrent calls")
 	})
 
 	t.Run("scopes and audience", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if err := r.ParseForm(); err != nil {
-				t.Fatalf("failed to parse form: %v", err)
+				t.Errorf("failed to parse form: %v", err)
+				return
 			}
 
 			scope := r.Form.Get("scope")
@@ -1007,16 +892,12 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		}
 
 		provider, err := NewOAuth2AuthProvider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		req := httptest.NewRequest(http.MethodGet, "https://example.com/test", nil)
 		ctx := context.Background()
 
-		if err := provider.ApplyAuth(ctx, req); err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, provider.ApplyAuth(ctx, req), "failed to apply auth")
 	})
 
 	t.Run("token server error", func(t *testing.T) {
@@ -1036,17 +917,13 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		}
 
 		provider, err := NewOAuth2AuthProvider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		req := httptest.NewRequest(http.MethodGet, "https://example.com/test", nil)
 		ctx := context.Background()
 
 		err = provider.ApplyAuth(ctx, req)
-		if err == nil {
-			t.Fatal("expected error from token server")
-		}
+		require.Error(t, err, "expected error from token server")
 	})
 
 	t.Run("invalid token response", func(t *testing.T) {
@@ -1062,17 +939,13 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		}
 
 		provider, err := NewOAuth2AuthProvider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		req := httptest.NewRequest(http.MethodGet, "https://example.com/test", nil)
 		ctx := context.Background()
 
 		err = provider.ApplyAuth(ctx, req)
-		if err == nil {
-			t.Fatal("expected error for invalid JSON response")
-		}
+		require.Error(t, err, "expected error for invalid JSON response")
 	})
 
 	t.Run("manual refresh", func(t *testing.T) {
@@ -1093,31 +966,21 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		}
 
 		provider, err := NewOAuth2AuthProvider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		ctx := context.Background()
 
 		// Force refresh
-		if err := provider.Refresh(ctx); err != nil {
-			t.Fatalf("failed to refresh: %v", err)
-		}
+		require.NoError(t, provider.Refresh(ctx), "failed to refresh")
 
 		// Should have fetched token
-		if callCount != 1 {
-			t.Errorf("expected 1 token request, got %d", callCount)
-		}
+		assert.Equal(t, 1, callCount, "expected 1 token request")
 
 		// Subsequent request should use cached token
 		req := httptest.NewRequest(http.MethodGet, "https://example.com/test", nil)
-		if err := provider.ApplyAuth(ctx, req); err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, provider.ApplyAuth(ctx, req), "failed to apply auth")
 
-		if callCount != 1 {
-			t.Errorf("expected token to be cached after refresh, got %d calls", callCount)
-		}
+		assert.Equal(t, 1, callCount, "expected token to be cached after refresh")
 	})
 
 	t.Run("default expiry when not provided", func(t *testing.T) {
@@ -1136,21 +999,15 @@ func TestOAuth2AuthProvider(t *testing.T) {
 		}
 
 		provider, err := NewOAuth2AuthProvider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		req := httptest.NewRequest(http.MethodGet, "https://example.com/test", nil)
 		ctx := context.Background()
 
-		if err := provider.ApplyAuth(ctx, req); err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, provider.ApplyAuth(ctx, req), "failed to apply auth")
 
 		// Verify token was set
-		if auth := req.Header.Get("Authorization"); auth != "Bearer token-no-expiry" {
-			t.Errorf("unexpected auth header: %s", auth)
-		}
+		assert.Equal(t, "Bearer token-no-expiry", req.Header.Get("Authorization"), "auth header")
 	})
 }
 
@@ -1204,25 +1061,20 @@ func TestNewOAuth2AuthProviderValidation(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			provider, err := NewOAuth2AuthProvider(tt.config)
 
 			if tt.expectError {
-				if err == nil {
-					t.Fatal("expected error but got none")
-				}
-				if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
-					t.Errorf("expected error to contain %q, got %q", tt.errorMsg, err.Error())
+				require.Error(t, err, "expected error but got none")
+				if tt.errorMsg != "" {
+					assert.ErrorContainsf(t, err, tt.errorMsg, "error message")
 				}
 			} else {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				if provider == nil {
-					t.Fatal("expected provider but got nil")
-				}
+				require.NoError(t, err)
+				assert.NotNil(t, provider, "expected provider but got nil")
 			}
 		})
 	}
@@ -1239,38 +1091,24 @@ func TestAWSSigV4Provider(t *testing.T) {
 		}
 
 		provider, err := NewAWSSigV4Provider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		req := httptest.NewRequest(http.MethodGet, "https://api.example.com/test", nil)
 		ctx := context.Background()
 
 		err = provider.ApplyAuth(ctx, req)
-		if err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, err, "failed to apply auth")
 
 		// Verify signature headers are present
-		if amzDate := req.Header.Get("X-Amz-Date"); amzDate == "" {
-			t.Error("expected X-Amz-Date header")
-		}
+		assert.NotEmpty(t, req.Header.Get("X-Amz-Date"), "expected X-Amz-Date header")
 
 		authHeader := req.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, "AWS4-HMAC-SHA256") {
-			t.Errorf("expected AWS4-HMAC-SHA256 auth header, got: %s", authHeader)
-		}
+		assert.Truef(t, strings.HasPrefix(authHeader, "AWS4-HMAC-SHA256"), "expected AWS4-HMAC-SHA256 auth header, got: %s", authHeader)
 
 		// Verify authorization header contains expected components
-		if !strings.Contains(authHeader, "Credential=AKIAIOSFODNN7EXAMPLE") {
-			t.Error("authorization header missing credential")
-		}
-		if !strings.Contains(authHeader, "SignedHeaders=") {
-			t.Error("authorization header missing signed headers")
-		}
-		if !strings.Contains(authHeader, "Signature=") {
-			t.Error("authorization header missing signature")
-		}
+		assert.Contains(t, authHeader, "Credential=AKIAIOSFODNN7EXAMPLE", "authorization header missing credential")
+		assert.Contains(t, authHeader, "SignedHeaders=", "authorization header missing signed headers")
+		assert.Contains(t, authHeader, "Signature=", "authorization header missing signature")
 	})
 
 	t.Run("signs POST request with body", func(t *testing.T) {
@@ -1282,23 +1120,17 @@ func TestAWSSigV4Provider(t *testing.T) {
 		}
 
 		provider, err := NewAWSSigV4Provider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		body := strings.NewReader(`{"key": "value"}`)
 		req := httptest.NewRequest(http.MethodPost, "https://api.example.com/test", body)
 		ctx := context.Background()
 
 		err = provider.ApplyAuth(ctx, req)
-		if err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, err, "failed to apply auth")
 
 		// Verify headers are present
-		if authHeader := req.Header.Get("Authorization"); authHeader == "" {
-			t.Error("expected Authorization header")
-		}
+		assert.NotEmpty(t, req.Header.Get("Authorization"), "expected Authorization header")
 	})
 
 	t.Run("signs request with query parameters", func(t *testing.T) {
@@ -1310,22 +1142,16 @@ func TestAWSSigV4Provider(t *testing.T) {
 		}
 
 		provider, err := NewAWSSigV4Provider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		req := httptest.NewRequest(http.MethodGet, "https://api.example.com/test?param1=value1&param2=value2", nil)
 		ctx := context.Background()
 
 		err = provider.ApplyAuth(ctx, req)
-		if err != nil {
-			t.Fatalf("failed to apply auth: %v", err)
-		}
+		require.NoError(t, err, "failed to apply auth")
 
 		// Verify signature was computed
-		if authHeader := req.Header.Get("Authorization"); authHeader == "" {
-			t.Error("expected Authorization header")
-		}
+		assert.NotEmpty(t, req.Header.Get("Authorization"), "expected Authorization header")
 	})
 
 	t.Run("defaults service to execute-api", func(t *testing.T) {
@@ -1337,13 +1163,9 @@ func TestAWSSigV4Provider(t *testing.T) {
 		}
 
 		provider, err := NewAWSSigV4Provider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
-		if provider.config.Service != "execute-api" {
-			t.Errorf("expected service to default to execute-api, got %s", provider.config.Service)
-		}
+		assert.Equal(t, "execute-api", provider.config.Service, "expected service to default to execute-api")
 	})
 
 	t.Run("missing credentials returns error", func(t *testing.T) {
@@ -1354,20 +1176,14 @@ func TestAWSSigV4Provider(t *testing.T) {
 		}
 
 		provider, err := NewAWSSigV4Provider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		req := httptest.NewRequest(http.MethodGet, "https://api.example.com/test", nil)
 		ctx := context.Background()
 
 		err = provider.ApplyAuth(ctx, req)
-		if err == nil {
-			t.Fatal("expected error for missing credentials")
-		}
-		if !strings.Contains(err.Error(), "credentials not configured") {
-			t.Errorf("unexpected error message: %v", err)
-		}
+		require.Error(t, err, "expected error for missing credentials")
+		assert.ErrorContains(t, err, "credentials not configured", "unexpected error message")
 	})
 
 	t.Run("Refresh does nothing", func(t *testing.T) {
@@ -1379,14 +1195,10 @@ func TestAWSSigV4Provider(t *testing.T) {
 		}
 
 		provider, err := NewAWSSigV4Provider(config)
-		if err != nil {
-			t.Fatalf("failed to create provider: %v", err)
-		}
+		require.NoError(t, err, "failed to create provider")
 
 		ctx := context.Background()
-		if err := provider.Refresh(ctx); err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
+		assert.NoError(t, provider.Refresh(ctx))
 	})
 }
 
@@ -1409,36 +1221,20 @@ func TestSigV4_HandlesNonAsciiPath(t *testing.T) {
 		SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 	}
 	provider, err := NewAWSSigV4Provider(config)
-	if err != nil {
-		t.Fatalf("NewAWSSigV4Provider: %v", err)
-	}
+	require.NoError(t, err, "NewAWSSigV4Provider")
 
 	req := httptest.NewRequest(http.MethodGet,
 		"https://api.example.com/path%20with%20spaces/and+plus/", nil)
 
-	if err := provider.ApplyAuth(context.Background(), req); err != nil {
-		t.Fatalf("ApplyAuth on non-ASCII path: %v", err)
-	}
+	require.NoError(t, provider.ApplyAuth(context.Background(), req), "ApplyAuth on non-ASCII path")
 
 	auth := req.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 ") {
-		t.Errorf("Authorization = %q, want AWS4-HMAC-SHA256 prefix", auth)
-	}
-	if !strings.Contains(auth, "Credential=AKIAIOSFODNN7EXAMPLE/") {
-		t.Errorf("Authorization missing Credential=: %q", auth)
-	}
-	if !strings.Contains(auth, "SignedHeaders=") {
-		t.Errorf("Authorization missing SignedHeaders=: %q", auth)
-	}
-	if !strings.Contains(auth, "Signature=") {
-		t.Errorf("Authorization missing Signature=: %q", auth)
-	}
-	if req.Header.Get("X-Amz-Date") == "" {
-		t.Error("X-Amz-Date header missing")
-	}
-	if req.Header.Get("X-Amz-Content-Sha256") == "" {
-		t.Error("X-Amz-Content-Sha256 header missing")
-	}
+	assert.Truef(t, strings.HasPrefix(auth, "AWS4-HMAC-SHA256 "), "Authorization = %q, want AWS4-HMAC-SHA256 prefix", auth)
+	assert.Containsf(t, auth, "Credential=AKIAIOSFODNN7EXAMPLE/", "Authorization missing Credential=: %q", auth)
+	assert.Containsf(t, auth, "SignedHeaders=", "Authorization missing SignedHeaders=: %q", auth)
+	assert.Containsf(t, auth, "Signature=", "Authorization missing Signature=: %q", auth)
+	assert.NotEmpty(t, req.Header.Get("X-Amz-Date"), "X-Amz-Date header missing")
+	assert.NotEmpty(t, req.Header.Get("X-Amz-Content-Sha256"), "X-Amz-Content-Sha256 header missing")
 }
 
 // TestNewAWSSigV4ProviderValidation tests AWS SigV4 provider validation.
@@ -1494,25 +1290,20 @@ func TestNewAWSSigV4ProviderValidation(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			provider, err := NewAWSSigV4Provider(tt.config)
 
 			if tt.expectError {
-				if err == nil {
-					t.Fatal("expected error but got none")
-				}
-				if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
-					t.Errorf("expected error to contain %q, got %q", tt.errorMsg, err.Error())
+				require.Error(t, err, "expected error but got none")
+				if tt.errorMsg != "" {
+					assert.ErrorContainsf(t, err, tt.errorMsg, "error message")
 				}
 			} else {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				if provider == nil {
-					t.Fatal("expected provider but got nil")
-				}
+				require.NoError(t, err)
+				assert.NotNil(t, provider, "expected provider but got nil")
 			}
 		})
 	}
@@ -1570,19 +1361,12 @@ func TestOAuth2AuthProvider_FirstCallReturnsPopulatedToken(t *testing.T) {
 		ClientID:     "first-call-client",
 		ClientSecret: "secret",
 	})
-	if err != nil {
-		t.Fatalf("NewOAuth2AuthProvider: %v", err)
-	}
+	require.NoError(t, err, "NewOAuth2AuthProvider")
 
 	req := httptest.NewRequest(http.MethodGet, "https://example.com/x", nil)
-	if err := provider.ApplyAuth(context.Background(), req); err != nil {
-		t.Fatalf("ApplyAuth: %v", err)
-	}
+	require.NoError(t, provider.ApplyAuth(context.Background(), req), "ApplyAuth")
 
-	got := req.Header.Get("Authorization")
-	if got != "Bearer first-call-token" {
-		t.Fatalf("first-call Authorization = %q, want %q", got, "Bearer first-call-token")
-	}
+	require.Equal(t, "Bearer first-call-token", req.Header.Get("Authorization"), "first-call Authorization")
 }
 
 // TestOAuth2AuthProvider_ConcurrentRefreshUsesSingleflight guards Fix
@@ -1614,9 +1398,7 @@ func TestOAuth2AuthProvider_ConcurrentRefreshUsesSingleflight(t *testing.T) {
 		ClientID:     "sf-client",
 		ClientSecret: "secret",
 	})
-	if err != nil {
-		t.Fatalf("NewOAuth2AuthProvider: %v", err)
-	}
+	require.NoError(t, err, "NewOAuth2AuthProvider")
 
 	const N = 50
 	var wg sync.WaitGroup
@@ -1643,7 +1425,5 @@ func TestOAuth2AuthProvider_ConcurrentRefreshUsesSingleflight(t *testing.T) {
 	// Two is the practical upper bound: one in-flight singleflight
 	// fetch plus, in the worst case, a second one if a goroutine
 	// scheduled in just after the first refresh published the token.
-	if got > 2 {
-		t.Fatalf("token endpoint hit %d times, want <= 2 (singleflight collapse expected)", got)
-	}
+	require.LessOrEqualf(t, got, int64(2), "token endpoint hit %d times, want <= 2 (singleflight collapse expected)", got)
 }

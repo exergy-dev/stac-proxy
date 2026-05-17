@@ -7,10 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
@@ -38,17 +39,13 @@ result := {
     }
 }
 `
-	if err := os.WriteFile(policyPath, []byte(policy), 0644); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
+	require.NoError(t, os.WriteFile(policyPath, []byte(policy), 0644), "write policy")
 
 	enf, err := authz.NewEmbeddedOPAEnforcer(authz.EmbeddedOPAConfig{
 		Name:        "e2e",
 		PolicyPaths: []string{policyPath},
 	})
-	if err != nil {
-		t.Fatalf("NewEmbeddedOPAEnforcer: %v", err)
-	}
+	require.NoError(t, err, "NewEmbeddedOPAEnforcer")
 
 	// Upstream that records the body.
 	cap := &capturedUpstream{}
@@ -80,9 +77,7 @@ result := {
 		}},
 		ConflictStrategy: federation.ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	httpReq := httptest.NewRequest("GET", "/search", nil)
 	withChain(t, mw, handler, httpReq, &middleware.STACInfo{
@@ -91,14 +86,8 @@ result := {
 	})
 
 	var body map[string]interface{}
-	if err := json.Unmarshal(cap.body, &body); err != nil {
-		t.Fatalf("upstream body not JSON: %v\n%s", err, cap.body)
-	}
+	require.NoError(t, json.Unmarshal(cap.body, &body), "upstream body not JSON: %s", cap.body)
 	filter, ok := body["filter"].(string)
-	if !ok {
-		t.Fatalf("upstream filter not a string: %T %v", body["filter"], body["filter"])
-	}
-	if !strings.Contains(filter, "eo:cloud_cover") {
-		t.Errorf("policy filter did not reach upstream: got %q", filter)
-	}
+	require.True(t, ok, "upstream filter not a string: %T %v", body["filter"], body["filter"])
+	assert.Contains(t, filter, "eo:cloud_cover", "policy filter did not reach upstream")
 }

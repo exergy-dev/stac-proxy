@@ -6,6 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewPolicyEnforcer(t *testing.T) {
@@ -24,15 +27,9 @@ func TestNewPolicyEnforcer(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, e *PolicyEnforcer) {
-				if e == nil {
-					t.Fatal("expected non-nil enforcer")
-				}
-				if e.name != "test-enforcer" {
-					t.Errorf("name = %v, want test-enforcer", e.name)
-				}
-				if len(e.policies) != 0 {
-					t.Errorf("expected empty policies, got %d", len(e.policies))
-				}
+				require.NotNil(t, e, "expected non-nil enforcer")
+				assert.Equal(t, "test-enforcer", e.name, "name")
+				assert.Empty(t, e.policies, "expected empty policies")
 			},
 		},
 		{
@@ -62,16 +59,10 @@ func TestNewPolicyEnforcer(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, e *PolicyEnforcer) {
-				if len(e.policies) != 2 {
-					t.Errorf("expected 2 policies, got %d", len(e.policies))
-				}
+				assert.Len(t, e.policies, 2, "expected 2 policies")
 				// Policies should be sorted by priority descending
-				if e.policies[0].Priority != 100 {
-					t.Errorf("first policy priority = %d, want 100", e.policies[0].Priority)
-				}
-				if e.policies[1].Priority != 50 {
-					t.Errorf("second policy priority = %d, want 50", e.policies[1].Priority)
-				}
+				assert.Equal(t, 100, e.policies[0].Priority, "first policy priority")
+				assert.Equal(t, 50, e.policies[1].Priority, "second policy priority")
 			},
 		},
 		{
@@ -86,18 +77,10 @@ func TestNewPolicyEnforcer(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, e *PolicyEnforcer) {
-				if len(e.policies) != 3 {
-					t.Fatalf("expected 3 policies, got %d", len(e.policies))
-				}
-				if e.policies[0].ID != "high" {
-					t.Errorf("first policy ID = %v, want high", e.policies[0].ID)
-				}
-				if e.policies[1].ID != "medium" {
-					t.Errorf("second policy ID = %v, want medium", e.policies[1].ID)
-				}
-				if e.policies[2].ID != "low" {
-					t.Errorf("third policy ID = %v, want low", e.policies[2].ID)
-				}
+				require.Len(t, e.policies, 3, "expected 3 policies")
+				assert.Equal(t, "high", e.policies[0].ID, "first policy ID")
+				assert.Equal(t, "medium", e.policies[1].ID, "second policy ID")
+				assert.Equal(t, "low", e.policies[2].ID, "third policy ID")
 			},
 		},
 	}
@@ -108,12 +91,13 @@ func TestNewPolicyEnforcer(t *testing.T) {
 			t.Parallel()
 
 			e, err := NewPolicyEnforcer(tt.config)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("NewPolicyEnforcer() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				require.Error(t, err, "NewPolicyEnforcer() expected error")
 				return
 			}
+			require.NoError(t, err, "NewPolicyEnforcer() error")
 
-			if !tt.wantErr && tt.validate != nil {
+			if tt.validate != nil {
 				tt.validate(t, e)
 			}
 		})
@@ -154,13 +138,9 @@ func TestNewPolicyEnforcer_FromFile(t *testing.T) {
 		}
 
 		data, err := json.Marshal(policies)
-		if err != nil {
-			t.Fatalf("failed to marshal policies: %v", err)
-		}
+		require.NoError(t, err, "failed to marshal policies")
 
-		if err := os.WriteFile(policyFile, data, 0600); err != nil {
-			t.Fatalf("failed to write policy file: %v", err)
-		}
+		require.NoError(t, os.WriteFile(policyFile, data, 0600), "failed to write policy file")
 
 		config := PolicyConfig{
 			Name:       "file-enforcer",
@@ -168,18 +148,12 @@ func TestNewPolicyEnforcer_FromFile(t *testing.T) {
 		}
 
 		e, err := NewPolicyEnforcer(config)
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
-		if len(e.policies) != 2 {
-			t.Errorf("expected 2 policies, got %d", len(e.policies))
-		}
+		assert.Len(t, e.policies, 2, "expected 2 policies")
 
 		// Verify policies are sorted by priority
-		if e.policies[0].Priority != 200 {
-			t.Errorf("first policy priority = %d, want 200", e.policies[0].Priority)
-		}
+		assert.Equal(t, 200, e.policies[0].Priority, "first policy priority")
 	})
 
 	t.Run("load from file with inline policies", func(t *testing.T) {
@@ -191,13 +165,9 @@ func TestNewPolicyEnforcer_FromFile(t *testing.T) {
 		}
 
 		data, err := json.Marshal(filePolicies)
-		if err != nil {
-			t.Fatalf("failed to marshal policies: %v", err)
-		}
+		require.NoError(t, err, "failed to marshal policies")
 
-		if err := os.WriteFile(policyFile, data, 0600); err != nil {
-			t.Fatalf("failed to write policy file: %v", err)
-		}
+		require.NoError(t, os.WriteFile(policyFile, data, 0600), "failed to write policy file")
 
 		config := PolicyConfig{
 			Name:       "combined-enforcer",
@@ -208,13 +178,9 @@ func TestNewPolicyEnforcer_FromFile(t *testing.T) {
 		}
 
 		e, err := NewPolicyEnforcer(config)
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
-		if len(e.policies) != 2 {
-			t.Errorf("expected 2 policies (inline + file), got %d", len(e.policies))
-		}
+		assert.Len(t, e.policies, 2, "expected 2 policies (inline + file)")
 	})
 
 	t.Run("error on nonexistent file", func(t *testing.T) {
@@ -224,18 +190,14 @@ func TestNewPolicyEnforcer_FromFile(t *testing.T) {
 		}
 
 		_, err := NewPolicyEnforcer(config)
-		if err == nil {
-			t.Error("expected error for nonexistent file")
-		}
+		assert.Error(t, err, "expected error for nonexistent file")
 	})
 
 	t.Run("error on invalid json", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		policyFile := filepath.Join(tmpDir, "invalid.json")
 
-		if err := os.WriteFile(policyFile, []byte("invalid json"), 0600); err != nil {
-			t.Fatalf("failed to write file: %v", err)
-		}
+		require.NoError(t, os.WriteFile(policyFile, []byte("invalid json"), 0600), "failed to write file")
 
 		config := PolicyConfig{
 			Name:       "invalid-enforcer",
@@ -243,9 +205,7 @@ func TestNewPolicyEnforcer_FromFile(t *testing.T) {
 		}
 
 		_, err := NewPolicyEnforcer(config)
-		if err == nil {
-			t.Error("expected error for invalid JSON")
-		}
+		assert.Error(t, err, "expected error for invalid JSON")
 	})
 }
 
@@ -253,13 +213,9 @@ func TestPolicyEnforcer_Name(t *testing.T) {
 	t.Parallel()
 
 	e, err := NewPolicyEnforcer(PolicyConfig{Name: "test-name"})
-	if err != nil {
-		t.Fatalf("NewPolicyEnforcer() error = %v", err)
-	}
+	require.NoError(t, err, "NewPolicyEnforcer() error")
 
-	if e.Name() != "test-name" {
-		t.Errorf("Name() = %v, want test-name", e.Name())
-	}
+	assert.Equal(t, "test-name", e.Name(), "Name()")
 }
 
 func TestPolicyEnforcer_Authorize(t *testing.T) {
@@ -531,39 +487,28 @@ func TestPolicyEnforcer_Authorize(t *testing.T) {
 				Name:     "test",
 				Policies: tt.policies,
 			})
-			if err != nil {
-				t.Fatalf("NewPolicyEnforcer() error = %v", err)
-			}
+			require.NoError(t, err, "NewPolicyEnforcer() error")
 
 			decision, err := e.Authorize(context.Background(), tt.input)
-			if err != nil {
-				t.Fatalf("Authorize() error = %v", err)
-			}
+			require.NoError(t, err, "Authorize() error")
+			require.NotNil(t, decision, "expected non-nil decision")
 
-			if decision == nil {
-				t.Fatal("expected non-nil decision")
-			}
-
-			if decision.Allowed != tt.wantAllowed {
-				t.Errorf("Allowed = %v, want %v", decision.Allowed, tt.wantAllowed)
-			}
+			assert.Equal(t, tt.wantAllowed, decision.Allowed, "Allowed")
 
 			if len(decision.Reasons) != len(tt.wantReasons) {
 				t.Errorf("Reasons count = %d, want %d", len(decision.Reasons), len(tt.wantReasons))
 			} else {
 				for i, reason := range tt.wantReasons {
-					if decision.Reasons[i] != reason {
-						t.Errorf("Reason[%d] = %v, want %v", i, decision.Reasons[i], reason)
-					}
+					assert.Equal(t, reason, decision.Reasons[i], "Reason[%d]", i)
 				}
 			}
 
-			if tt.wantConstraints && decision.Constraints == nil {
-				t.Error("expected constraints to be set")
+			if tt.wantConstraints {
+				assert.NotNil(t, decision.Constraints, "expected constraints to be set")
 			}
 
-			if !tt.wantConstraints && decision.Allowed && decision.Constraints != nil {
-				t.Error("expected no constraints")
+			if !tt.wantConstraints && decision.Allowed {
+				assert.Nil(t, decision.Constraints, "expected no constraints")
 			}
 		})
 	}
@@ -759,9 +704,7 @@ func TestPrincipalMatcher(t *testing.T) {
 				Name:     "test",
 				Policies: []Policy{policy},
 			})
-			if err != nil {
-				t.Fatalf("NewPolicyEnforcer() error = %v", err)
-			}
+			require.NoError(t, err, "NewPolicyEnforcer() error")
 
 			input := &AuthzInput{
 				Principal: tt.principal,
@@ -775,9 +718,7 @@ func TestPrincipalMatcher(t *testing.T) {
 			}
 
 			matched := e.matches(&policy, input)
-			if matched != tt.wantMatch {
-				t.Errorf("matches() = %v, want %v", matched, tt.wantMatch)
-			}
+			assert.Equal(t, tt.wantMatch, matched, "matches()")
 		})
 	}
 }
@@ -943,9 +884,7 @@ func TestResourceMatcher(t *testing.T) {
 				Name:     "test",
 				Policies: []Policy{policy},
 			})
-			if err != nil {
-				t.Fatalf("NewPolicyEnforcer() error = %v", err)
-			}
+			require.NoError(t, err, "NewPolicyEnforcer() error")
 
 			input := &AuthzInput{
 				Principal: &PrincipalInfo{ID: "user1"},
@@ -957,9 +896,7 @@ func TestResourceMatcher(t *testing.T) {
 			}
 
 			matched := e.matches(&policy, input)
-			if matched != tt.wantMatch {
-				t.Errorf("matches() = %v, want %v", matched, tt.wantMatch)
-			}
+			assert.Equal(t, tt.wantMatch, matched, "matches()")
 		})
 	}
 }
@@ -1087,9 +1024,7 @@ func TestActionMatcher(t *testing.T) {
 				Name:     "test",
 				Policies: []Policy{policy},
 			})
-			if err != nil {
-				t.Fatalf("NewPolicyEnforcer() error = %v", err)
-			}
+			require.NoError(t, err, "NewPolicyEnforcer() error")
 
 			input := &AuthzInput{
 				Principal: &PrincipalInfo{ID: "user1"},
@@ -1098,9 +1033,7 @@ func TestActionMatcher(t *testing.T) {
 			}
 
 			matched := e.matches(&policy, input)
-			if matched != tt.wantMatch {
-				t.Errorf("matches() = %v, want %v", matched, tt.wantMatch)
-			}
+			assert.Equal(t, tt.wantMatch, matched, "matches()")
 		})
 	}
 }
@@ -1212,9 +1145,7 @@ func TestMatchGlob(t *testing.T) {
 			t.Parallel()
 
 			got := matchGlob(tt.pattern, tt.s)
-			if got != tt.want {
-				t.Errorf("matchGlob(%q, %q) = %v, want %v", tt.pattern, tt.s, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "matchGlob(%q, %q)", tt.pattern, tt.s)
 		})
 	}
 }
@@ -1231,24 +1162,16 @@ func TestReloadPolicies(t *testing.T) {
 			{ID: "policy1", Effect: PolicyEffectAllow, Priority: 100},
 		}
 		data, err := json.Marshal(initialPolicies)
-		if err != nil {
-			t.Fatalf("failed to marshal policies: %v", err)
-		}
-		if err := os.WriteFile(policyFile, data, 0600); err != nil {
-			t.Fatalf("failed to write policy file: %v", err)
-		}
+		require.NoError(t, err, "failed to marshal policies")
+		require.NoError(t, os.WriteFile(policyFile, data, 0600), "failed to write policy file")
 
 		e, err := NewPolicyEnforcer(PolicyConfig{
 			Name:       "test",
 			PolicyFile: policyFile,
 		})
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
-		if len(e.policies) != 1 {
-			t.Errorf("initial policies count = %d, want 1", len(e.policies))
-		}
+		assert.Len(t, e.policies, 1, "initial policies count")
 
 		// Update policies
 		updatedPolicies := []Policy{
@@ -1257,63 +1180,39 @@ func TestReloadPolicies(t *testing.T) {
 			{ID: "policy3", Effect: PolicyEffectAllow, Priority: 50},
 		}
 		data, err = json.Marshal(updatedPolicies)
-		if err != nil {
-			t.Fatalf("failed to marshal updated policies: %v", err)
-		}
-		if err := os.WriteFile(policyFile, data, 0600); err != nil {
-			t.Fatalf("failed to write updated policy file: %v", err)
-		}
+		require.NoError(t, err, "failed to marshal updated policies")
+		require.NoError(t, os.WriteFile(policyFile, data, 0600), "failed to write updated policy file")
 
 		// Reload
-		if err := e.ReloadPolicies(policyFile); err != nil {
-			t.Fatalf("ReloadPolicies() error = %v", err)
-		}
+		require.NoError(t, e.ReloadPolicies(policyFile), "ReloadPolicies() error")
 
-		if len(e.policies) != 3 {
-			t.Errorf("reloaded policies count = %d, want 3", len(e.policies))
-		}
+		assert.Len(t, e.policies, 3, "reloaded policies count")
 
 		// Verify policies are sorted by priority
-		if e.policies[0].Priority != 200 {
-			t.Errorf("first policy priority = %d, want 200", e.policies[0].Priority)
-		}
-		if e.policies[1].Priority != 100 {
-			t.Errorf("second policy priority = %d, want 100", e.policies[1].Priority)
-		}
-		if e.policies[2].Priority != 50 {
-			t.Errorf("third policy priority = %d, want 50", e.policies[2].Priority)
-		}
+		assert.Equal(t, 200, e.policies[0].Priority, "first policy priority")
+		assert.Equal(t, 100, e.policies[1].Priority, "second policy priority")
+		assert.Equal(t, 50, e.policies[2].Priority, "third policy priority")
 	})
 
 	t.Run("reload from nonexistent file", func(t *testing.T) {
 		e, err := NewPolicyEnforcer(PolicyConfig{Name: "test"})
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
 		err = e.ReloadPolicies("/nonexistent/policies.json")
-		if err == nil {
-			t.Error("expected error for nonexistent file")
-		}
+		assert.Error(t, err, "expected error for nonexistent file")
 	})
 
 	t.Run("reload from invalid json", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		policyFile := filepath.Join(tmpDir, "invalid.json")
 
-		if err := os.WriteFile(policyFile, []byte("invalid json"), 0600); err != nil {
-			t.Fatalf("failed to write file: %v", err)
-		}
+		require.NoError(t, os.WriteFile(policyFile, []byte("invalid json"), 0600), "failed to write file")
 
 		e, err := NewPolicyEnforcer(PolicyConfig{Name: "test"})
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
 		err = e.ReloadPolicies(policyFile)
-		if err == nil {
-			t.Error("expected error for invalid JSON")
-		}
+		assert.Error(t, err, "expected error for invalid JSON")
 	})
 }
 
@@ -1388,14 +1287,14 @@ func TestValidatePolicies(t *testing.T) {
 			t.Parallel()
 
 			err := ValidatePolicies(tt.policies)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidatePolicies() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				require.Error(t, err, "ValidatePolicies() expected error")
+				if tt.errMsg != "" {
+					assert.Equal(t, tt.errMsg, err.Error(), "ValidatePolicies() error message")
+				}
 				return
 			}
-
-			if err != nil && tt.errMsg != "" && err.Error() != tt.errMsg {
-				t.Errorf("ValidatePolicies() error = %v, want %v", err.Error(), tt.errMsg)
-			}
+			require.NoError(t, err, "ValidatePolicies() error")
 		})
 	}
 }
@@ -1441,9 +1340,7 @@ func TestPolicyEnforcer_ComplexScenarios(t *testing.T) {
 			Name:     "multi-tier",
 			Policies: policies,
 		})
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
 		// Admin can access classified data
 		adminInput := &AuthzInput{
@@ -1462,12 +1359,8 @@ func TestPolicyEnforcer_ComplexScenarios(t *testing.T) {
 		}
 
 		decision, err := e.Authorize(context.Background(), adminInput)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
-		if !decision.Allowed {
-			t.Error("admin should be allowed to access classified data")
-		}
+		require.NoError(t, err, "Authorize() error")
+		assert.True(t, decision.Allowed, "admin should be allowed to access classified data")
 
 		// Viewer cannot access classified data
 		viewerClassifiedInput := &AuthzInput{
@@ -1486,12 +1379,8 @@ func TestPolicyEnforcer_ComplexScenarios(t *testing.T) {
 		}
 
 		decision, err = e.Authorize(context.Background(), viewerClassifiedInput)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
-		if decision.Allowed {
-			t.Error("viewer should not be allowed to access classified data")
-		}
+		require.NoError(t, err, "Authorize() error")
+		assert.False(t, decision.Allowed, "viewer should not be allowed to access classified data")
 
 		// Viewer can access public data
 		viewerPublicInput := &AuthzInput{
@@ -1510,12 +1399,8 @@ func TestPolicyEnforcer_ComplexScenarios(t *testing.T) {
 		}
 
 		decision, err = e.Authorize(context.Background(), viewerPublicInput)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
-		if !decision.Allowed {
-			t.Error("viewer should be allowed to access public data")
-		}
+		require.NoError(t, err, "Authorize() error")
+		assert.True(t, decision.Allowed, "viewer should be allowed to access public data")
 	})
 
 	t.Run("action-based authorization", func(t *testing.T) {
@@ -1544,9 +1429,7 @@ func TestPolicyEnforcer_ComplexScenarios(t *testing.T) {
 			Name:     "action-based",
 			Policies: policies,
 		})
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
 		// Reader can GET
 		readerGetInput := &AuthzInput{
@@ -1564,12 +1447,8 @@ func TestPolicyEnforcer_ComplexScenarios(t *testing.T) {
 		}
 
 		decision, err := e.Authorize(context.Background(), readerGetInput)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
-		if !decision.Allowed {
-			t.Error("reader should be allowed to GET")
-		}
+		require.NoError(t, err, "Authorize() error")
+		assert.True(t, decision.Allowed, "reader should be allowed to GET")
 
 		// Reader cannot POST
 		readerPostInput := &AuthzInput{
@@ -1587,12 +1466,8 @@ func TestPolicyEnforcer_ComplexScenarios(t *testing.T) {
 		}
 
 		decision, err = e.Authorize(context.Background(), readerPostInput)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
-		if decision.Allowed {
-			t.Error("reader should not be allowed to POST")
-		}
+		require.NoError(t, err, "Authorize() error")
+		assert.False(t, decision.Allowed, "reader should not be allowed to POST")
 
 		// Writer can POST
 		writerPostInput := &AuthzInput{
@@ -1610,12 +1485,8 @@ func TestPolicyEnforcer_ComplexScenarios(t *testing.T) {
 		}
 
 		decision, err = e.Authorize(context.Background(), writerPostInput)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
-		if !decision.Allowed {
-			t.Error("writer should be allowed to POST")
-		}
+		require.NoError(t, err, "Authorize() error")
+		assert.True(t, decision.Allowed, "writer should be allowed to POST")
 	})
 }
 
@@ -1644,9 +1515,7 @@ func TestPolicyEnforcer_Concurrency(t *testing.T) {
 		Name:     "concurrent",
 		Policies: policies,
 	})
-	if err != nil {
-		t.Fatalf("NewPolicyEnforcer() error = %v", err)
-	}
+	require.NoError(t, err, "NewPolicyEnforcer() error")
 
 	// Test concurrent authorization
 	done := make(chan bool)
@@ -1689,20 +1558,14 @@ func TestPolicyEnforcer_ConcurrentReload(t *testing.T) {
 		{ID: "policy1", Effect: PolicyEffectAllow, Priority: 100},
 	}
 	data, err := json.Marshal(initialPolicies)
-	if err != nil {
-		t.Fatalf("failed to marshal policies: %v", err)
-	}
-	if err := os.WriteFile(policyFile, data, 0600); err != nil {
-		t.Fatalf("failed to write policy file: %v", err)
-	}
+	require.NoError(t, err, "failed to marshal policies")
+	require.NoError(t, os.WriteFile(policyFile, data, 0600), "failed to write policy file")
 
 	e, err := NewPolicyEnforcer(PolicyConfig{
 		Name:       "reload-test",
 		PolicyFile: policyFile,
 	})
-	if err != nil {
-		t.Fatalf("NewPolicyEnforcer() error = %v", err)
-	}
+	require.NoError(t, err, "NewPolicyEnforcer() error")
 
 	done := make(chan bool)
 
@@ -1780,9 +1643,7 @@ func TestHelperFunctions(t *testing.T) {
 			t.Run(tt.name, func(t *testing.T) {
 				t.Parallel()
 				got := containsString(tt.slice, tt.s)
-				if got != tt.want {
-					t.Errorf("containsString(%v, %q) = %v, want %v", tt.slice, tt.s, got, tt.want)
-				}
+				assert.Equal(t, tt.want, got, "containsString(%v, %q)", tt.slice, tt.s)
 			})
 		}
 	})
@@ -1831,9 +1692,7 @@ func TestHelperFunctions(t *testing.T) {
 			t.Run(tt.name, func(t *testing.T) {
 				t.Parallel()
 				got := hasAnyRole(tt.a, tt.b)
-				if got != tt.want {
-					t.Errorf("hasAnyRole(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
-				}
+				assert.Equal(t, tt.want, got, "hasAnyRole(%v, %v)", tt.a, tt.b)
 			})
 		}
 	})
@@ -1856,9 +1715,7 @@ func TestEdgeCases(t *testing.T) {
 			Name:     "test",
 			Policies: []Policy{policy},
 		})
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
 		input := &AuthzInput{
 			Principal: nil,
@@ -1872,13 +1729,8 @@ func TestEdgeCases(t *testing.T) {
 		}
 
 		decision, err := e.Authorize(context.Background(), input)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
-
-		if decision.Allowed {
-			t.Error("should not allow nil principal")
-		}
+		require.NoError(t, err, "Authorize() error")
+		assert.False(t, decision.Allowed, "should not allow nil principal")
 	})
 
 	t.Run("nil resource info", func(t *testing.T) {
@@ -1895,9 +1747,7 @@ func TestEdgeCases(t *testing.T) {
 			Name:     "test",
 			Policies: []Policy{policy},
 		})
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
 		input := &AuthzInput{
 			Principal: &PrincipalInfo{
@@ -1912,13 +1762,8 @@ func TestEdgeCases(t *testing.T) {
 		}
 
 		decision, err := e.Authorize(context.Background(), input)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
-
-		if decision.Allowed {
-			t.Error("should not allow nil resource")
-		}
+		require.NoError(t, err, "Authorize() error")
+		assert.False(t, decision.Allowed, "should not allow nil resource")
 	})
 
 	t.Run("nil request info", func(t *testing.T) {
@@ -1933,9 +1778,7 @@ func TestEdgeCases(t *testing.T) {
 			Name:     "test",
 			Policies: []Policy{policy},
 		})
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
 		input := &AuthzInput{
 			Principal: &PrincipalInfo{
@@ -1949,13 +1792,8 @@ func TestEdgeCases(t *testing.T) {
 		}
 
 		decision, err := e.Authorize(context.Background(), input)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
-
-		if decision.Allowed {
-			t.Error("should not allow nil request")
-		}
+		require.NoError(t, err, "Authorize() error")
+		assert.False(t, decision.Allowed, "should not allow nil request")
 	})
 
 	t.Run("policy with all matchers nil", func(t *testing.T) {
@@ -1970,9 +1808,7 @@ func TestEdgeCases(t *testing.T) {
 			Name:     "test",
 			Policies: []Policy{policy},
 		})
-		if err != nil {
-			t.Fatalf("NewPolicyEnforcer() error = %v", err)
-		}
+		require.NoError(t, err, "NewPolicyEnforcer() error")
 
 		input := &AuthzInput{
 			Principal: &PrincipalInfo{
@@ -1989,14 +1825,10 @@ func TestEdgeCases(t *testing.T) {
 		}
 
 		decision, err := e.Authorize(context.Background(), input)
-		if err != nil {
-			t.Fatalf("Authorize() error = %v", err)
-		}
+		require.NoError(t, err, "Authorize() error")
 
 		// Policy with no matchers should match everything
-		if !decision.Allowed {
-			t.Error("policy with no matchers should match everything")
-		}
+		assert.True(t, decision.Allowed, "policy with no matchers should match everything")
 	})
 }
 
@@ -2019,9 +1851,7 @@ func TestPolicy_EmptyPrincipalMatcherMatchesNothing(t *testing.T) {
 		Name:     "test",
 		Policies: []Policy{policy},
 	})
-	if err != nil {
-		t.Fatalf("NewPolicyEnforcer: %v", err)
-	}
+	require.NoError(t, err, "NewPolicyEnforcer")
 
 	input := &AuthzInput{
 		Principal: &PrincipalInfo{ID: "anyone"},
@@ -2030,12 +1860,8 @@ func TestPolicy_EmptyPrincipalMatcherMatchesNothing(t *testing.T) {
 	}
 
 	decision, err := e.Authorize(context.Background(), input)
-	if err != nil {
-		t.Fatalf("Authorize: %v", err)
-	}
-	if decision.Allowed {
-		t.Fatalf("want deny (empty matcher matches nothing), got allow: %+v", decision)
-	}
+	require.NoError(t, err, "Authorize")
+	require.False(t, decision.Allowed, "want deny (empty matcher matches nothing), got allow: %+v", decision)
 }
 
 // TestPolicy_NilPrincipalMatcherMatchesAll verifies that omitting the
@@ -2057,9 +1883,7 @@ func TestPolicy_NilPrincipalMatcherMatchesAll(t *testing.T) {
 		Name:     "test",
 		Policies: []Policy{policy},
 	})
-	if err != nil {
-		t.Fatalf("NewPolicyEnforcer: %v", err)
-	}
+	require.NoError(t, err, "NewPolicyEnforcer")
 
 	input := &AuthzInput{
 		Principal: &PrincipalInfo{ID: "anyone", Type: "user"},
@@ -2068,10 +1892,6 @@ func TestPolicy_NilPrincipalMatcherMatchesAll(t *testing.T) {
 	}
 
 	decision, err := e.Authorize(context.Background(), input)
-	if err != nil {
-		t.Fatalf("Authorize: %v", err)
-	}
-	if !decision.Allowed {
-		t.Fatalf("want allow (nil matcher = no constraint), got deny: %+v", decision)
-	}
+	require.NoError(t, err, "Authorize")
+	require.True(t, decision.Allowed, "want allow (nil matcher = no constraint), got deny: %+v", decision)
 }

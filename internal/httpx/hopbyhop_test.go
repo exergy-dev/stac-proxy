@@ -3,6 +3,8 @@ package httpx
 import (
 	"net/http"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestStripHopByHopHeaders_StandardList(t *testing.T) {
@@ -23,13 +25,9 @@ func TestStripHopByHopHeaders_StandardList(t *testing.T) {
 		"Proxy-Authenticate", "Proxy-Authorization", "Te",
 		"Trailer", "Transfer-Encoding", "Upgrade",
 	} {
-		if v := h.Get(name); v != "" {
-			t.Errorf("%s not stripped: %q", name, v)
-		}
+		assert.Empty(t, h.Get(name), "%s not stripped", name)
 	}
-	if h.Get("Content-Type") != "application/json" {
-		t.Error("Content-Type (end-to-end) was incorrectly stripped")
-	}
+	assert.Equal(t, "application/json", h.Get("Content-Type"), "Content-Type (end-to-end) was incorrectly stripped")
 }
 
 func TestStripHopByHopHeaders_StripsConnectionNamed(t *testing.T) {
@@ -41,18 +39,10 @@ func TestStripHopByHopHeaders_StripsConnectionNamed(t *testing.T) {
 
 	StripHopByHopHeaders(h)
 
-	if h.Get("X-Custom-1") != "" {
-		t.Error("X-Custom-1 not stripped")
-	}
-	if h.Get("X-Custom-2") != "" {
-		t.Error("X-Custom-2 not stripped")
-	}
-	if h.Get("Connection") != "" {
-		t.Error("Connection not stripped")
-	}
-	if h.Get("X-Keep") != "keep" {
-		t.Error("end-to-end X-Keep incorrectly stripped")
-	}
+	assert.Empty(t, h.Get("X-Custom-1"), "X-Custom-1 not stripped")
+	assert.Empty(t, h.Get("X-Custom-2"), "X-Custom-2 not stripped")
+	assert.Empty(t, h.Get("Connection"), "Connection not stripped")
+	assert.Equal(t, "keep", h.Get("X-Keep"), "end-to-end X-Keep incorrectly stripped")
 }
 
 func TestStripHopByHopHeaders_Idempotent(t *testing.T) {
@@ -66,15 +56,9 @@ func TestStripHopByHopHeaders_Idempotent(t *testing.T) {
 	StripHopByHopHeaders(h)
 	StripHopByHopHeaders(h)
 
-	if got, want := h.Get("Content-Type"), first.Get("Content-Type"); got != want {
-		t.Errorf("Content-Type changed: %q -> %q", want, got)
-	}
-	if got, want := h.Get("X-Trace-Id"), first.Get("X-Trace-Id"); got != want {
-		t.Errorf("X-Trace-Id changed: %q -> %q", want, got)
-	}
-	if h.Get("Connection") != "" {
-		t.Error("Connection reappeared")
-	}
+	assert.Equal(t, first.Get("Content-Type"), h.Get("Content-Type"), "Content-Type changed")
+	assert.Equal(t, first.Get("X-Trace-Id"), h.Get("X-Trace-Id"), "X-Trace-Id changed")
+	assert.Empty(t, h.Get("Connection"), "Connection reappeared")
 }
 
 func TestStripHopByHopHeaders_PreservesEndToEnd(t *testing.T) {
@@ -86,18 +70,10 @@ func TestStripHopByHopHeaders_PreservesEndToEnd(t *testing.T) {
 
 	StripHopByHopHeaders(h)
 
-	if h.Get("Content-Type") != "application/json" {
-		t.Error("Content-Type stripped")
-	}
-	if h.Get("Content-Length") != "42" {
-		t.Error("Content-Length stripped")
-	}
-	if h.Get("Authorization") != "Bearer x" {
-		t.Error("Authorization stripped")
-	}
-	if h.Get("X-Request-Id") != "abc" {
-		t.Error("X-Request-Id stripped")
-	}
+	assert.Equal(t, "application/json", h.Get("Content-Type"), "Content-Type stripped")
+	assert.Equal(t, "42", h.Get("Content-Length"), "Content-Length stripped")
+	assert.Equal(t, "Bearer x", h.Get("Authorization"), "Authorization stripped")
+	assert.Equal(t, "abc", h.Get("X-Request-Id"), "X-Request-Id stripped")
 }
 
 func TestStripHopByHopHeaders_NilSafe(t *testing.T) {
@@ -113,9 +89,8 @@ func TestStripHopByHopHeaders_ConnectionWithWhitespaceAndEmpty(t *testing.T) {
 
 	StripHopByHopHeaders(h)
 
-	if h.Get("X-A") != "" || h.Get("X-B") != "" {
-		t.Error("whitespace-trimmed connection-named headers not stripped")
-	}
+	assert.Empty(t, h.Get("X-A"), "whitespace-trimmed connection-named headers not stripped")
+	assert.Empty(t, h.Get("X-B"), "whitespace-trimmed connection-named headers not stripped")
 }
 
 func TestStripHopByHopHeaders_StripsForwarded(t *testing.T) {
@@ -125,10 +100,6 @@ func TestStripHopByHopHeaders_StripsForwarded(t *testing.T) {
 
 	StripHopByHopHeaders(h)
 
-	if h.Get("Forwarded") != "" {
-		t.Error("RFC 7239 Forwarded header not stripped")
-	}
-	if h.Get("Content-Type") != "application/json" {
-		t.Error("end-to-end Content-Type incorrectly stripped")
-	}
+	assert.Empty(t, h.Get("Forwarded"), "RFC 7239 Forwarded header not stripped")
+	assert.Equal(t, "application/json", h.Get("Content-Type"), "end-to-end Content-Type incorrectly stripped")
 }

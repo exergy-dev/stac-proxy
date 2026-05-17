@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -20,13 +21,9 @@ func TestBasicAuth_BcryptPrefixSkipsBase64(t *testing.T) {
 
 	const password = "correct-horse-battery-staple"
 	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("bcrypt: %v", err)
-	}
+	require.NoError(t, err, "bcrypt")
 	hashStr := string(hashed)
-	if !strings.HasPrefix(hashStr, "$2") {
-		t.Fatalf("sanity: expected bcrypt prefix on %q", hashStr)
-	}
+	require.True(t, strings.HasPrefix(hashStr, "$2"), "sanity: expected bcrypt prefix on %q", hashStr)
 
 	provider, err := NewBasicAuthProvider(BasicAuthConfig{
 		Name: "basic",
@@ -36,30 +33,20 @@ func TestBasicAuth_BcryptPrefixSkipsBase64(t *testing.T) {
 			Roles:        []string{"reader"},
 		}},
 	})
-	if err != nil {
-		t.Fatalf("NewBasicAuthProvider: %v", err)
-	}
+	require.NoError(t, err, "NewBasicAuthProvider")
 
 	user, ok := provider.users["alice"]
-	if !ok {
-		t.Fatal("user alice not stored")
-	}
-	if string(user.passwordHash) != hashStr {
-		t.Fatalf("expected stored hash to match input verbatim;\n want: %s\n got:  %s",
-			hashStr, string(user.passwordHash))
-	}
+	require.True(t, ok, "user alice not stored")
+	require.Equal(t, hashStr, string(user.passwordHash), "expected stored hash to match input verbatim")
 
 	// And the credential authenticates.
 	req := httptest.NewRequest("GET", "/", nil)
 	credential := base64.StdEncoding.EncodeToString([]byte("alice:" + password))
 	req.Header.Set("Authorization", "Basic "+credential)
 	princ, err := provider.Authenticate(context.Background(), req)
-	if err != nil {
-		t.Fatalf("authenticate: %v", err)
-	}
-	if princ == nil || princ.ID != "alice" {
-		t.Fatalf("want principal alice, got %+v", princ)
-	}
+	require.NoError(t, err, "authenticate")
+	require.NotNil(t, princ, "want principal alice")
+	require.Equal(t, "alice", princ.ID, "want principal alice")
 }
 
 // TestBasicAuth_Base64FallbackPreserved exercises the legacy path: a
@@ -71,15 +58,11 @@ func TestBasicAuth_Base64FallbackPreserved(t *testing.T) {
 
 	const password = "password"
 	rawHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("bcrypt: %v", err)
-	}
+	require.NoError(t, err, "bcrypt")
 	// Pre-base64-encode the bcrypt bytes — this is the historical
 	// configuration shape we still support.
 	wrapped := base64.StdEncoding.EncodeToString(rawHash)
-	if strings.HasPrefix(wrapped, "$2") {
-		t.Fatalf("base64 output unexpectedly starts with bcrypt prefix: %s", wrapped)
-	}
+	require.False(t, strings.HasPrefix(wrapped, "$2"), "base64 output unexpectedly starts with bcrypt prefix: %s", wrapped)
 
 	provider, err := NewBasicAuthProvider(BasicAuthConfig{
 		Name: "basic",
@@ -88,19 +71,14 @@ func TestBasicAuth_Base64FallbackPreserved(t *testing.T) {
 			PasswordHash: wrapped,
 		}},
 	})
-	if err != nil {
-		t.Fatalf("NewBasicAuthProvider: %v", err)
-	}
+	require.NoError(t, err, "NewBasicAuthProvider")
 
 	got := provider.users["bob"].passwordHash
-	if string(got) != string(rawHash) {
-		t.Fatalf("expected base64-wrapped hash to be decoded back to raw bcrypt bytes")
-	}
+	require.Equal(t, string(rawHash), string(got), "expected base64-wrapped hash to be decoded back to raw bcrypt bytes")
 
 	req := httptest.NewRequest("GET", "/", nil)
 	cred := base64.StdEncoding.EncodeToString([]byte("bob:" + password))
 	req.Header.Set("Authorization", "Basic "+cred)
-	if _, err := provider.Authenticate(context.Background(), req); err != nil {
-		t.Fatalf("authenticate: %v", err)
-	}
+	_, err = provider.Authenticate(context.Background(), req)
+	require.NoError(t, err, "authenticate")
 }

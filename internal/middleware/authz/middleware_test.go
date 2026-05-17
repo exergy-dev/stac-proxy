@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/stac"
@@ -63,9 +64,7 @@ func TestAuthz_CQL2InjectionDisabled_NoOp(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
 	runMW(mw, r)
-	if sr.Filter != nil {
-		t.Fatalf("want untouched Filter when disabled, got %v", sr.Filter)
-	}
+	require.Nil(t, sr.Filter, "want untouched Filter when disabled, got %v", sr.Filter)
 }
 
 func TestAuthz_PolicyCQL2Only(t *testing.T) {
@@ -83,15 +82,9 @@ func TestAuthz_PolicyCQL2Only(t *testing.T) {
 	runMW(mw, r)
 
 	s, ok := sr.Filter.(string)
-	if !ok {
-		t.Fatalf("want string filter (cql2-text), got %T %v", sr.Filter, sr.Filter)
-	}
-	if !strings.Contains(s, "eo:cloud_cover") {
-		t.Fatalf("want policy filter in output, got %q", s)
-	}
-	if sr.FilterLang != "cql2-text" {
-		t.Fatalf("want FilterLang=cql2-text, got %q", sr.FilterLang)
-	}
+	require.True(t, ok, "want string filter (cql2-text), got %T %v", sr.Filter, sr.Filter)
+	require.Contains(t, s, "eo:cloud_cover", "want policy filter in output, got %q", s)
+	require.Equal(t, "cql2-text", sr.FilterLang, "want FilterLang=cql2-text")
 }
 
 func TestAuthz_UserAndPolicyANDCombined(t *testing.T) {
@@ -112,15 +105,10 @@ func TestAuthz_UserAndPolicyANDCombined(t *testing.T) {
 	runMW(mw, r)
 
 	s, ok := sr.Filter.(string)
-	if !ok {
-		t.Fatalf("want string filter, got %T %v", sr.Filter, sr.Filter)
-	}
-	if !strings.Contains(s, "eo:cloud_cover") || !strings.Contains(s, "datetime") {
-		t.Fatalf("want both predicates, got %q", s)
-	}
-	if !strings.Contains(s, "AND") {
-		t.Fatalf("want AND-combined, got %q", s)
-	}
+	require.True(t, ok, "want string filter, got %T %v", sr.Filter, sr.Filter)
+	require.Contains(t, s, "eo:cloud_cover", "want both predicates, got %q", s)
+	require.Contains(t, s, "datetime", "want both predicates, got %q", s)
+	require.Contains(t, s, "AND", "want AND-combined, got %q", s)
 }
 
 func TestAuthz_PreservesCQL2JSONLang(t *testing.T) {
@@ -137,12 +125,9 @@ func TestAuthz_PreservesCQL2JSONLang(t *testing.T) {
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	runMW(mw, r)
 
-	if _, ok := sr.Filter.(map[string]interface{}); !ok {
-		t.Fatalf("want cql2-json map output, got %T %v", sr.Filter, sr.Filter)
-	}
-	if sr.FilterLang != "cql2-json" {
-		t.Fatalf("want FilterLang preserved, got %q", sr.FilterLang)
-	}
+	_, ok := sr.Filter.(map[string]interface{})
+	require.True(t, ok, "want cql2-json map output, got %T %v", sr.Filter, sr.Filter)
+	require.Equal(t, "cql2-json", sr.FilterLang, "want FilterLang preserved")
 }
 
 func TestAuthz_GeofencePushDown(t *testing.T) {
@@ -175,15 +160,9 @@ func TestAuthz_GeofencePushDown(t *testing.T) {
 	runMW(mw, r)
 
 	s, ok := sr.Filter.(string)
-	if !ok {
-		t.Fatalf("want cql2-text output, got %T %v", sr.Filter, sr.Filter)
-	}
-	if !strings.Contains(strings.ToUpper(s), "S_INTERSECTS") {
-		t.Fatalf("want S_INTERSECTS, got %q", s)
-	}
-	if !enforcer.decision.Constraints.GeofencePushedDown {
-		t.Fatal("want GeofencePushedDown=true after push-down")
-	}
+	require.True(t, ok, "want cql2-text output, got %T %v", sr.Filter, sr.Filter)
+	require.Contains(t, strings.ToUpper(s), "S_INTERSECTS", "want S_INTERSECTS, got %q", s)
+	require.True(t, enforcer.decision.Constraints.GeofencePushedDown, "want GeofencePushedDown=true after push-down")
 }
 
 func TestParseOPAConstraints_CQL2Fields(t *testing.T) {
@@ -195,12 +174,8 @@ func TestParseOPAConstraints_CQL2Fields(t *testing.T) {
 		},
 	}
 	c := parseOPAConstraints(raw)
-	if c.CQL2Filter != "a = 1" {
-		t.Fatalf("want cql2_filter passthrough, got %q", c.CQL2Filter)
-	}
-	if c.CQL2FilterJSON == nil {
-		t.Fatal("want cql2_filter_json populated")
-	}
+	require.Equal(t, "a = 1", c.CQL2Filter, "want cql2_filter passthrough")
+	require.NotNil(t, c.CQL2FilterJSON, "want cql2_filter_json populated")
 }
 
 func TestAuthz_FilterExtensionCheck_SkipsWhenUnsupported(t *testing.T) {
@@ -217,9 +192,7 @@ func TestAuthz_FilterExtensionCheck_SkipsWhenUnsupported(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
 	runMW(mw, r)
-	if sr.Filter != nil {
-		t.Fatalf("want no injection when upstream lacks Filter Extension, got %v", sr.Filter)
-	}
+	require.Nil(t, sr.Filter, "want no injection when upstream lacks Filter Extension, got %v", sr.Filter)
 }
 
 func TestAuthz_FilterExtensionCheck_AllowsWhenSupported(t *testing.T) {
@@ -236,9 +209,7 @@ func TestAuthz_FilterExtensionCheck_AllowsWhenSupported(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
 	runMW(mw, r)
-	if sr.Filter == nil {
-		t.Fatal("want injection to happen when target supports Filter Extension")
-	}
+	require.NotNil(t, sr.Filter, "want injection to happen when target supports Filter Extension")
 }
 
 func TestAuthz_SingleRecord_AllowMatching(t *testing.T) {
@@ -254,9 +225,7 @@ func TestAuthz_SingleRecord_AllowMatching(t *testing.T) {
 	r := withInfo(httptest.NewRequest("GET", "/collections/x/items/abc", nil), info)
 	body := []byte(`{"id":"abc","collection":"x","properties":{"eo:cloud_cover":12.5}}`)
 	rr := runMWWithBody(mw, r, http.StatusOK, body)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("want 200 for matching item, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "want 200 for matching item")
 }
 
 func TestAuthz_SingleRecord_404OnMismatch(t *testing.T) {
@@ -272,9 +241,7 @@ func TestAuthz_SingleRecord_404OnMismatch(t *testing.T) {
 	r := withInfo(httptest.NewRequest("GET", "/collections/x/items/abc", nil), info)
 	body := []byte(`{"id":"abc","collection":"x","properties":{"eo:cloud_cover":12.5}}`)
 	rr := runMWWithBody(mw, r, http.StatusOK, body)
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("want 404 for non-matching item, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusNotFound, rr.Code, "want 404 for non-matching item")
 }
 
 // TestAuthz_SingleItem_HonorsConstraintsEvenWhenInjectionDisabled
@@ -296,9 +263,7 @@ func TestAuthz_SingleItem_HonorsConstraintsEvenWhenInjectionDisabled(t *testing.
 	r := withInfo(httptest.NewRequest("GET", "/collections/x/items/abc", nil), info)
 	body := []byte(`{"id":"abc","collection":"x","properties":{"platform":"landsat-8"}}`)
 	rr := runMWWithBody(mw, r, http.StatusOK, body)
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("want 404 (single-item validation runs without injection), got %d body=%s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, rr.Code, "want 404 (single-item validation runs without injection), body=%s", rr.Body.String())
 }
 
 func TestEmbeddedOPA_EmitsCQL2Filter(t *testing.T) {
@@ -318,26 +283,16 @@ result := {
 		Name:    "test",
 		Modules: map[string]string{"test.rego": policy},
 	})
-	if err != nil {
-		t.Fatalf("NewEmbeddedOPAEnforcer: %v", err)
-	}
+	require.NoError(t, err, "NewEmbeddedOPAEnforcer")
 
 	d, err := enf.Authorize(context.Background(), &AuthzInput{
 		Request:  &RequestInfo{Method: "GET", Path: "/search"},
 		Resource: &ResourceInfo{Type: "search"},
 	})
-	if err != nil {
-		t.Fatalf("Authorize: %v", err)
-	}
-	if !d.Allowed {
-		t.Fatalf("decision not allowed")
-	}
-	if d.Constraints == nil {
-		t.Fatal("no constraints on decision")
-	}
-	if d.Constraints.CQL2Filter != "eo:cloud_cover < 15" {
-		t.Fatalf("want CQL2Filter passthrough, got %q", d.Constraints.CQL2Filter)
-	}
+	require.NoError(t, err, "Authorize")
+	require.True(t, d.Allowed, "decision not allowed")
+	require.NotNil(t, d.Constraints, "no constraints on decision")
+	require.Equal(t, "eo:cloud_cover < 15", d.Constraints.CQL2Filter, "want CQL2Filter passthrough")
 }
 
 func TestAuthz_NonSearchRequest_NoInject(t *testing.T) {
@@ -352,9 +307,7 @@ func TestAuthz_NonSearchRequest_NoInject(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeCollection, Collection: "foo"}
 	r := withInfo(httptest.NewRequest("GET", "/collections/foo", nil), info)
 	rr := runMW(mw, r)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("want 200 pass-through, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "want 200 pass-through")
 }
 
 // --- C2 regression tests: AllowedCollections / DeniedCollections /
@@ -376,12 +329,8 @@ func TestAuthz_AllowedCollections_IntersectsRequest(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	rr := runMW(mw, r)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d body=%s", rr.Code, rr.Body.String())
-	}
-	if len(sr.Collections) != 1 || sr.Collections[0] != "a" {
-		t.Fatalf("want [a], got %v", sr.Collections)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "want 200, body=%s", rr.Body.String())
+	require.Equal(t, []string{"a"}, sr.Collections, "want [a]")
 }
 
 func TestAuthz_AllowedCollections_NoIntersection_Denies403(t *testing.T) {
@@ -398,9 +347,7 @@ func TestAuthz_AllowedCollections_NoIntersection_Denies403(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	rr := runMW(mw, r)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("want 403, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusForbidden, rr.Code, "want 403")
 }
 
 func TestAuthz_AllowedCollections_EmptyRequest_PopulatesFromAllowed(t *testing.T) {
@@ -417,12 +364,8 @@ func TestAuthz_AllowedCollections_EmptyRequest_PopulatesFromAllowed(t *testing.T
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	rr := runMW(mw, r)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d body=%s", rr.Code, rr.Body.String())
-	}
-	if len(sr.Collections) != 2 || sr.Collections[0] != "a" || sr.Collections[1] != "b" {
-		t.Fatalf("want [a,b], got %v", sr.Collections)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "want 200, body=%s", rr.Body.String())
+	require.Equal(t, []string{"a", "b"}, sr.Collections, "want [a,b]")
 }
 
 func TestAuthz_DeniedCollections_RemovesFromRequest(t *testing.T) {
@@ -439,12 +382,8 @@ func TestAuthz_DeniedCollections_RemovesFromRequest(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	rr := runMW(mw, r)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d", rr.Code)
-	}
-	if len(sr.Collections) != 2 || sr.Collections[0] != "a" || sr.Collections[1] != "c" {
-		t.Fatalf("want [a,c], got %v", sr.Collections)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "want 200")
+	require.Equal(t, []string{"a", "c"}, sr.Collections, "want [a,c]")
 }
 
 func TestAuthz_DeniedCollections_RemovesAll_Denies403(t *testing.T) {
@@ -461,9 +400,7 @@ func TestAuthz_DeniedCollections_RemovesAll_Denies403(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	rr := runMW(mw, r)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("want 403, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusForbidden, rr.Code, "want 403")
 }
 
 func TestAuthz_RequiredFilters_TranslatedToCQL2(t *testing.T) {
@@ -484,19 +421,14 @@ func TestAuthz_RequiredFilters_TranslatedToCQL2(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	rr := runMW(mw, r)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d body=%s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "want 200, body=%s", rr.Body.String())
 	s, ok := sr.Filter.(string)
-	if !ok {
-		t.Fatalf("want cql2-text filter, got %T %v", sr.Filter, sr.Filter)
-	}
-	if !strings.Contains(s, "cloud_cover") || !strings.Contains(s, "<=") || !strings.Contains(s, "20") {
-		t.Errorf("want cloud_cover <= 20 in filter, got %q", s)
-	}
-	if !strings.Contains(s, "platform") || !strings.Contains(s, "'sentinel-2'") {
-		t.Errorf("want platform = 'sentinel-2' in filter, got %q", s)
-	}
+	require.True(t, ok, "want cql2-text filter, got %T %v", sr.Filter, sr.Filter)
+	require.Contains(t, s, "cloud_cover", "want cloud_cover <= 20 in filter, got %q", s)
+	require.Contains(t, s, "<=", "want cloud_cover <= 20 in filter, got %q", s)
+	require.Contains(t, s, "20", "want cloud_cover <= 20 in filter, got %q", s)
+	require.Contains(t, s, "platform", "want platform = 'sentinel-2' in filter, got %q", s)
+	require.Contains(t, s, "'sentinel-2'", "want platform = 'sentinel-2' in filter, got %q", s)
 }
 
 func TestAuthz_GeofenceFilterModeDefaultsTrueWhenAllowedAreaSet(t *testing.T) {
@@ -521,11 +453,8 @@ func TestAuthz_GeofenceFilterModeDefaultsTrueWhenAllowedAreaSet(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	runMW(mw, r)
-	if !cons.Geofence.FilterMode {
-		t.Fatalf("FilterMode must default to true when AllowedArea is set; an operator who forgets the flag must not get a silently disabled geofence")
-	}
+	require.True(t, cons.Geofence.FilterMode, "FilterMode must default to true when AllowedArea is set; an operator who forgets the flag must not get a silently disabled geofence")
 }
-
 
 // TestAuthz_Geofence_MalformedFeatureCollection_Returns502 asserts
 // the H-authz-3 behaviour: a 2xx upstream response that *claims*
@@ -557,9 +486,7 @@ func TestAuthz_Geofence_MalformedFeatureCollection_Returns502(t *testing.T) {
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	body := []byte(`{"type":"FeatureCollection","features":INVALID}`)
 	rr := runMWWithBody(mw, r, http.StatusOK, body)
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("want 502 for malformed FeatureCollection, got %d body=%s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusBadGateway, rr.Code, "want 502 for malformed FeatureCollection, body=%s", rr.Body.String())
 }
 
 // TestAuthz_Geofence_NonFeatureCollection200_PassesThrough asserts
@@ -592,12 +519,8 @@ func TestAuthz_Geofence_NonFeatureCollection200_PassesThrough(t *testing.T) {
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	body := []byte(`{"type":"Item","id":"x"}`)
 	rr := runMWWithBody(mw, r, http.StatusOK, body)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("want 200 pass-through, got %d body=%s", rr.Code, rr.Body.String())
-	}
-	if rr.Body.String() != string(body) {
-		t.Fatalf("body mutated; got %q want %q", rr.Body.String(), string(body))
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "want 200 pass-through, body=%s", rr.Body.String())
+	require.Equal(t, string(body), rr.Body.String(), "body mutated")
 }
 
 // TestAuthz_UnparseableUserFilter_Returns400 verifies that a syntactically
@@ -619,10 +542,6 @@ func TestAuthz_UnparseableUserFilter_Returns400(t *testing.T) {
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
 	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
 	rr := runMW(mw, r)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("want 400 BadRequest, got %d body=%s", rr.Code, rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), "InvalidParameterValue") {
-		t.Fatalf("want InvalidParameterValue code, got body=%s", rr.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, rr.Code, "want 400 BadRequest, body=%s", rr.Body.String())
+	require.Contains(t, rr.Body.String(), "InvalidParameterValue", "want InvalidParameterValue code")
 }

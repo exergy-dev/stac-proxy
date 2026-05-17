@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSetXForwarded_EmptyChain_SetsSingleHop(t *testing.T) {
@@ -14,9 +16,7 @@ func TestSetXForwarded_EmptyChain_SetsSingleHop(t *testing.T) {
 	out, _ := http.NewRequest(http.MethodGet, "http://upstream/p", nil)
 	SetXForwarded(out, in)
 
-	if got := out.Header.Get("X-Forwarded-For"); got != "10.0.0.1" {
-		t.Fatalf("XFF = %q, want 10.0.0.1", got)
-	}
+	require.Equal(t, "10.0.0.1", out.Header.Get("X-Forwarded-For"), "XFF")
 }
 
 func TestSetXForwarded_ExistingChain_Appends(t *testing.T) {
@@ -28,10 +28,7 @@ func TestSetXForwarded_ExistingChain_Appends(t *testing.T) {
 
 	SetXForwarded(out, in)
 
-	want := "203.0.113.7, 10.0.0.2"
-	if got := out.Header.Get("X-Forwarded-For"); got != want {
-		t.Fatalf("XFF = %q, want %q", got, want)
-	}
+	require.Equal(t, "203.0.113.7, 10.0.0.2", out.Header.Get("X-Forwarded-For"), "XFF")
 }
 
 func TestSetXForwarded_ProtoHTTP(t *testing.T) {
@@ -42,9 +39,7 @@ func TestSetXForwarded_ProtoHTTP(t *testing.T) {
 	out, _ := http.NewRequest(http.MethodGet, "http://upstream/p", nil)
 	SetXForwarded(out, in)
 
-	if got := out.Header.Get("X-Forwarded-Proto"); got != "http" {
-		t.Fatalf("Proto = %q, want http", got)
-	}
+	require.Equal(t, "http", out.Header.Get("X-Forwarded-Proto"), "Proto")
 }
 
 func TestSetXForwarded_ProtoHTTPS_WhenTLS(t *testing.T) {
@@ -55,9 +50,7 @@ func TestSetXForwarded_ProtoHTTPS_WhenTLS(t *testing.T) {
 	out, _ := http.NewRequest(http.MethodGet, "http://upstream/p", nil)
 	SetXForwarded(out, in)
 
-	if got := out.Header.Get("X-Forwarded-Proto"); got != "https" {
-		t.Fatalf("Proto = %q, want https", got)
-	}
+	require.Equal(t, "https", out.Header.Get("X-Forwarded-Proto"), "Proto")
 }
 
 func TestSetXForwarded_PreservesInboundProto(t *testing.T) {
@@ -69,9 +62,7 @@ func TestSetXForwarded_PreservesInboundProto(t *testing.T) {
 	out, _ := http.NewRequest(http.MethodGet, "http://upstream/p", nil)
 	SetXForwarded(out, in)
 
-	if got := out.Header.Get("X-Forwarded-Proto"); got != "https" {
-		t.Fatalf("Proto = %q, want https (preserved)", got)
-	}
+	require.Equal(t, "https", out.Header.Get("X-Forwarded-Proto"), "Proto (preserved)")
 }
 
 func TestSetXForwarded_SetsHost(t *testing.T) {
@@ -82,9 +73,7 @@ func TestSetXForwarded_SetsHost(t *testing.T) {
 	out, _ := http.NewRequest(http.MethodGet, "http://upstream/p", nil)
 	SetXForwarded(out, in)
 
-	if got := out.Header.Get("X-Forwarded-Host"); got != "edge.example.com" {
-		t.Fatalf("Host = %q, want edge.example.com", got)
-	}
+	require.Equal(t, "edge.example.com", out.Header.Get("X-Forwarded-Host"), "Host")
 }
 
 func TestSetXForwarded_NoRemoteAddr_DoesNotSetXFF(t *testing.T) {
@@ -94,9 +83,7 @@ func TestSetXForwarded_NoRemoteAddr_DoesNotSetXFF(t *testing.T) {
 	out, _ := http.NewRequest(http.MethodGet, "http://upstream/p", nil)
 	SetXForwarded(out, in)
 
-	if got := out.Header.Get("X-Forwarded-For"); got != "" {
-		t.Fatalf("XFF unexpectedly set to %q", got)
-	}
+	require.Empty(t, out.Header.Get("X-Forwarded-For"), "XFF unexpectedly set")
 }
 
 func TestSetXForwarded_RemoteAddrWithoutPort(t *testing.T) {
@@ -106,7 +93,5 @@ func TestSetXForwarded_RemoteAddrWithoutPort(t *testing.T) {
 	out, _ := http.NewRequest(http.MethodGet, "http://upstream/p", nil)
 	SetXForwarded(out, in)
 
-	if got := out.Header.Get("X-Forwarded-For"); got != "10.0.0.1" {
-		t.Fatalf("XFF = %q, want 10.0.0.1", got)
-	}
+	require.Equal(t, "10.0.0.1", out.Header.Get("X-Forwarded-For"), "XFF")
 }

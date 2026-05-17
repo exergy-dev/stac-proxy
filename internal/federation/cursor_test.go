@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var testCursorSecret = []byte("test-cursor-secret-32-bytes-long!")
@@ -29,45 +32,25 @@ func TestNewFederatedCursor(t *testing.T) {
 
 		cursor := NewFederatedCursor(queryHash, "principal-hash", originIDs, nil)
 
-		if cursor == nil {
-			t.Fatal("expected cursor to be non-nil")
-		}
+		require.NotNil(t, cursor, "expected cursor to be non-nil")
 
-		if cursor.Version != currentCursorVersion {
-			t.Errorf("expected version %d, got %d", currentCursorVersion, cursor.Version)
-		}
-
-		if cursor.QueryHash != queryHash {
-			t.Errorf("expected query hash %q, got %q", queryHash, cursor.QueryHash)
-		}
-
-		if cursor.PrincipalHash != "principal-hash" {
-			t.Errorf("expected principal hash 'principal-hash', got %q", cursor.PrincipalHash)
-		}
-
-		if len(cursor.Origins) != len(originIDs) {
-			t.Errorf("expected %d origins, got %d", len(originIDs), len(cursor.Origins))
-		}
+		assert.Equalf(t, currentCursorVersion, cursor.Version, "expected version %d", currentCursorVersion)
+		assert.Equalf(t, queryHash, cursor.QueryHash, "expected query hash %q", queryHash)
+		assert.Equal(t, "principal-hash", cursor.PrincipalHash, "expected principal hash 'principal-hash'")
+		assert.Lenf(t, cursor.Origins, len(originIDs), "expected %d origins", len(originIDs))
 
 		for _, id := range originIDs {
 			origin, ok := cursor.Origins[id]
-			if !ok {
-				t.Errorf("expected origin %q to exist", id)
+			if !assert.Truef(t, ok, "expected origin %q to exist", id) {
 				continue
 			}
-			if origin.ID != id {
-				t.Errorf("expected origin ID %q, got %q", id, origin.ID)
-			}
+			assert.Equalf(t, id, origin.ID, "expected origin ID %q", id)
 		}
 
-		if cursor.CreatedAt == 0 {
-			t.Error("expected created at to be set")
-		}
+		assert.NotZero(t, cursor.CreatedAt, "expected created at to be set")
 
 		expectedExpiry := cursor.CreatedAt + int64(time.Hour.Seconds())
-		if cursor.ExpiresAt != expectedExpiry {
-			t.Errorf("expected expiry at %d, got %d", expectedExpiry, cursor.ExpiresAt)
-		}
+		assert.Equalf(t, expectedExpiry, cursor.ExpiresAt, "expected expiry at %d", expectedExpiry)
 	})
 
 	t.Run("with custom config", func(t *testing.T) {
@@ -77,21 +60,15 @@ func TestNewFederatedCursor(t *testing.T) {
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, cfg)
 
 		expectedExpiry := cursor.CreatedAt + int64((30 * time.Minute).Seconds())
-		if cursor.ExpiresAt != expectedExpiry {
-			t.Errorf("expected expiry at %d, got %d", expectedExpiry, cursor.ExpiresAt)
-		}
+		assert.Equalf(t, expectedExpiry, cursor.ExpiresAt, "expected expiry at %d", expectedExpiry)
 	})
 
 	t.Run("with nil origin list", func(t *testing.T) {
 		t.Parallel()
 
 		cursor := NewFederatedCursor("hash", "", nil, nil)
-		if cursor.Origins == nil {
-			t.Error("expected origins map to be initialized")
-		}
-		if len(cursor.Origins) != 0 {
-			t.Errorf("expected 0 origins, got %d", len(cursor.Origins))
-		}
+		assert.NotNil(t, cursor.Origins, "expected origins map to be initialized")
+		assert.Empty(t, cursor.Origins, "expected 0 origins")
 	})
 }
 
@@ -107,30 +84,16 @@ func TestCursor_RoundTripSigned(t *testing.T) {
 	cursor.TotalReturned = 10
 
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-	if !strings.Contains(encoded, ".") {
-		t.Fatalf("encoded token must contain '.' separator: %q", encoded)
-	}
+	require.NoError(t, err, "encode failed")
+	require.Containsf(t, encoded, ".", "encoded token must contain '.' separator: %q", encoded)
 
 	decoded, err := DecodeCursor(encoded, testCursorSecret, testAllowed("origin1", "origin2"), "abc123")
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
+	require.NoError(t, err, "decode failed")
 
-	if decoded.QueryHash != cursor.QueryHash {
-		t.Errorf("query hash mismatch: %q vs %q", decoded.QueryHash, cursor.QueryHash)
-	}
-	if decoded.PrincipalHash != cursor.PrincipalHash {
-		t.Errorf("principal hash mismatch: %q vs %q", decoded.PrincipalHash, cursor.PrincipalHash)
-	}
-	if decoded.Origins["origin1"].NextURL != cursor.Origins["origin1"].NextURL {
-		t.Errorf("origin1 NextURL mismatch")
-	}
-	if decoded.Origins["origin2"].NextToken != "tok" {
-		t.Errorf("origin2 NextToken mismatch")
-	}
+	assert.Equalf(t, cursor.QueryHash, decoded.QueryHash, "query hash mismatch")
+	assert.Equalf(t, cursor.PrincipalHash, decoded.PrincipalHash, "principal hash mismatch")
+	assert.Equal(t, cursor.Origins["origin1"].NextURL, decoded.Origins["origin1"].NextURL, "origin1 NextURL mismatch")
+	assert.Equal(t, "tok", decoded.Origins["origin2"].NextToken, "origin2 NextToken mismatch")
 }
 
 // TestCursor_EmptySecretEncodeRejected verifies that Encode requires a secret.
@@ -138,12 +101,10 @@ func TestCursor_EmptySecretEncodeRejected(t *testing.T) {
 	t.Parallel()
 
 	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
-	if _, err := cursor.Encode(nil); err == nil {
-		t.Error("expected error for nil secret")
-	}
-	if _, err := cursor.Encode([]byte{}); err == nil {
-		t.Error("expected error for empty secret")
-	}
+	_, err := cursor.Encode(nil)
+	assert.Error(t, err, "expected error for nil secret")
+	_, err = cursor.Encode([]byte{})
+	assert.Error(t, err, "expected error for empty secret")
 }
 
 // TestCursor_EmptySecretDecodeRejected verifies that DecodeCursor requires a secret.
@@ -152,15 +113,11 @@ func TestCursor_EmptySecretDecodeRejected(t *testing.T) {
 
 	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-	if _, err := DecodeCursor(encoded, nil, testAllowed("o1"), ""); err == nil {
-		t.Error("expected error for nil secret on decode")
-	}
-	if _, err := DecodeCursor(encoded, []byte{}, testAllowed("o1"), ""); err == nil {
-		t.Error("expected error for empty secret on decode")
-	}
+	require.NoError(t, err, "encode failed")
+	_, err = DecodeCursor(encoded, nil, testAllowed("o1"), "")
+	assert.Error(t, err, "expected error for nil secret on decode")
+	_, err = DecodeCursor(encoded, []byte{}, testAllowed("o1"), "")
+	assert.Error(t, err, "expected error for empty secret on decode")
 }
 
 // TestCursor_TamperedPayloadRejected verifies HMAC catches payload mutation.
@@ -169,14 +126,10 @@ func TestCursor_TamperedPayloadRejected(t *testing.T) {
 
 	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err, "encode failed")
 
 	parts := strings.SplitN(encoded, ".", 2)
-	if len(parts) != 2 {
-		t.Fatal("expected two parts")
-	}
+	require.Len(t, parts, 2, "expected two parts")
 	// Flip one byte of the payload section deterministically.
 	mutated := []byte(parts[0])
 	for i := 0; i < len(mutated); i++ {
@@ -192,14 +145,10 @@ func TestCursor_TamperedPayloadRejected(t *testing.T) {
 	tampered := string(mutated) + "." + parts[1]
 
 	_, err = DecodeCursor(tampered, testCursorSecret, testAllowed("o1"), "")
-	if err == nil {
-		t.Fatal("expected error for tampered payload")
-	}
+	require.Error(t, err, "expected error for tampered payload")
 	// Could be invalid JSON OR tampered signature depending on which bit flipped;
 	// either is acceptable as long as decoding fails.
-	if !errors.Is(err, ErrCursorTampered) && !errors.Is(err, ErrCursorInvalid) {
-		t.Errorf("expected tampered or invalid error, got %v", err)
-	}
+	assert.Truef(t, errors.Is(err, ErrCursorTampered) || errors.Is(err, ErrCursorInvalid), "expected tampered or invalid error, got %v", err)
 }
 
 // TestCursor_TamperedSignatureRejected verifies HMAC catches signature mutation.
@@ -208,14 +157,10 @@ func TestCursor_TamperedSignatureRejected(t *testing.T) {
 
 	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err, "encode failed")
 
 	parts := strings.SplitN(encoded, ".", 2)
-	if len(parts) != 2 {
-		t.Fatal("expected two parts")
-	}
+	require.Len(t, parts, 2, "expected two parts")
 	mutated := []byte(parts[1])
 	if mutated[0] != 'A' {
 		mutated[0] = 'A'
@@ -225,12 +170,8 @@ func TestCursor_TamperedSignatureRejected(t *testing.T) {
 	tampered := parts[0] + "." + string(mutated)
 
 	_, err = DecodeCursor(tampered, testCursorSecret, testAllowed("o1"), "")
-	if err == nil {
-		t.Fatal("expected error for tampered signature")
-	}
-	if !errors.Is(err, ErrCursorTampered) {
-		t.Errorf("expected ErrCursorTampered, got %v", err)
-	}
+	require.Error(t, err, "expected error for tampered signature")
+	assert.ErrorIsf(t, err, ErrCursorTampered, "expected ErrCursorTampered, got %v", err)
 }
 
 // TestCursor_NextURLOutsideOriginBaseRejected verifies the SSRF guard.
@@ -241,18 +182,12 @@ func TestCursor_NextURLOutsideOriginBaseRejected(t *testing.T) {
 	cursor.Origins["o1"].NextURL = "https://attacker.example/x"
 
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err, "encode failed")
 
 	allowed := map[string]string{"o1": "https://upstream.example"}
 	_, err = DecodeCursor(encoded, testCursorSecret, allowed, "")
-	if err == nil {
-		t.Fatal("expected error for disallowed NextURL")
-	}
-	if !errors.Is(err, ErrCursorOriginURLNotAllowed) {
-		t.Errorf("expected ErrCursorOriginURLNotAllowed, got %v", err)
-	}
+	require.Error(t, err, "expected error for disallowed NextURL")
+	assert.ErrorIsf(t, err, ErrCursorOriginURLNotAllowed, "expected ErrCursorOriginURLNotAllowed, got %v", err)
 }
 
 // TestCursor_NextURLEmptyAllowed verifies origins with no NextURL pass.
@@ -262,13 +197,10 @@ func TestCursor_NextURLEmptyAllowed(t *testing.T) {
 	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
 	// NextURL stays "" (default).
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err, "encode failed")
 
-	if _, err := DecodeCursor(encoded, testCursorSecret, map[string]string{}, ""); err != nil {
-		t.Errorf("expected success for empty NextURL with empty allowlist, got %v", err)
-	}
+	_, err = DecodeCursor(encoded, testCursorSecret, map[string]string{}, "")
+	assert.NoErrorf(t, err, "expected success for empty NextURL with empty allowlist")
 }
 
 // TestCursor_PrincipalBindingEnforced verifies the cursor is bound to a
@@ -278,21 +210,14 @@ func TestCursor_PrincipalBindingEnforced(t *testing.T) {
 
 	cursor := NewFederatedCursor("h", "A", []string{"o1"}, nil)
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err, "encode failed")
 
 	_, err = DecodeCursor(encoded, testCursorSecret, testAllowed("o1"), "B")
-	if err == nil {
-		t.Fatal("expected error for principal mismatch")
-	}
-	if !errors.Is(err, ErrCursorPrincipalMismatch) {
-		t.Errorf("expected ErrCursorPrincipalMismatch, got %v", err)
-	}
+	require.Error(t, err, "expected error for principal mismatch")
+	assert.ErrorIsf(t, err, ErrCursorPrincipalMismatch, "expected ErrCursorPrincipalMismatch, got %v", err)
 
-	if _, err := DecodeCursor(encoded, testCursorSecret, testAllowed("o1"), "A"); err != nil {
-		t.Errorf("expected success with matching principal, got %v", err)
-	}
+	_, err = DecodeCursor(encoded, testCursorSecret, testAllowed("o1"), "A")
+	assert.NoErrorf(t, err, "expected success with matching principal")
 }
 
 // TestCursor_AnonymousRoundTrips verifies "" principal works both ends.
@@ -301,13 +226,10 @@ func TestCursor_AnonymousRoundTrips(t *testing.T) {
 
 	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err, "encode failed")
 
-	if _, err := DecodeCursor(encoded, testCursorSecret, testAllowed("o1"), ""); err != nil {
-		t.Errorf("anonymous round-trip failed: %v", err)
-	}
+	_, err = DecodeCursor(encoded, testCursorSecret, testAllowed("o1"), "")
+	assert.NoErrorf(t, err, "anonymous round-trip failed")
 }
 
 // TestCursor_ExpiredRejected verifies expiry enforcement.
@@ -318,17 +240,11 @@ func TestCursor_ExpiredRejected(t *testing.T) {
 	cursor.ExpiresAt = time.Now().Add(-1 * time.Hour).Unix()
 
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err, "encode failed")
 
 	_, err = DecodeCursor(encoded, testCursorSecret, testAllowed("o1"), "")
-	if err == nil {
-		t.Fatal("expected expired error")
-	}
-	if !errors.Is(err, ErrCursorExpired) {
-		t.Errorf("expected ErrCursorExpired, got %v", err)
-	}
+	require.Error(t, err, "expected expired error")
+	assert.ErrorIsf(t, err, ErrCursorExpired, "expected ErrCursorExpired, got %v", err)
 }
 
 // TestCursor_InvalidFormatRejected verifies tokens missing the "." or with
@@ -345,9 +261,8 @@ func TestCursor_InvalidFormatRejected(t *testing.T) {
 		"!!!.!!!",
 	}
 	for _, c := range cases {
-		if _, err := DecodeCursor(c, testCursorSecret, allowed, ""); err == nil {
-			t.Errorf("expected error for %q", c)
-		}
+		_, err := DecodeCursor(c, testCursorSecret, allowed, "")
+		assert.Errorf(t, err, "expected error for %q", c)
 	}
 }
 
@@ -355,23 +270,15 @@ func TestCursor_InvalidFormatRejected(t *testing.T) {
 func TestPrincipalHash_DeterministicAndShort(t *testing.T) {
 	t.Parallel()
 
-	if got := PrincipalHash(""); got != "" {
-		t.Errorf("expected empty hash for empty input, got %q", got)
-	}
+	assert.Equal(t, "", PrincipalHash(""), "expected empty hash for empty input")
 
 	a := PrincipalHash("alice@example.com")
 	a2 := PrincipalHash("alice@example.com")
-	if a != a2 {
-		t.Errorf("expected deterministic hash, got %q vs %q", a, a2)
-	}
-	if len(a) != 16 {
-		t.Errorf("expected hash length 16, got %d (%q)", len(a), a)
-	}
+	assert.Equalf(t, a, a2, "expected deterministic hash")
+	assert.Lenf(t, a, 16, "expected hash length 16, got %d (%q)", len(a), a)
 
 	b := PrincipalHash("bob@example.com")
-	if a == b {
-		t.Errorf("expected different hashes for different inputs")
-	}
+	assert.NotEqual(t, a, b, "expected different hashes for different inputs")
 }
 
 // TestEncodedFormatIsBase64URLDot verifies the token format.
@@ -380,22 +287,14 @@ func TestEncodedFormatIsBase64URLDot(t *testing.T) {
 
 	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
 	encoded, err := cursor.Encode(testCursorSecret)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err, "encode failed")
 	parts := strings.Split(encoded, ".")
-	if len(parts) != 2 {
-		t.Fatalf("expected two parts, got %d", len(parts))
-	}
-	if _, err := base64.RawURLEncoding.DecodeString(parts[0]); err != nil {
-		t.Errorf("payload not valid base64url: %v", err)
-	}
-	if _, err := base64.RawURLEncoding.DecodeString(parts[1]); err != nil {
-		t.Errorf("signature not valid base64url: %v", err)
-	}
-	if strings.ContainsAny(encoded, "+/=") {
-		t.Errorf("encoded cursor must not contain '+', '/', or '=': %q", encoded)
-	}
+	require.Lenf(t, parts, 2, "expected two parts, got %d", len(parts))
+	_, err = base64.RawURLEncoding.DecodeString(parts[0])
+	assert.NoErrorf(t, err, "payload not valid base64url")
+	_, err = base64.RawURLEncoding.DecodeString(parts[1])
+	assert.NoErrorf(t, err, "signature not valid base64url")
+	assert.Falsef(t, strings.ContainsAny(encoded, "+/="), "encoded cursor must not contain '+', '/', or '=': %q", encoded)
 }
 
 // TestIsExpired tests cursor expiration
@@ -403,27 +302,21 @@ func TestIsExpired(t *testing.T) {
 	t.Run("not expired", func(t *testing.T) {
 		t.Parallel()
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		if cursor.IsExpired() {
-			t.Error("newly created cursor should not be expired")
-		}
+		assert.False(t, cursor.IsExpired(), "newly created cursor should not be expired")
 	})
 
 	t.Run("expired", func(t *testing.T) {
 		t.Parallel()
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		cursor.ExpiresAt = time.Now().Add(-1 * time.Hour).Unix()
-		if !cursor.IsExpired() {
-			t.Error("cursor with past expiry should be expired")
-		}
+		assert.True(t, cursor.IsExpired(), "cursor with past expiry should be expired")
 	})
 
 	t.Run("zero expiry", func(t *testing.T) {
 		t.Parallel()
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		cursor.ExpiresAt = 0
-		if !cursor.IsExpired() {
-			t.Error("cursor with zero expiry should be expired")
-		}
+		assert.True(t, cursor.IsExpired(), "cursor with zero expiry should be expired")
 	})
 }
 
@@ -432,27 +325,21 @@ func TestHasMore(t *testing.T) {
 	t.Run("all origins active", func(t *testing.T) {
 		t.Parallel()
 		cursor := NewFederatedCursor("hash", "", []string{"origin1", "origin2"}, nil)
-		if !cursor.HasMore() {
-			t.Error("cursor with active origins should have more")
-		}
+		assert.True(t, cursor.HasMore(), "cursor with active origins should have more")
 	})
 
 	t.Run("all origins exhausted", func(t *testing.T) {
 		t.Parallel()
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		cursor.Origins["origin1"].Exhausted = true
-		if cursor.HasMore() {
-			t.Error("cursor with all exhausted origins should not have more")
-		}
+		assert.False(t, cursor.HasMore(), "cursor with all exhausted origins should not have more")
 	})
 
 	t.Run("all origins have errors", func(t *testing.T) {
 		t.Parallel()
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		cursor.Origins["origin1"].Error = true
-		if cursor.HasMore() {
-			t.Error("cursor with all error origins should not have more")
-		}
+		assert.False(t, cursor.HasMore(), "cursor with all error origins should not have more")
 	})
 }
 
@@ -464,9 +351,7 @@ func TestActiveOrigins(t *testing.T) {
 		active := cursor.ActiveOrigins()
 		expected := []string{"alpha", "mike", "zebra"}
 		for i, id := range expected {
-			if active[i] != id {
-				t.Errorf("expected active[%d] = %q, got %q", i, id, active[i])
-			}
+			assert.Equalf(t, id, active[i], "expected active[%d] = %q", i, id)
 		}
 	})
 
@@ -476,9 +361,7 @@ func TestActiveOrigins(t *testing.T) {
 		cursor.Origins["b"].Exhausted = true
 		cursor.Origins["c"].Error = true
 		active := cursor.ActiveOrigins()
-		if len(active) != 1 || active[0] != "a" {
-			t.Errorf("expected [a], got %v", active)
-		}
+		assert.Equalf(t, []string{"a"}, active, "expected [a], got %v", active)
 	})
 }
 
@@ -491,12 +374,9 @@ func TestMarkExhausted(t *testing.T) {
 
 	cursor.MarkExhausted("origin1")
 	origin := cursor.Origins["origin1"]
-	if !origin.Exhausted {
-		t.Error("origin should be marked exhausted")
-	}
-	if origin.NextToken != "" || origin.NextURL != "" {
-		t.Error("next token/URL should be cleared")
-	}
+	assert.True(t, origin.Exhausted, "origin should be marked exhausted")
+	assert.Empty(t, origin.NextToken, "next token should be cleared")
+	assert.Empty(t, origin.NextURL, "next URL should be cleared")
 }
 
 // TestMarkError tests marking origins as having errors
@@ -504,9 +384,7 @@ func TestMarkError(t *testing.T) {
 	t.Parallel()
 	cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 	cursor.MarkError("origin1")
-	if !cursor.Origins["origin1"].Error {
-		t.Error("origin should be marked with error")
-	}
+	assert.True(t, cursor.Origins["origin1"].Error, "origin should be marked with error")
 	// Non-existent should not panic.
 	cursor.MarkError("missing")
 }
@@ -518,21 +396,17 @@ func TestUpdateOrigin(t *testing.T) {
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		cursor.UpdateOrigin("origin1", 10, "next-token", "next-url", "sort-value")
 		origin := cursor.Origins["origin1"]
-		if origin.ItemCount != 10 || origin.NextToken != "next-token" || origin.NextURL != "next-url" {
-			t.Errorf("unexpected origin state: %+v", origin)
-		}
-		if origin.Exhausted {
-			t.Error("origin should not be exhausted with next token")
-		}
+		assert.Equalf(t, 10, origin.ItemCount, "unexpected origin state: %+v", origin)
+		assert.Equalf(t, "next-token", origin.NextToken, "unexpected origin state: %+v", origin)
+		assert.Equalf(t, "next-url", origin.NextURL, "unexpected origin state: %+v", origin)
+		assert.False(t, origin.Exhausted, "origin should not be exhausted with next token")
 	})
 
 	t.Run("marks exhausted when no next", func(t *testing.T) {
 		t.Parallel()
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		cursor.UpdateOrigin("origin1", 10, "", "", nil)
-		if !cursor.Origins["origin1"].Exhausted {
-			t.Error("origin should be marked exhausted")
-		}
+		assert.True(t, cursor.Origins["origin1"].Exhausted, "origin should be marked exhausted")
 	})
 
 	t.Run("increments item count", func(t *testing.T) {
@@ -540,9 +414,7 @@ func TestUpdateOrigin(t *testing.T) {
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		cursor.UpdateOrigin("origin1", 10, "t", "", nil)
 		cursor.UpdateOrigin("origin1", 5, "t2", "", nil)
-		if cursor.Origins["origin1"].ItemCount != 15 {
-			t.Errorf("expected item count 15, got %d", cursor.Origins["origin1"].ItemCount)
-		}
+		assert.Equalf(t, 15, cursor.Origins["origin1"].ItemCount, "expected item count 15")
 	})
 }
 
@@ -552,9 +424,7 @@ func TestClone(t *testing.T) {
 		t.Parallel()
 		original := NewFederatedCursor("hash", "ph", []string{"origin1"}, nil)
 		cloned := original.Clone()
-		if cloned.PrincipalHash != "ph" {
-			t.Errorf("clone should preserve principal hash, got %q", cloned.PrincipalHash)
-		}
+		assert.Equalf(t, "ph", cloned.PrincipalHash, "clone should preserve principal hash")
 	})
 
 	t.Run("no shared references", func(t *testing.T) {
@@ -567,12 +437,8 @@ func TestClone(t *testing.T) {
 		original.Origins["origin1"].NextToken = "modified"
 		original.LastSortValues[0] = "modified"
 
-		if cloned.Origins["origin1"].NextToken == "modified" {
-			t.Error("clone should not share origin state")
-		}
-		if cloned.LastSortValues[0] == "modified" {
-			t.Error("clone should not share LastSortValues slice")
-		}
+		assert.NotEqual(t, "modified", cloned.Origins["origin1"].NextToken, "clone should not share origin state")
+		assert.NotEqual(t, "modified", cloned.LastSortValues[0], "clone should not share LastSortValues slice")
 	})
 }
 
@@ -582,12 +448,8 @@ func TestString(t *testing.T) {
 	cursor := NewFederatedCursor("hash", "", []string{"origin1", "origin2"}, nil)
 	cursor.TotalReturned = 50
 	str := cursor.String()
-	if !strings.Contains(str, "FederatedCursor") {
-		t.Errorf("string missing prefix: %s", str)
-	}
-	if !strings.Contains(str, "returned=50") {
-		t.Errorf("string missing returned: %s", str)
-	}
+	assert.Containsf(t, str, "FederatedCursor", "string missing prefix: %s", str)
+	assert.Containsf(t, str, "returned=50", "string missing returned: %s", str)
 }
 
 // TestUnsignedBase64IsNotAcceptedAsCursor verifies that a plain
@@ -598,19 +460,14 @@ func TestUnsignedBase64IsNotAcceptedAsCursor(t *testing.T) {
 	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
 	data, _ := json.Marshal(cursor)
 	plain := base64.RawURLEncoding.EncodeToString(data)
-	if _, err := DecodeCursor(plain, testCursorSecret, testAllowed("o1"), ""); err == nil {
-		t.Error("expected error for unsigned base64-only cursor")
-	}
+	_, err := DecodeCursor(plain, testCursorSecret, testAllowed("o1"), "")
+	assert.Error(t, err, "expected error for unsigned base64-only cursor")
 }
 
 // TestDefaultCursorConfig tests default cursor configuration
 func TestDefaultCursorConfig(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultCursorConfig()
-	if cfg.DefaultTTL != 1*time.Hour {
-		t.Errorf("expected default TTL 1h, got %v", cfg.DefaultTTL)
-	}
-	if cfg.MaxTTL != 24*time.Hour {
-		t.Errorf("expected max TTL 24h, got %v", cfg.MaxTTL)
-	}
+	assert.Equalf(t, 1*time.Hour, cfg.DefaultTTL, "expected default TTL 1h")
+	assert.Equalf(t, 24*time.Hour, cfg.MaxTTL, "expected max TTL 24h")
 }

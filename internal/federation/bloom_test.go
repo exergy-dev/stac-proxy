@@ -4,37 +4,29 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestItemDeduplicator_FirstSeenReturnsFalse(t *testing.T) {
 	d := NewItemDeduplicator(0)
-	if d.IsDuplicate("a") {
-		t.Fatalf("first sight of a should be unique")
-	}
-	if !d.IsDuplicate("a") {
-		t.Fatalf("second sight of a should be duplicate")
-	}
-	if d.IsDuplicate("b") {
-		t.Fatalf("first sight of b should be unique")
-	}
+	require.False(t, d.IsDuplicate("a"), "first sight of a should be unique")
+	require.True(t, d.IsDuplicate("a"), "second sight of a should be duplicate")
+	require.False(t, d.IsDuplicate("b"), "first sight of b should be unique")
 }
 
 func TestItemDeduplicator_Reset(t *testing.T) {
 	d := NewItemDeduplicator(0)
 	d.IsDuplicate("a")
 	d.Reset()
-	if d.IsDuplicate("a") {
-		t.Fatalf("after Reset, a should be unique again")
-	}
+	require.False(t, d.IsDuplicate("a"), "after Reset, a should be unique again")
 }
 
 func TestItemDeduplicator_ManyUnique(t *testing.T) {
 	const n = 20000
 	d := NewItemDeduplicator(n)
 	for i := 0; i < n; i++ {
-		if d.IsDuplicate(strconv.Itoa(i)) {
-			t.Fatalf("unique key %d reported as duplicate", i)
-		}
+		require.Falsef(t, d.IsDuplicate(strconv.Itoa(i)), "unique key %d reported as duplicate", i)
 	}
 }
 

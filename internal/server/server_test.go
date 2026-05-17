@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/yourorg/stac-proxy/internal/config"
 )
 
@@ -24,12 +27,9 @@ func TestServer_ReadHeaderTimeoutSet(t *testing.T) {
 		ServerConfig: &config.ServerConfig{Host: "127.0.0.1", Port: 0},
 		Handler:      http.NewServeMux(),
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if srv.httpServer.ReadHeaderTimeout <= 0 {
-		t.Fatalf("expected ReadHeaderTimeout > 0, got %v", srv.httpServer.ReadHeaderTimeout)
-	}
+	require.NoError(t, err, "New")
+	require.Greater(t, srv.httpServer.ReadHeaderTimeout, time.Duration(0),
+		"expected ReadHeaderTimeout > 0, got %v", srv.httpServer.ReadHeaderTimeout)
 }
 
 // TestTLSConfig_NoExplicitCipherSuites_HasH2Protocols asserts that
@@ -45,13 +45,11 @@ func TestTLSConfig_NoExplicitCipherSuites_HasH2Protocols(t *testing.T) {
 		CertFile: certFile,
 		KeyFile:  keyFile,
 	})
-	if err != nil {
-		t.Fatalf("loadTLSConfig: %v", err)
-	}
+	require.NoError(t, err, "loadTLSConfig")
 
-	if got := len(tlsCfg.CipherSuites); got != 0 {
-		t.Errorf("expected no explicit CipherSuites (Go's defaults are vetted), got %d entries: %v", got, tlsCfg.CipherSuites)
-	}
+	assert.Empty(t, tlsCfg.CipherSuites,
+		"expected no explicit CipherSuites (Go's defaults are vetted), got %d entries: %v",
+		len(tlsCfg.CipherSuites), tlsCfg.CipherSuites)
 
 	hasH2 := false
 	hasHTTP11 := false
@@ -63,12 +61,8 @@ func TestTLSConfig_NoExplicitCipherSuites_HasH2Protocols(t *testing.T) {
 			hasHTTP11 = true
 		}
 	}
-	if !hasH2 {
-		t.Errorf("NextProtos missing %q (HTTP/2 ALPN); got %v", "h2", tlsCfg.NextProtos)
-	}
-	if !hasHTTP11 {
-		t.Errorf("NextProtos missing %q; got %v", "http/1.1", tlsCfg.NextProtos)
-	}
+	assert.True(t, hasH2, "NextProtos missing %q (HTTP/2 ALPN); got %v", "h2", tlsCfg.NextProtos)
+	assert.True(t, hasHTTP11, "NextProtos missing %q; got %v", "http/1.1", tlsCfg.NextProtos)
 }
 
 // writeSelfSignedCert generates an ephemeral self-signed certificate
@@ -77,9 +71,7 @@ func TestTLSConfig_NoExplicitCipherSuites_HasH2Protocols(t *testing.T) {
 func writeSelfSignedCert(t *testing.T) (string, string) {
 	t.Helper()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	require.NoError(t, err, "generate key")
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "test"},
@@ -89,23 +81,19 @@ func writeSelfSignedCert(t *testing.T) (string, string) {
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
-	if err != nil {
-		t.Fatalf("create cert: %v", err)
-	}
+	require.NoError(t, err, "create cert")
 	keyDER, err := x509.MarshalECPrivateKey(priv)
-	if err != nil {
-		t.Fatalf("marshal key: %v", err)
-	}
+	require.NoError(t, err, "marshal key")
 
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "cert.pem")
 	keyPath := filepath.Join(dir, "key.pem")
 
-	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0o600); err != nil {
-		t.Fatalf("write cert: %v", err)
-	}
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
+	require.NoError(t,
+		os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0o600),
+		"write cert")
+	require.NoError(t,
+		os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600),
+		"write key")
 	return certPath, keyPath
 }

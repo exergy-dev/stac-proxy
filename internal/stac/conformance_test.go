@@ -5,25 +5,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProbeFilterExtension_True(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/conformance" {
-			t.Errorf("path = %q, want /conformance", r.URL.Path)
-		}
+		assert.Equal(t, "/conformance", r.URL.Path, "path = %q, want /conformance", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"conformsTo":["https://api.stacspec.org/v1.0.0/item-search#filter","other"]}`))
 	}))
 	defer srv.Close()
 
 	ok, err := ProbeFilterExtension(context.Background(), nil, srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !ok {
-		t.Fatal("want supports=true")
-	}
+	require.NoError(t, err)
+	require.True(t, ok, "want supports=true")
 }
 
 func TestProbeFilterExtension_False(t *testing.T) {
@@ -34,32 +31,24 @@ func TestProbeFilterExtension_False(t *testing.T) {
 	defer srv.Close()
 
 	ok, err := ProbeFilterExtension(context.Background(), nil, srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if ok {
-		t.Fatal("want supports=false when no filter URI advertised")
-	}
+	require.NoError(t, err)
+	require.False(t, ok, "want supports=false when no filter URI advertised")
 }
 
 func TestProbeFilterExtension_TrailingSlashTolerant(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/conformance" {
-			t.Errorf("path = %q, want /conformance (no double slash)", r.URL.Path)
-		}
+		assert.Equal(t, "/conformance", r.URL.Path, "path = %q, want /conformance (no double slash)", r.URL.Path)
 		w.Write([]byte(`{"conformsTo":[]}`))
 	}))
 	defer srv.Close()
 
-	if _, err := ProbeFilterExtension(context.Background(), nil, srv.URL+"/"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	_, err := ProbeFilterExtension(context.Background(), nil, srv.URL+"/")
+	require.NoError(t, err)
 }
 
 func TestProbeFilterExtension_NetworkError(t *testing.T) {
-	if _, err := ProbeFilterExtension(context.Background(), nil, "http://127.0.0.1:1"); err == nil {
-		t.Fatal("want error for unreachable host")
-	}
+	_, err := ProbeFilterExtension(context.Background(), nil, "http://127.0.0.1:1")
+	require.Error(t, err, "want error for unreachable host")
 }
 
 func TestProbeFilterExtension_NonOK(t *testing.T) {
@@ -67,9 +56,8 @@ func TestProbeFilterExtension_NonOK(t *testing.T) {
 		w.WriteHeader(404)
 	}))
 	defer srv.Close()
-	if _, err := ProbeFilterExtension(context.Background(), nil, srv.URL); err == nil {
-		t.Fatal("want error for 404 response")
-	}
+	_, err := ProbeFilterExtension(context.Background(), nil, srv.URL)
+	require.Error(t, err, "want error for 404 response")
 }
 
 func TestProxyConformanceFor(t *testing.T) {
@@ -79,9 +67,7 @@ func TestProxyConformanceFor(t *testing.T) {
 		out := ProxyConformanceFor(ConformanceCaps{CQL2InjectionEnabled: false, AllOriginsSupportFilter: true})
 		for _, c := range out {
 			for _, f := range FilterExtensionConformance {
-				if c == f {
-					t.Errorf("filter ext %q leaked into output without injection", c)
-				}
+				assert.NotEqual(t, f, c, "filter ext %q leaked into output without injection", c)
 			}
 		}
 	})
@@ -90,9 +76,7 @@ func TestProxyConformanceFor(t *testing.T) {
 		out := ProxyConformanceFor(ConformanceCaps{CQL2InjectionEnabled: true, AllOriginsSupportFilter: false})
 		for _, c := range out {
 			for _, f := range FilterExtensionConformance {
-				if c == f {
-					t.Errorf("filter ext %q leaked when not all origins support it", c)
-				}
+				assert.NotEqual(t, f, c, "filter ext %q leaked when not all origins support it", c)
 			}
 		}
 	})
@@ -104,9 +88,7 @@ func TestProxyConformanceFor(t *testing.T) {
 			seen[c] = true
 		}
 		for _, f := range FilterExtensionConformance {
-			if !seen[f] {
-				t.Errorf("missing advertised filter ext class %q", f)
-			}
+			assert.True(t, seen[f], "missing advertised filter ext class %q", f)
 		}
 	})
 }
@@ -118,54 +100,28 @@ func TestIntersect(t *testing.T) {
 
 	t.Run("no origin sets returns proxy sorted", func(t *testing.T) {
 		got := Intersect(proxy)
-		want := []string{"a", "b", "c", "d"}
-		if !equalStrings(got, want) {
-			t.Errorf("got %v want %v", got, want)
-		}
+		assert.Equal(t, []string{"a", "b", "c", "d"}, got)
 	})
 
 	t.Run("single origin shrinks set", func(t *testing.T) {
 		got := Intersect(proxy, []string{"b", "c"})
-		want := []string{"b", "c"}
-		if !equalStrings(got, want) {
-			t.Errorf("got %v want %v", got, want)
-		}
+		assert.Equal(t, []string{"b", "c"}, got)
 	})
 
 	t.Run("multiple origins narrow to common subset", func(t *testing.T) {
 		got := Intersect(proxy, []string{"a", "b", "c"}, []string{"b", "c", "d"})
-		want := []string{"b", "c"}
-		if !equalStrings(got, want) {
-			t.Errorf("got %v want %v", got, want)
-		}
+		assert.Equal(t, []string{"b", "c"}, got)
 	})
 
 	t.Run("disjoint origin yields empty", func(t *testing.T) {
 		got := Intersect(proxy, []string{"x", "y"})
-		if len(got) != 0 {
-			t.Errorf("expected empty, got %v", got)
-		}
+		assert.Empty(t, got, "expected empty, got %v", got)
 	})
 
 	t.Run("class no origin advertises is dropped", func(t *testing.T) {
 		got := Intersect([]string{"a", "b"}, []string{"a"}, []string{"a"})
-		want := []string{"a"}
-		if !equalStrings(got, want) {
-			t.Errorf("got %v want %v", got, want)
-		}
+		assert.Equal(t, []string{"a"}, got)
 	})
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestFetchConformance(t *testing.T) {
@@ -177,11 +133,7 @@ func TestFetchConformance(t *testing.T) {
 		}))
 		defer srv.Close()
 		got, err := FetchConformance(context.Background(), nil, srv.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !equalStrings(got, []string{"a", "b", "c"}) {
-			t.Errorf("got %v", got)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, []string{"a", "b", "c"}, got)
 	})
 }

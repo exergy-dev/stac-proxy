@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
@@ -40,33 +42,19 @@ func TestSearchParser_POSTSearch_PopulatesSearchReq(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch}
 	sr, downstream := runWithInfo(t, info, r)
-	if sr == nil {
-		t.Fatal("SearchReq nil; parser did not run")
-	}
-	if len(sr.Collections) != 2 || sr.Collections[0] != "a" || sr.Collections[1] != "b" {
-		t.Errorf("collections: got %v", sr.Collections)
-	}
-	if sr.Limit != 50 {
-		t.Errorf("limit: got %d", sr.Limit)
-	}
-	if string(downstream) != body {
-		t.Errorf("body not restored for downstream: got %q want %q", downstream, body)
-	}
+	require.NotNil(t, sr, "SearchReq nil; parser did not run")
+	assert.Equal(t, []string{"a", "b"}, sr.Collections, "collections")
+	assert.Equal(t, 50, sr.Limit, "limit")
+	assert.Equal(t, body, string(downstream), "body not restored for downstream")
 }
 
 func TestSearchParser_GETSearch_PopulatesFromQuery(t *testing.T) {
 	r := httptest.NewRequest("GET", "/search?collections=a,b&limit=25", nil)
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch}
 	sr, _ := runWithInfo(t, info, r)
-	if sr == nil {
-		t.Fatal("SearchReq nil")
-	}
-	if len(sr.Collections) == 0 {
-		t.Errorf("collections empty: %v", sr.Collections)
-	}
-	if sr.Limit != 25 {
-		t.Errorf("limit: got %d", sr.Limit)
-	}
+	require.NotNil(t, sr, "SearchReq nil")
+	assert.NotEmpty(t, sr.Collections, "collections empty")
+	assert.Equal(t, 25, sr.Limit, "limit")
 }
 
 func TestSearchParser_GETItems_InjectsCollectionFromRoute(t *testing.T) {
@@ -77,24 +65,16 @@ func TestSearchParser_GETItems_InjectsCollectionFromRoute(t *testing.T) {
 	r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeItems, Collection: "foo"}
 	sr, _ := runWithInfo(t, info, r)
-	if sr == nil {
-		t.Fatal("SearchReq nil")
-	}
-	if len(sr.Collections) != 1 || sr.Collections[0] != "foo" {
-		t.Errorf("collection-from-route: got %v", sr.Collections)
-	}
-	if sr.Limit != 10 {
-		t.Errorf("limit: got %d", sr.Limit)
-	}
+	require.NotNil(t, sr, "SearchReq nil")
+	assert.Equal(t, []string{"foo"}, sr.Collections, "collection-from-route")
+	assert.Equal(t, 10, sr.Limit, "limit")
 }
 
 func TestSearchParser_NonSearchRoute_NoOp(t *testing.T) {
 	r := httptest.NewRequest("GET", "/collections/foo", nil)
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeCollection, Collection: "foo"}
 	sr, _ := runWithInfo(t, info, r)
-	if sr != nil {
-		t.Fatalf("non-search route should not populate SearchReq; got %+v", sr)
-	}
+	require.Nil(t, sr, "non-search route should not populate SearchReq; got %+v", sr)
 }
 
 func TestSearchParser_AlreadyParsed_DoesNotOverwrite(t *testing.T) {
@@ -103,9 +83,8 @@ func TestSearchParser_AlreadyParsed_DoesNotOverwrite(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: pre}
 	sr, _ := runWithInfo(t, info, r)
-	if sr == nil || len(sr.Collections) != 1 || sr.Collections[0] != "pre-set" {
-		t.Fatalf("pre-set SearchReq must not be overwritten; got %+v", sr)
-	}
+	require.NotNil(t, sr, "pre-set SearchReq must not be overwritten")
+	require.Equal(t, []string{"pre-set"}, sr.Collections, "pre-set SearchReq must not be overwritten")
 }
 
 func TestSearchParser_POSTSearch_BodyRestoredForRereaders(t *testing.T) {
@@ -121,9 +100,7 @@ func TestSearchParser_POSTSearch_BodyRestoredForRereaders(t *testing.T) {
 	mw := searchParserMiddleware()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		read1, _ := io.ReadAll(req.Body)
-		if !bytes.Equal(read1, []byte(body)) {
-			t.Errorf("downstream first read: got %q want %q", read1, body)
-		}
+		assert.True(t, bytes.Equal(read1, []byte(body)), "downstream first read: got %q want %q", read1, body)
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(httptest.NewRecorder(), r)
 }

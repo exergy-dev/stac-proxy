@@ -7,13 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 	"time"
-)
 
-func equalStringSlice(a, b []string) bool { return slices.Equal(a, b) }
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 // Parser tests are scoped to the proxy-owned parser logic:
 // ParseSearchRequest, parseSearchFromQuery, ExtractNextLink/Token, and the
@@ -24,18 +24,14 @@ func equalStringSlice(a, b []string) bool { return slices.Equal(a, b) }
 
 func TestNewParser(t *testing.T) {
 	t.Parallel()
-	if NewParser() == nil {
-		t.Fatal("NewParser returned nil")
-	}
+	require.NotNil(t, NewParser(), "NewParser returned nil")
 }
 
 func TestParseItem_WrongTypeRejected(t *testing.T) {
 	t.Parallel()
 	p := NewParser()
 	_, err := p.ParseItem([]byte(`{"type":"Collection","id":"x"}`))
-	if err == nil {
-		t.Fatal("expected error for wrong type")
-	}
+	require.Error(t, err, "expected error for wrong type")
 }
 
 func TestParseItem_ValidPassesThrough(t *testing.T) {
@@ -48,36 +44,28 @@ func TestParseItem_ValidPassesThrough(t *testing.T) {
 		"links":[],"assets":{},"collection":"c"
 	}`
 	item, err := NewParser().ParseItem([]byte(body))
-	if err != nil {
-		t.Fatalf("ParseItem: %v", err)
-	}
-	if item.ID != "x" || item.Collection != "c" || item.Version != "1.0.0" {
-		t.Errorf("unexpected item: %+v", item)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "x", item.ID)
+	assert.Equal(t, "c", item.Collection)
+	assert.Equal(t, "1.0.0", item.Version)
 }
 
 func TestParseCollection_WrongTypeRejected(t *testing.T) {
 	t.Parallel()
 	_, err := NewParser().ParseCollection([]byte(`{"type":"Feature","id":"x"}`))
-	if err == nil {
-		t.Fatal("expected error for wrong type")
-	}
+	require.Error(t, err, "expected error for wrong type")
 }
 
 func TestParseCatalog_WrongTypeRejected(t *testing.T) {
 	t.Parallel()
 	_, err := NewParser().ParseCatalog([]byte(`{"type":"Feature","id":"x"}`))
-	if err == nil {
-		t.Fatal("expected error for wrong type")
-	}
+	require.Error(t, err, "expected error for wrong type")
 }
 
 func TestParseFeatureCollection_WrongTypeRejected(t *testing.T) {
 	t.Parallel()
 	_, err := NewParser().ParseFeatureCollection([]byte(`{"type":"NotIt"}`))
-	if err == nil {
-		t.Fatal("expected error for wrong type")
-	}
+	require.Error(t, err, "expected error for wrong type")
 }
 
 func TestParseSearchRequest_BodyShapes(t *testing.T) {
@@ -91,49 +79,38 @@ func TestParseSearchRequest_BodyShapes(t *testing.T) {
 			"collections + bbox + limit",
 			`{"collections":["a","b"],"bbox":[1,2,3,4],"limit":50}`,
 			func(t *testing.T, r *SearchRequest) {
-				if len(r.Collections) != 2 || r.Limit != 50 || len(r.BBox) != 4 {
-					t.Errorf("unexpected: %+v", r)
-				}
+				assert.Len(t, r.Collections, 2)
+				assert.Equal(t, 50, r.Limit)
+				assert.Len(t, r.BBox, 4)
 			},
 		},
 		{
 			"intersects as JSON object",
 			`{"intersects":{"type":"Point","coordinates":[0,0]}}`,
 			func(t *testing.T, r *SearchRequest) {
-				if len(r.Intersects) == 0 {
-					t.Fatal("intersects empty")
-				}
+				require.NotEmpty(t, r.Intersects, "intersects empty")
 				var probe struct{ Type string }
-				if err := json.Unmarshal(r.Intersects, &probe); err != nil || probe.Type != "Point" {
-					t.Errorf("intersects decode: %v %s", err, probe.Type)
-				}
+				err := json.Unmarshal(r.Intersects, &probe)
+				require.NoError(t, err)
+				assert.Equal(t, "Point", probe.Type)
 			},
 		},
 		{
 			"datetime + token",
 			`{"datetime":"2024-01-01/..","token":"abc"}`,
 			func(t *testing.T, r *SearchRequest) {
-				if r.Datetime == "" || r.Token != "abc" {
-					t.Errorf("unexpected: %+v", r)
-				}
+				assert.NotEmpty(t, r.Datetime)
+				assert.Equal(t, "abc", r.Token)
 			},
 		},
 		{
 			"cursor + fields object",
 			`{"cursor":"signed.cursor","fields":{"include":["id","bbox"],"exclude":["geometry"]}}`,
 			func(t *testing.T, r *SearchRequest) {
-				if r.Cursor != "signed.cursor" {
-					t.Errorf("Cursor = %q", r.Cursor)
-				}
-				if r.Fields == nil {
-					t.Fatal("Fields nil")
-				}
-				if !slices.Equal(r.Fields.Include, []string{"id", "bbox"}) {
-					t.Errorf("Include = %v", r.Fields.Include)
-				}
-				if !slices.Equal(r.Fields.Exclude, []string{"geometry"}) {
-					t.Errorf("Exclude = %v", r.Fields.Exclude)
-				}
+				assert.Equal(t, "signed.cursor", r.Cursor)
+				require.NotNil(t, r.Fields, "Fields nil")
+				assert.Equal(t, []string{"id", "bbox"}, r.Fields.Include)
+				assert.Equal(t, []string{"geometry"}, r.Fields.Exclude)
 			},
 		},
 	}
@@ -142,9 +119,7 @@ func TestParseSearchRequest_BodyShapes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			req, err := NewParser().ParseSearchRequest([]byte(tt.body))
-			if err != nil {
-				t.Fatalf("ParseSearchRequest: %v", err)
-			}
+			require.NoError(t, err)
 			tt.assert(t, req)
 		})
 	}
@@ -158,29 +133,21 @@ func TestParseSearchRequestFromHTTP(t *testing.T) {
 		body := `{"collections":["c"],"limit":7}`
 		r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(body))
 		req, err := NewParser().ParseSearchRequestFromHTTP(r)
-		if err != nil {
-			t.Fatalf("ParseSearchRequestFromHTTP: %v", err)
-		}
-		if req.Limit != 7 || len(req.Collections) != 1 {
-			t.Errorf("unexpected: %+v", req)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, 7, req.Limit)
+		assert.Len(t, req.Collections, 1)
 		// Body must be restored so downstream proxy can forward it.
 		got, _ := io.ReadAll(r.Body)
-		if !bytes.Equal(got, []byte(body)) {
-			t.Errorf("body not restored: got %q want %q", got, body)
-		}
+		assert.True(t, bytes.Equal(got, []byte(body)), "body not restored: got %q want %q", got, body)
 	})
 
 	t.Run("GET delegates to parseSearchFromQuery", func(t *testing.T) {
 		t.Parallel()
 		r := httptest.NewRequest(http.MethodGet, "/search?collections=a,b&limit=12", nil)
 		req, err := NewParser().ParseSearchRequestFromHTTP(r)
-		if err != nil {
-			t.Fatalf("ParseSearchRequestFromHTTP: %v", err)
-		}
-		if req.Limit != 12 || len(req.Collections) != 2 {
-			t.Errorf("unexpected: %+v", req)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, 12, req.Limit)
+		assert.Len(t, req.Collections, 2)
 	})
 }
 
@@ -195,89 +162,65 @@ func TestParseSearchFromQuery(t *testing.T) {
 			"bbox 4-tuple",
 			"/search?bbox=1,2,3,4",
 			func(t *testing.T, r *SearchRequest) {
-				if len(r.BBox) != 4 {
-					t.Errorf("BBox: %v", r.BBox)
-				}
+				assert.Len(t, r.BBox, 4)
 			},
 		},
 		{
 			"intersects valid GeoJSON",
 			`/search?intersects={"type":"Point","coordinates":[1,2]}`,
 			func(t *testing.T, r *SearchRequest) {
-				if len(r.Intersects) == 0 {
-					t.Fatal("Intersects empty")
-				}
+				require.NotEmpty(t, r.Intersects, "Intersects empty")
 				var probe struct{ Type string }
 				_ = json.Unmarshal(r.Intersects, &probe)
-				if probe.Type != "Point" {
-					t.Errorf("Intersects.Type = %q", probe.Type)
-				}
+				assert.Equal(t, "Point", probe.Type)
 			},
 		},
 		{
 			"sortby asc + desc",
 			"/search?sortby=-datetime,id",
 			func(t *testing.T, r *SearchRequest) {
-				if len(r.Sortby) != 2 {
-					t.Fatalf("Sortby: %+v", r.Sortby)
-				}
-				if r.Sortby[0].Direction != "desc" || r.Sortby[0].Field != "datetime" {
-					t.Errorf("Sortby[0]: %+v", r.Sortby[0])
-				}
-				if r.Sortby[1].Direction != "asc" || r.Sortby[1].Field != "id" {
-					t.Errorf("Sortby[1]: %+v", r.Sortby[1])
-				}
+				require.Len(t, r.Sortby, 2)
+				assert.Equal(t, "desc", r.Sortby[0].Direction)
+				assert.Equal(t, "datetime", r.Sortby[0].Field)
+				assert.Equal(t, "asc", r.Sortby[1].Direction)
+				assert.Equal(t, "id", r.Sortby[1].Field)
 			},
 		},
 		{
 			"filter w/ default cql2-text",
 			"/search?filter=collection=foo",
 			func(t *testing.T, r *SearchRequest) {
-				if r.FilterLang != "cql2-text" {
-					t.Errorf("FilterLang = %q", r.FilterLang)
-				}
+				assert.Equal(t, "cql2-text", r.FilterLang)
 			},
 		},
 		{
 			"token query param",
 			"/search?token=abc.def",
 			func(t *testing.T, r *SearchRequest) {
-				if r.Token != "abc.def" {
-					t.Errorf("Token = %q", r.Token)
-				}
+				assert.Equal(t, "abc.def", r.Token)
 			},
 		},
 		{
 			"cursor query param",
 			"/search?cursor=xyz.123",
 			func(t *testing.T, r *SearchRequest) {
-				if r.Cursor != "xyz.123" {
-					t.Errorf("Cursor = %q", r.Cursor)
-				}
+				assert.Equal(t, "xyz.123", r.Cursor)
 			},
 		},
 		{
 			"fields include and exclude shorthand",
 			"/search?fields=%2Bid,-geometry,properties.eo:cloud_cover",
 			func(t *testing.T, r *SearchRequest) {
-				if r.Fields == nil {
-					t.Fatal("Fields is nil")
-				}
-				if want := []string{"id", "properties.eo:cloud_cover"}; !equalStringSlice(r.Fields.Include, want) {
-					t.Errorf("Include = %v, want %v", r.Fields.Include, want)
-				}
-				if want := []string{"geometry"}; !equalStringSlice(r.Fields.Exclude, want) {
-					t.Errorf("Exclude = %v, want %v", r.Fields.Exclude, want)
-				}
+				require.NotNil(t, r.Fields, "Fields is nil")
+				assert.Equal(t, []string{"id", "properties.eo:cloud_cover"}, r.Fields.Include)
+				assert.Equal(t, []string{"geometry"}, r.Fields.Exclude)
 			},
 		},
 		{
 			"fields empty produces nil",
 			"/search?fields=,,",
 			func(t *testing.T, r *SearchRequest) {
-				if r.Fields != nil {
-					t.Errorf("Fields should be nil, got %+v", r.Fields)
-				}
+				assert.Nil(t, r.Fields, "Fields should be nil, got %+v", r.Fields)
 			},
 		},
 	}
@@ -288,9 +231,7 @@ func TestParseSearchFromQuery(t *testing.T) {
 			t.Parallel()
 			r := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			req, err := p.parseSearchFromQuery(r)
-			if err != nil {
-				t.Fatalf("parseSearchFromQuery: %v", err)
-			}
+			require.NoError(t, err)
 			tt.assert(t, req)
 		})
 	}
@@ -303,19 +244,11 @@ func TestParseSearchFromQuery_BadBboxReturns400(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest(http.MethodGet, "/search?bbox=foo,bar,3,4", nil)
 	_, err := NewParser().ParseSearchRequestFromHTTP(r)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
+	require.Error(t, err)
 	var pe *ParseError
-	if !errors.As(err, &pe) {
-		t.Fatalf("error type = %T, want *ParseError; err=%v", err, err)
-	}
-	if pe.Param != "bbox" {
-		t.Errorf("Param = %q, want %q", pe.Param, "bbox")
-	}
-	if !strings.Contains(err.Error(), "bbox") {
-		t.Errorf("error %q missing %q", err.Error(), "bbox")
-	}
+	require.Truef(t, errors.As(err, &pe), "error type = %T, want *ParseError; err=%v", err, err)
+	assert.Equal(t, "bbox", pe.Param)
+	assert.Contains(t, err.Error(), "bbox")
 }
 
 // TestParseSearchFromQuery_BadLimitReturns400 verifies a non-numeric
@@ -324,19 +257,11 @@ func TestParseSearchFromQuery_BadLimitReturns400(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest(http.MethodGet, "/search?limit=abc", nil)
 	_, err := NewParser().ParseSearchRequestFromHTTP(r)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
+	require.Error(t, err)
 	var pe *ParseError
-	if !errors.As(err, &pe) {
-		t.Fatalf("error type = %T, want *ParseError; err=%v", err, err)
-	}
-	if pe.Param != "limit" {
-		t.Errorf("Param = %q, want %q", pe.Param, "limit")
-	}
-	if !strings.Contains(err.Error(), "limit") {
-		t.Errorf("error %q missing %q", err.Error(), "limit")
-	}
+	require.Truef(t, errors.As(err, &pe), "error type = %T, want *ParseError; err=%v", err, err)
+	assert.Equal(t, "limit", pe.Param)
+	assert.Contains(t, err.Error(), "limit")
 }
 
 // TestParseSearchFromQuery_BadIntersectsReturns400 verifies a malformed
@@ -350,16 +275,10 @@ func TestParseSearchFromQuery_BadIntersectsReturns400(t *testing.T) {
 	bad := `{"type":"Polygon","coordinates":"not-an-array"}`
 	r := httptest.NewRequest(http.MethodGet, "/search?intersects="+bad, nil)
 	_, err := NewParser().ParseSearchRequestFromHTTP(r)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
+	require.Error(t, err)
 	var pe *ParseError
-	if !errors.As(err, &pe) {
-		t.Fatalf("error type = %T, want *ParseError; err=%v", err, err)
-	}
-	if pe.Param != "intersects" {
-		t.Errorf("Param = %q, want %q", pe.Param, "intersects")
-	}
+	require.Truef(t, errors.As(err, &pe), "error type = %T, want *ParseError; err=%v", err, err)
+	assert.Equal(t, "intersects", pe.Param)
 }
 
 // TestParseSearchFromQuery_NonJSONIntersectsReturns400 covers the
@@ -369,16 +288,10 @@ func TestParseSearchFromQuery_NonJSONIntersectsReturns400(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest(http.MethodGet, "/search?intersects={broken", nil)
 	_, err := NewParser().ParseSearchRequestFromHTTP(r)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
+	require.Error(t, err)
 	var pe *ParseError
-	if !errors.As(err, &pe) {
-		t.Fatalf("error type = %T, want *ParseError; err=%v", err, err)
-	}
-	if pe.Param != "intersects" {
-		t.Errorf("Param = %q, want %q", pe.Param, "intersects")
-	}
+	require.Truef(t, errors.As(err, &pe), "error type = %T, want *ParseError; err=%v", err, err)
+	assert.Equal(t, "intersects", pe.Param)
 }
 
 func TestExtractNextLink(t *testing.T) {
@@ -388,15 +301,10 @@ func TestExtractNextLink(t *testing.T) {
 		{Rel: "next", Href: "https://example.com/next"},
 	}
 	got := ExtractNextLink(links)
-	if got == nil || got.Href != "https://example.com/next" {
-		t.Errorf("ExtractNextLink = %+v", got)
-	}
-	if ExtractNextLink(nil) != nil {
-		t.Error("ExtractNextLink(nil) should be nil")
-	}
-	if ExtractNextLink([]*Link{{Rel: "self"}}) != nil {
-		t.Error("no next link should yield nil")
-	}
+	require.NotNil(t, got)
+	assert.Equal(t, "https://example.com/next", got.Href)
+	assert.Nil(t, ExtractNextLink(nil), "ExtractNextLink(nil) should be nil")
+	assert.Nil(t, ExtractNextLink([]*Link{{Rel: "self"}}), "no next link should yield nil")
 }
 
 func TestExtractNextToken(t *testing.T) {
@@ -404,31 +312,21 @@ func TestExtractNextToken(t *testing.T) {
 	links := []*Link{
 		{Rel: "next", Href: "https://example.com/search?token=abc123&foo=bar"},
 	}
-	if got := ExtractNextToken(links); got != "abc123" {
-		t.Errorf("ExtractNextToken = %q, want abc123", got)
-	}
-	if ExtractNextToken(nil) != "" {
-		t.Error("nil links should yield empty token")
-	}
-	if ExtractNextToken([]*Link{{Rel: "next", Href: "no-token-here"}}) != "" {
-		t.Error("no token param should yield empty token")
-	}
+	assert.Equal(t, "abc123", ExtractNextToken(links))
+	assert.Equal(t, "", ExtractNextToken(nil), "nil links should yield empty token")
+	assert.Equal(t, "", ExtractNextToken([]*Link{{Rel: "next", Href: "no-token-here"}}), "no token param should yield empty token")
 	// Defense against the strings.Split heuristic: a different
 	// query value happens to contain "token=" inside it. The old
 	// implementation extracted "real" from this URL.
 	tricky := []*Link{
 		{Rel: "next", Href: "https://example.com/search?other=x%3Dtoken%3Dreal&token=actual"},
 	}
-	if got := ExtractNextToken(tricky); got != "actual" {
-		t.Errorf("ExtractNextToken with mis-extract trap = %q, want %q", got, "actual")
-	}
+	assert.Equal(t, "actual", ExtractNextToken(tricky), "ExtractNextToken with mis-extract trap")
 	// Percent-encoded token value should be decoded.
 	enc := []*Link{
 		{Rel: "next", Href: "https://example.com/search?token=a%2Bb%2Fc"},
 	}
-	if got := ExtractNextToken(enc); got != "a+b/c" {
-		t.Errorf("ExtractNextToken decoded = %q, want %q", got, "a+b/c")
-	}
+	assert.Equal(t, "a+b/c", ExtractNextToken(enc), "ExtractNextToken decoded")
 }
 
 func TestValidateItem(t *testing.T) {
@@ -447,15 +345,11 @@ func TestValidateItem(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := ValidateItem(tt.item)
-			gotMsg := ""
-			if err != nil {
-				gotMsg = err.Error()
-			}
-			if tt.wantErr == "" && err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-			if tt.wantErr != "" && !strings.Contains(gotMsg, tt.wantErr) {
-				t.Errorf("err %q does not contain %q", gotMsg, tt.wantErr)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
 			}
 		})
 	}
@@ -470,9 +364,7 @@ func TestValidateItem_NullGeometryWithBboxOK(t *testing.T) {
 		ID:   "x",
 		Bbox: []float64{1, 2, 3, 4},
 	}
-	if err := ValidateItem(item); err != nil {
-		t.Fatalf("ValidateItem with null geometry + bbox: %v", err)
-	}
+	require.NoError(t, ValidateItem(item))
 }
 
 // TestValidateItem_NullGeometryWithoutBboxFails locks in the rule's
@@ -480,9 +372,7 @@ func TestValidateItem_NullGeometryWithBboxOK(t *testing.T) {
 func TestValidateItem_NullGeometryWithoutBboxFails(t *testing.T) {
 	t.Parallel()
 	item := &Item{ID: "x"}
-	if err := ValidateItem(item); err == nil {
-		t.Fatal("expected error for item missing both geometry and bbox")
-	}
+	require.Error(t, ValidateItem(item), "expected error for item missing both geometry and bbox")
 }
 
 func TestValidateCollection(t *testing.T) {
@@ -502,15 +392,11 @@ func TestValidateCollection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := ValidateCollection(tt.coll)
-			gotMsg := ""
-			if err != nil {
-				gotMsg = err.Error()
-			}
-			if tt.wantErr == "" && err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-			if tt.wantErr != "" && !strings.Contains(gotMsg, tt.wantErr) {
-				t.Errorf("err %q does not contain %q", gotMsg, tt.wantErr)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
 			}
 		})
 	}
@@ -549,15 +435,11 @@ func TestValidateSearchRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := ValidateSearchRequest(tt.req)
-			gotMsg := ""
-			if err != nil {
-				gotMsg = err.Error()
-			}
-			if tt.wantErr == "" && err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-			if tt.wantErr != "" && !strings.Contains(gotMsg, tt.wantErr) {
-				t.Errorf("err %q does not contain %q", gotMsg, tt.wantErr)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
 			}
 		})
 	}

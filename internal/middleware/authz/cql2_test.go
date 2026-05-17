@@ -6,6 +6,7 @@ import (
 
 	cql2 "github.com/exergy-dev/go-cql2"
 	_ "github.com/exergy-dev/go-cql2/codecs"
+	"github.com/stretchr/testify/require"
 )
 
 func encText(t *testing.T, e *cql2.Expr) string {
@@ -14,27 +15,19 @@ func encText(t *testing.T, e *cql2.Expr) string {
 		return ""
 	}
 	b, err := cql2.Encode(e.N, cql2.EncodingText)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
+	require.NoError(t, err, "encode")
 	return string(b)
 }
 
 func TestAndNonNil_AllNil(t *testing.T) {
-	if got := andNonNil(nil, nil, nil); got != nil {
-		t.Fatalf("want nil, got %v", got)
-	}
+	require.Nil(t, andNonNil(nil, nil, nil), "want nil")
 }
 
 func TestAndNonNil_SingleNonNil(t *testing.T) {
 	e := cql2.Eq("a", 1)
 	got := andNonNil(nil, &e, nil)
-	if got == nil {
-		t.Fatal("want non-nil")
-	}
-	if s := encText(t, got); s != "a = 1" {
-		t.Fatalf("want %q, got %q", "a = 1", s)
-	}
+	require.NotNil(t, got, "want non-nil")
+	require.Equal(t, "a = 1", encText(t, got))
 }
 
 func TestAndNonNil_TwoNonNil(t *testing.T) {
@@ -42,20 +35,19 @@ func TestAndNonNil_TwoNonNil(t *testing.T) {
 	b := cql2.Eq("b", 2)
 	got := andNonNil(&a, nil, &b)
 	s := encText(t, got)
-	if !strings.Contains(s, "a = 1") || !strings.Contains(s, "b = 2") || !strings.Contains(s, "AND") {
-		t.Fatalf("want both predicates AND-combined, got %q", s)
-	}
+	require.Contains(t, s, "a = 1", "want both predicates AND-combined, got %q", s)
+	require.Contains(t, s, "b = 2", "want both predicates AND-combined, got %q", s)
+	require.Contains(t, s, "AND", "want both predicates AND-combined, got %q", s)
 }
 
 func TestGeofenceToCQL2_Nil(t *testing.T) {
 	got, err := geofenceToCQL2(nil)
-	if err != nil || got != nil {
-		t.Fatalf("want nil/nil, got %v / %v", got, err)
-	}
+	require.NoError(t, err, "want nil/nil")
+	require.Nil(t, got, "want nil/nil")
+
 	got, err = geofenceToCQL2(&GeofenceConstraint{})
-	if err != nil || got != nil {
-		t.Fatalf("want nil/nil for empty constraint, got %v / %v", got, err)
-	}
+	require.NoError(t, err, "want nil/nil for empty constraint")
+	require.Nil(t, got, "want nil/nil for empty constraint")
 }
 
 func TestGeofenceToCQL2_DeniedAreaOnly(t *testing.T) {
@@ -74,19 +66,11 @@ func TestGeofenceToCQL2_DeniedAreaOnly(t *testing.T) {
 		},
 	}
 	got, err := geofenceToCQL2(g)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got == nil {
-		t.Fatal("expected non-nil expression for denied area")
-	}
+	require.NoError(t, err, "unexpected error")
+	require.NotNil(t, got, "expected non-nil expression for denied area")
 	s := strings.ToUpper(encText(t, got))
-	if !strings.Contains(s, "S_INTERSECTS") {
-		t.Fatalf("want S_INTERSECTS in NOT predicate, got %q", s)
-	}
-	if !strings.Contains(s, "NOT") {
-		t.Fatalf("want NOT wrapper around denied-area intersect, got %q", s)
-	}
+	require.Contains(t, s, "S_INTERSECTS", "want S_INTERSECTS in NOT predicate, got %q", s)
+	require.Contains(t, s, "NOT", "want NOT wrapper around denied-area intersect, got %q", s)
 }
 
 func TestGeofenceToCQL2_AllowedAndDenied(t *testing.T) {
@@ -117,19 +101,11 @@ func TestGeofenceToCQL2_AllowedAndDenied(t *testing.T) {
 		},
 	}
 	got, err := geofenceToCQL2(g)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got == nil {
-		t.Fatal("expected non-nil expression for allowed + denied")
-	}
+	require.NoError(t, err, "unexpected error")
+	require.NotNil(t, got, "expected non-nil expression for allowed + denied")
 	s := strings.ToUpper(encText(t, got))
-	if !strings.Contains(s, "AND") {
-		t.Fatalf("want AND between allowed and denied, got %q", s)
-	}
-	if !strings.Contains(s, "NOT") {
-		t.Fatalf("want NOT for denied, got %q", s)
-	}
+	require.Contains(t, s, "AND", "want AND between allowed and denied, got %q", s)
+	require.Contains(t, s, "NOT", "want NOT for denied, got %q", s)
 }
 
 func TestGeofenceToCQL2_Polygon(t *testing.T) {
@@ -148,19 +124,11 @@ func TestGeofenceToCQL2_Polygon(t *testing.T) {
 		},
 	}
 	got, err := geofenceToCQL2(g)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got == nil {
-		t.Fatal("want non-nil expression for polygon allowed area")
-	}
+	require.NoError(t, err, "unexpected error")
+	require.NotNil(t, got, "want non-nil expression for polygon allowed area")
 	s := encText(t, got)
-	if !strings.Contains(strings.ToUpper(s), "S_INTERSECTS") {
-		t.Fatalf("want S_INTERSECTS in encoded form, got %q", s)
-	}
-	if !strings.Contains(s, "geometry") {
-		t.Fatalf("want property reference to geometry, got %q", s)
-	}
+	require.Contains(t, strings.ToUpper(s), "S_INTERSECTS", "want S_INTERSECTS in encoded form, got %q", s)
+	require.Contains(t, s, "geometry", "want property reference to geometry, got %q", s)
 }
 
 func TestMaybePushDownGeofence_Polygon(t *testing.T) {
@@ -181,21 +149,11 @@ func TestMaybePushDownGeofence_Polygon(t *testing.T) {
 		},
 	}
 	out, applied, err := maybePushDownGeofence(c, true)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !applied {
-		t.Fatal("expected push-down to be applied")
-	}
-	if !out.GeofencePushedDown {
-		t.Fatal("expected GeofencePushedDown=true on returned constraint")
-	}
-	if !strings.Contains(strings.ToUpper(out.CQL2Filter), "S_INTERSECTS") {
-		t.Fatalf("want S_INTERSECTS in CQL2Filter, got %q", out.CQL2Filter)
-	}
-	if c.GeofencePushedDown {
-		t.Fatal("input constraint must not be mutated")
-	}
+	require.NoError(t, err, "unexpected error")
+	require.True(t, applied, "expected push-down to be applied")
+	require.True(t, out.GeofencePushedDown, "expected GeofencePushedDown=true on returned constraint")
+	require.Contains(t, strings.ToUpper(out.CQL2Filter), "S_INTERSECTS", "want S_INTERSECTS in CQL2Filter, got %q", out.CQL2Filter)
+	require.False(t, c.GeofencePushedDown, "input constraint must not be mutated")
 }
 
 func TestMaybePushDownGeofence_CombinesWithExistingPolicyFilter(t *testing.T) {
@@ -217,39 +175,22 @@ func TestMaybePushDownGeofence_CombinesWithExistingPolicyFilter(t *testing.T) {
 		},
 	}
 	out, applied, err := maybePushDownGeofence(c, true)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !applied {
-		t.Fatal("expected push-down to be applied")
-	}
+	require.NoError(t, err, "unexpected error")
+	require.True(t, applied, "expected push-down to be applied")
 	s := strings.ToUpper(out.CQL2Filter)
-	if !strings.Contains(s, "S_INTERSECTS") {
-		t.Fatalf("want S_INTERSECTS, got %q", out.CQL2Filter)
-	}
-	if !strings.Contains(s, "EO:CLOUD_COVER") {
-		t.Fatalf("want existing policy filter retained, got %q", out.CQL2Filter)
-	}
-	if !strings.Contains(s, "AND") {
-		t.Fatalf("want AND-combined output, got %q", out.CQL2Filter)
-	}
-	if out.CQL2FilterJSON != nil {
-		t.Fatalf("want CQL2FilterJSON cleared after text-merge, got %v", out.CQL2FilterJSON)
-	}
+	require.Contains(t, s, "S_INTERSECTS", "want S_INTERSECTS, got %q", out.CQL2Filter)
+	require.Contains(t, s, "EO:CLOUD_COVER", "want existing policy filter retained, got %q", out.CQL2Filter)
+	require.Contains(t, s, "AND", "want AND-combined output, got %q", out.CQL2Filter)
+	require.Nil(t, out.CQL2FilterJSON, "want CQL2FilterJSON cleared after text-merge, got %v", out.CQL2FilterJSON)
 }
 
 func TestMaybePushDownGeofence_NoOpWhenAbsent(t *testing.T) {
 	c := &AuthzConstraints{}
 	out, applied, err := maybePushDownGeofence(c, true)
-	if err != nil || applied {
-		t.Fatalf("want no-op for absent geofence, got applied=%v err=%v", applied, err)
-	}
-	if out != c {
-		t.Fatal("want input pointer returned when no push-down happened")
-	}
-	if c.GeofencePushedDown {
-		t.Fatal("GeofencePushedDown must not be set when no push-down happened")
-	}
+	require.NoError(t, err, "want no-op for absent geofence")
+	require.False(t, applied, "want no-op for absent geofence")
+	require.Same(t, c, out, "want input pointer returned when no push-down happened")
+	require.False(t, c.GeofencePushedDown, "GeofencePushedDown must not be set when no push-down happened")
 }
 
 // TestMaybePushDownGeofence_DoesNotMutateInput exercises the exact
@@ -276,80 +217,58 @@ func TestMaybePushDownGeofence_DoesNotMutateInput(t *testing.T) {
 		},
 	}
 	out, applied, err := maybePushDownGeofence(in, true)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !applied {
-		t.Fatal("expected push-down to apply")
-	}
-	if out == in {
-		t.Fatal("returned constraint must be a fresh value, not the input pointer")
-	}
-	if in.CQL2Filter != origFilter {
-		t.Fatalf("input CQL2Filter was mutated: got %q want %q", in.CQL2Filter, origFilter)
-	}
-	if in.GeofencePushedDown {
-		t.Fatal("input GeofencePushedDown was mutated")
-	}
-	if !strings.Contains(strings.ToUpper(out.CQL2Filter), "S_INTERSECTS") {
-		t.Fatalf("expected merged filter on returned constraint, got %q", out.CQL2Filter)
-	}
+	require.NoError(t, err, "unexpected error")
+	require.True(t, applied, "expected push-down to apply")
+	require.NotSame(t, in, out, "returned constraint must be a fresh value, not the input pointer")
+	require.Equal(t, origFilter, in.CQL2Filter, "input CQL2Filter was mutated")
+	require.False(t, in.GeofencePushedDown, "input GeofencePushedDown was mutated")
+	require.Contains(t, strings.ToUpper(out.CQL2Filter), "S_INTERSECTS", "expected merged filter on returned constraint, got %q", out.CQL2Filter)
 	// A second call on the original input must still apply push-down
 	// (i.e. push-down is not gated by the prior call's mutation).
 	out2, applied2, err := maybePushDownGeofence(in, true)
-	if err != nil || !applied2 {
-		t.Fatalf("second call should still apply push-down: applied=%v err=%v", applied2, err)
-	}
-	if out2 == in {
-		t.Fatal("second call must also return a fresh value")
-	}
+	require.NoError(t, err, "second call should still apply push-down")
+	require.True(t, applied2, "second call should still apply push-down")
+	require.NotSame(t, in, out2, "second call must also return a fresh value")
 }
 
 func TestParseUserCQL2_StringAndJSON(t *testing.T) {
 	e, err := parseUserCQL2("a = 1")
-	if err != nil || e == nil {
-		t.Fatalf("text parse: e=%v err=%v", e, err)
-	}
+	require.NoError(t, err, "text parse")
+	require.NotNil(t, e, "text parse")
+
 	e, err = parseUserCQL2(map[string]interface{}{
 		"op":   "=",
 		"args": []interface{}{map[string]interface{}{"property": "a"}, float64(1)},
 	})
-	if err != nil || e == nil {
-		t.Fatalf("json parse: e=%v err=%v", e, err)
-	}
+	require.NoError(t, err, "json parse")
+	require.NotNil(t, e, "json parse")
+
 	e, err = parseUserCQL2(nil)
-	if err != nil || e != nil {
-		t.Fatalf("nil parse: e=%v err=%v", e, err)
-	}
+	require.NoError(t, err, "nil parse")
+	require.Nil(t, e, "nil parse")
+
 	e, err = parseUserCQL2("")
-	if err != nil || e != nil {
-		t.Fatalf("empty-string parse: e=%v err=%v", e, err)
-	}
+	require.NoError(t, err, "empty-string parse")
+	require.Nil(t, e, "empty-string parse")
 }
 
 func TestEncodeForLang_RoundTrip(t *testing.T) {
 	e := cql2.Eq("a", 1)
 	out, err := encodeForLang(&e, "cql2-text")
-	if err != nil {
-		t.Fatalf("text encode: %v", err)
-	}
-	if s, ok := out.(string); !ok || s != "a = 1" {
-		t.Fatalf("text: want 'a = 1', got %v", out)
-	}
+	require.NoError(t, err, "text encode")
+	s, ok := out.(string)
+	require.True(t, ok, "text: want 'a = 1', got %v", out)
+	require.Equal(t, "a = 1", s, "text")
+
 	out, err = encodeForLang(&e, "cql2-json")
-	if err != nil {
-		t.Fatalf("json encode: %v", err)
-	}
-	if _, ok := out.(map[string]interface{}); !ok {
-		t.Fatalf("json: want map, got %T %v", out, out)
-	}
+	require.NoError(t, err, "json encode")
+	_, ok = out.(map[string]interface{})
+	require.True(t, ok, "json: want map, got %T %v", out, out)
+
 	out, err = encodeForLang(&e, "")
-	if err != nil {
-		t.Fatalf("default encode: %v", err)
-	}
-	if _, ok := out.(string); !ok {
-		t.Fatalf("default: want text string, got %T", out)
-	}
+	require.NoError(t, err, "default encode")
+	_, ok = out.(string)
+	require.True(t, ok, "default: want text string, got %T", out)
 }
 
 func TestGeofenceToCQL2_InvalidGeoJSON(t *testing.T) {
@@ -358,11 +277,9 @@ func TestGeofenceToCQL2_InvalidGeoJSON(t *testing.T) {
 			"type": "NotAGeometry",
 		},
 	}
-	if _, err := geofenceToCQL2(g); err == nil {
-		t.Fatal("want error for invalid GeoJSON, got nil")
-	}
+	_, err := geofenceToCQL2(g)
+	require.Error(t, err, "want error for invalid GeoJSON")
 }
-
 
 // TestGeofenceToCQL2_RespectsConfiguredProperty asserts the emitted
 // S_INTERSECTS uses the configured property name rather than the
@@ -385,16 +302,11 @@ func TestGeofenceToCQL2_RespectsConfiguredProperty(t *testing.T) {
 		},
 	}
 	got, err := geofenceToCQL2(g)
-	if err != nil || got == nil {
-		t.Fatalf("geofenceToCQL2: got=%v err=%v", got, err)
-	}
+	require.NoError(t, err, "geofenceToCQL2")
+	require.NotNil(t, got, "geofenceToCQL2")
 	s := encText(t, got)
-	if !strings.Contains(s, "the_geom") {
-		t.Fatalf("want the_geom property reference, got %q", s)
-	}
-	if strings.Contains(s, "geometry") {
-		t.Fatalf("expected configured property to replace 'geometry', got %q", s)
-	}
+	require.Contains(t, s, "the_geom", "want the_geom property reference, got %q", s)
+	require.NotContains(t, s, "geometry", "expected configured property to replace 'geometry', got %q", s)
 }
 
 // TestMaybePushDownGeofence_SkipsPushDownWhenSpatialNotSupported
@@ -419,19 +331,9 @@ func TestMaybePushDownGeofence_SkipsPushDownWhenSpatialNotSupported(t *testing.T
 		},
 	}
 	out, applied, err := maybePushDownGeofence(c, false)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if applied {
-		t.Fatal("push-down must not run when spatialSupported=false")
-	}
-	if out != c {
-		t.Fatal("expected input pointer returned unchanged when push-down is skipped")
-	}
-	if out.GeofencePushedDown {
-		t.Fatal("GeofencePushedDown must remain false so the post-filter stays responsible")
-	}
-	if out.CQL2Filter != "" {
-		t.Fatalf("CQL2Filter must remain empty (no push-down), got %q", out.CQL2Filter)
-	}
+	require.NoError(t, err, "unexpected error")
+	require.False(t, applied, "push-down must not run when spatialSupported=false")
+	require.Same(t, c, out, "expected input pointer returned unchanged when push-down is skipped")
+	require.False(t, out.GeofencePushedDown, "GeofencePushedDown must remain false so the post-filter stays responsible")
+	require.Empty(t, out.CQL2Filter, "CQL2Filter must remain empty (no push-down)")
 }

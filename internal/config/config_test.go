@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestLoad tests loading configuration from YAML files
@@ -30,25 +33,13 @@ upstream:
 		defer os.Remove(tmpFile)
 
 		cfg, err := Load(tmpFile)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
-		if cfg.Mode != "single" {
-			t.Errorf("expected mode 'single', got %q", cfg.Mode)
-		}
-		if cfg.Server.Host != "127.0.0.1" {
-			t.Errorf("expected host '127.0.0.1', got %q", cfg.Server.Host)
-		}
-		if cfg.Server.Port != 8080 {
-			t.Errorf("expected port 8080, got %d", cfg.Server.Port)
-		}
-		if cfg.Upstream == nil {
-			t.Fatal("expected upstream to be set")
-		}
-		if cfg.Upstream.URL != "https://example.com/stac" {
-			t.Errorf("expected upstream URL 'https://example.com/stac', got %q", cfg.Upstream.URL)
-		}
+		assert.Equal(t, "single", cfg.Mode)
+		assert.Equal(t, "127.0.0.1", cfg.Server.Host)
+		assert.Equal(t, 8080, cfg.Server.Port)
+		require.NotNil(t, cfg.Upstream, "expected upstream to be set")
+		assert.Equal(t, "https://example.com/stac", cfg.Upstream.URL)
 	})
 
 	t.Run("valid federation mode config", func(t *testing.T) {
@@ -73,37 +64,21 @@ federation:
 		defer os.Remove(tmpFile)
 
 		cfg, err := Load(tmpFile)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
-		if cfg.Mode != "federation" {
-			t.Errorf("expected mode 'federation', got %q", cfg.Mode)
-		}
-		if cfg.Federation == nil {
-			t.Fatal("expected federation to be set")
-		}
-		if len(cfg.Federation.Origins) != 2 {
-			t.Fatalf("expected 2 origins, got %d", len(cfg.Federation.Origins))
-		}
-		if cfg.Federation.Origins[0].ID != "origin1" {
-			t.Errorf("expected origin ID 'origin1', got %q", cfg.Federation.Origins[0].ID)
-		}
-		if cfg.Federation.Origins[0].BaseURL != "https://origin1.example.com" {
-			t.Errorf("expected base URL 'https://origin1.example.com', got %q", cfg.Federation.Origins[0].BaseURL)
-		}
+		assert.Equal(t, "federation", cfg.Mode)
+		require.NotNil(t, cfg.Federation, "expected federation to be set")
+		require.Len(t, cfg.Federation.Origins, 2)
+		assert.Equal(t, "origin1", cfg.Federation.Origins[0].ID)
+		assert.Equal(t, "https://origin1.example.com", cfg.Federation.Origins[0].BaseURL)
 	})
 
 	t.Run("missing file error", func(t *testing.T) {
 		t.Parallel()
 
 		_, err := Load("/nonexistent/path/to/config.yaml")
-		if err == nil {
-			t.Fatal("expected error for missing file")
-		}
-		if !strings.Contains(err.Error(), "failed to read config file") {
-			t.Errorf("expected 'failed to read config file' error, got: %v", err)
-		}
+		require.Error(t, err, "expected error for missing file")
+		assert.Contains(t, err.Error(), "failed to read config file")
 	})
 
 	t.Run("invalid YAML error", func(t *testing.T) {
@@ -121,12 +96,8 @@ upstream:
 		defer os.Remove(tmpFile)
 
 		_, err := Load(tmpFile)
-		if err == nil {
-			t.Fatal("expected error for invalid YAML")
-		}
-		if !strings.Contains(err.Error(), "failed to parse config file") {
-			t.Errorf("expected 'failed to parse config file' error, got: %v", err)
-		}
+		require.Error(t, err, "expected error for invalid YAML")
+		assert.Contains(t, err.Error(), "failed to parse config file")
 	})
 
 	t.Run("validation error - single mode without upstream", func(t *testing.T) {
@@ -141,15 +112,9 @@ server:
 		defer os.Remove(tmpFile)
 
 		_, err := Load(tmpFile)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !strings.Contains(err.Error(), "config validation failed") {
-			t.Errorf("expected 'config validation failed' error, got: %v", err)
-		}
-		if !containsValidationError(err, "upstream") {
-			t.Errorf("expected error to mention 'upstream', got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.Contains(t, err.Error(), "config validation failed")
+		assert.True(t, containsValidationError(err, "upstream"), "expected error to mention 'upstream', got: %v", err)
 	})
 
 	t.Run("validation error - federation mode without origins", func(t *testing.T) {
@@ -165,12 +130,8 @@ federation: {}
 		defer os.Remove(tmpFile)
 
 		_, err := Load(tmpFile)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !strings.Contains(err.Error(), "config validation failed") {
-			t.Errorf("expected 'config validation failed' error, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.Contains(t, err.Error(), "config validation failed")
 	})
 
 	t.Run("environment variable expansion", func(t *testing.T) {
@@ -193,16 +154,10 @@ upstream:
 		defer os.Remove(tmpFile)
 
 		cfg, err := Load(tmpFile)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
-		if cfg.Server.Port != 9999 {
-			t.Errorf("expected port 9999 from env var, got %d", cfg.Server.Port)
-		}
-		if cfg.Upstream.URL != "https://env-var-test.com" {
-			t.Errorf("expected URL from env var, got %q", cfg.Upstream.URL)
-		}
+		assert.Equal(t, 9999, cfg.Server.Port, "expected port 9999 from env var")
+		assert.Equal(t, "https://env-var-test.com", cfg.Upstream.URL, "expected URL from env var")
 	})
 
 	t.Run("TLS enabled requires cert and key", func(t *testing.T) {
@@ -221,12 +176,11 @@ upstream:
 		defer os.Remove(tmpFile)
 
 		_, err := Load(tmpFile)
-		if err == nil {
-			t.Fatal("expected validation error for TLS without cert/key")
-		}
-		if !containsValidationError(err, "cert_file") && !containsValidationError(err, "key_file") {
-			t.Errorf("expected error to mention cert_file or key_file, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error for TLS without cert/key")
+		assert.True(t,
+			containsValidationError(err, "cert_file") || containsValidationError(err, "key_file"),
+			"expected error to mention cert_file or key_file, got: %v", err,
+		)
 	})
 }
 
@@ -244,21 +198,11 @@ func TestSetDefaults(t *testing.T) {
 
 		cfg.setDefaults()
 
-		if cfg.Server.Host != "0.0.0.0" {
-			t.Errorf("expected default host '0.0.0.0', got %q", cfg.Server.Host)
-		}
-		if cfg.Server.Port != 8080 {
-			t.Errorf("expected default port 8080, got %d", cfg.Server.Port)
-		}
-		if cfg.Server.Timeouts.Read != 30*time.Second {
-			t.Errorf("expected default read timeout 30s, got %v", cfg.Server.Timeouts.Read)
-		}
-		if cfg.Server.Timeouts.Write != 60*time.Second {
-			t.Errorf("expected default write timeout 60s, got %v", cfg.Server.Timeouts.Write)
-		}
-		if cfg.Server.Timeouts.Idle != 120*time.Second {
-			t.Errorf("expected default idle timeout 120s, got %v", cfg.Server.Timeouts.Idle)
-		}
+		assert.Equal(t, "0.0.0.0", cfg.Server.Host)
+		assert.Equal(t, 8080, cfg.Server.Port)
+		assert.Equal(t, 30*time.Second, cfg.Server.Timeouts.Read)
+		assert.Equal(t, 60*time.Second, cfg.Server.Timeouts.Write)
+		assert.Equal(t, 120*time.Second, cfg.Server.Timeouts.Idle)
 	})
 
 	t.Run("logging defaults", func(t *testing.T) {
@@ -273,12 +217,8 @@ func TestSetDefaults(t *testing.T) {
 
 		cfg.setDefaults()
 
-		if cfg.Logging.Level != "info" {
-			t.Errorf("expected default log level 'info', got %q", cfg.Logging.Level)
-		}
-		if cfg.Logging.Format != "json" {
-			t.Errorf("expected default log format 'json', got %q", cfg.Logging.Format)
-		}
+		assert.Equal(t, "info", cfg.Logging.Level)
+		assert.Equal(t, "json", cfg.Logging.Format)
 	})
 
 	t.Run("health check defaults", func(t *testing.T) {
@@ -293,9 +233,7 @@ func TestSetDefaults(t *testing.T) {
 
 		cfg.setDefaults()
 
-		if cfg.Health.Path != "/health" {
-			t.Errorf("expected default health path '/health', got %q", cfg.Health.Path)
-		}
+		assert.Equal(t, "/health", cfg.Health.Path)
 	})
 
 	t.Run("mode defaults", func(t *testing.T) {
@@ -309,9 +247,7 @@ func TestSetDefaults(t *testing.T) {
 
 		cfg.setDefaults()
 
-		if cfg.Mode != "single" {
-			t.Errorf("expected default mode 'single', got %q", cfg.Mode)
-		}
+		assert.Equal(t, "single", cfg.Mode)
 	})
 
 	t.Run("federation defaults", func(t *testing.T) {
@@ -328,21 +264,11 @@ func TestSetDefaults(t *testing.T) {
 
 		cfg.setDefaults()
 
-		if cfg.Federation.MaxConcurrent != 10 {
-			t.Errorf("expected default max concurrent 10, got %d", cfg.Federation.MaxConcurrent)
-		}
-		if cfg.Federation.AggregateTimeout != 60*time.Second {
-			t.Errorf("expected default aggregate timeout 60s, got %v", cfg.Federation.AggregateTimeout)
-		}
-		if cfg.Federation.ConflictStrategy != "priority" {
-			t.Errorf("expected default conflict strategy 'priority', got %q", cfg.Federation.ConflictStrategy)
-		}
-		if cfg.Federation.DefaultPageSize != 100 {
-			t.Errorf("expected default page size 100, got %d", cfg.Federation.DefaultPageSize)
-		}
-		if cfg.Federation.MaxPageSize != 1000 {
-			t.Errorf("expected default max page size 1000, got %d", cfg.Federation.MaxPageSize)
-		}
+		assert.Equal(t, 10, cfg.Federation.MaxConcurrent)
+		assert.Equal(t, 60*time.Second, cfg.Federation.AggregateTimeout)
+		assert.Equal(t, "priority", cfg.Federation.ConflictStrategy)
+		assert.Equal(t, 100, cfg.Federation.DefaultPageSize)
+		assert.Equal(t, 1000, cfg.Federation.MaxPageSize)
 	})
 
 	t.Run("federation origin timeout defaults", func(t *testing.T) {
@@ -360,12 +286,8 @@ func TestSetDefaults(t *testing.T) {
 
 		cfg.setDefaults()
 
-		if cfg.Federation.Origins[0].Timeout != 30*time.Second {
-			t.Errorf("expected default origin timeout 30s, got %v", cfg.Federation.Origins[0].Timeout)
-		}
-		if cfg.Federation.Origins[1].Timeout != 15*time.Second {
-			t.Errorf("expected origin timeout to remain 15s, got %v", cfg.Federation.Origins[1].Timeout)
-		}
+		assert.Equal(t, 30*time.Second, cfg.Federation.Origins[0].Timeout, "expected default origin timeout 30s")
+		assert.Equal(t, 15*time.Second, cfg.Federation.Origins[1].Timeout, "expected origin timeout to remain 15s")
 	})
 
 	t.Run("custom values not overridden", func(t *testing.T) {
@@ -396,21 +318,11 @@ func TestSetDefaults(t *testing.T) {
 
 		cfg.setDefaults()
 
-		if cfg.Server.Host != "192.168.1.1" {
-			t.Errorf("expected host to remain '192.168.1.1', got %q", cfg.Server.Host)
-		}
-		if cfg.Server.Port != 3000 {
-			t.Errorf("expected port to remain 3000, got %d", cfg.Server.Port)
-		}
-		if cfg.Server.Timeouts.Read != 10*time.Second {
-			t.Errorf("expected read timeout to remain 10s, got %v", cfg.Server.Timeouts.Read)
-		}
-		if cfg.Logging.Level != "debug" {
-			t.Errorf("expected log level to remain 'debug', got %q", cfg.Logging.Level)
-		}
-		if cfg.Health.Path != "/healthz" {
-			t.Errorf("expected health path to remain '/healthz', got %q", cfg.Health.Path)
-		}
+		assert.Equal(t, "192.168.1.1", cfg.Server.Host)
+		assert.Equal(t, 3000, cfg.Server.Port)
+		assert.Equal(t, 10*time.Second, cfg.Server.Timeouts.Read)
+		assert.Equal(t, "debug", cfg.Logging.Level)
+		assert.Equal(t, "/healthz", cfg.Health.Path)
 	})
 }
 
@@ -427,10 +339,7 @@ func TestValidate(t *testing.T) {
 		}
 		cfg.setDefaults()
 
-		err := cfg.Validate()
-		if err != nil {
-			t.Errorf("unexpected validation error: %v", err)
-		}
+		assert.NoError(t, cfg.Validate())
 	})
 
 	t.Run("valid federation mode", func(t *testing.T) {
@@ -447,10 +356,7 @@ func TestValidate(t *testing.T) {
 		}
 		cfg.setDefaults()
 
-		err := cfg.Validate()
-		if err != nil {
-			t.Errorf("unexpected validation error: %v", err)
-		}
+		assert.NoError(t, cfg.Validate())
 	})
 
 	t.Run("invalid mode", func(t *testing.T) {
@@ -462,12 +368,8 @@ func TestValidate(t *testing.T) {
 		cfg.setDefaults()
 
 		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "mode must be") {
-			t.Errorf("expected error about invalid mode, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "mode must be"), "expected error about invalid mode, got: %v", err)
 	})
 
 	t.Run("single mode requires upstream", func(t *testing.T) {
@@ -479,12 +381,8 @@ func TestValidate(t *testing.T) {
 		cfg.setDefaults()
 
 		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "upstream") {
-			t.Errorf("expected error about missing upstream, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "upstream"), "expected error about missing upstream, got: %v", err)
 	})
 
 	t.Run("federation mode requires federation config", func(t *testing.T) {
@@ -496,12 +394,8 @@ func TestValidate(t *testing.T) {
 		cfg.setDefaults()
 
 		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "federation") {
-			t.Errorf("expected error about missing federation config, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "federation"), "expected error about missing federation config, got: %v", err)
 	})
 
 	t.Run("federation requires at least one origin", func(t *testing.T) {
@@ -511,18 +405,14 @@ func TestValidate(t *testing.T) {
 			Mode: "federation",
 			Federation: &FederationConfig{
 				CursorSecret: "test-secret",
-				Origins: []OriginConfig{},
+				Origins:      []OriginConfig{},
 			},
 		}
 		cfg.setDefaults()
 
 		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "origin") {
-			t.Errorf("expected error about missing origins, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "origin"), "expected error about missing origins, got: %v", err)
 	})
 
 	t.Run("origin requires ID", func(t *testing.T) {
@@ -539,12 +429,8 @@ func TestValidate(t *testing.T) {
 		cfg.setDefaults()
 
 		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "id is required") {
-			t.Errorf("expected error about missing ID, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "id is required"), "expected error about missing ID, got: %v", err)
 	})
 
 	t.Run("origin requires base_url", func(t *testing.T) {
@@ -561,12 +447,8 @@ func TestValidate(t *testing.T) {
 		cfg.setDefaults()
 
 		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "base_url is required") {
-			t.Errorf("expected error about missing base_url, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "base_url is required"), "expected error about missing base_url, got: %v", err)
 	})
 
 	t.Run("multiple origins validation", func(t *testing.T) {
@@ -585,12 +467,8 @@ func TestValidate(t *testing.T) {
 		cfg.setDefaults()
 
 		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "base_url") {
-			t.Errorf("expected error about missing base_url, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "base_url"), "expected error about missing base_url, got: %v", err)
 	})
 }
 
@@ -600,27 +478,21 @@ func TestIsFederation(t *testing.T) {
 		t.Parallel()
 
 		cfg := &Config{Mode: "single"}
-		if cfg.IsFederation() {
-			t.Error("expected IsFederation to return false for single mode")
-		}
+		assert.False(t, cfg.IsFederation(), "expected IsFederation to return false for single mode")
 	})
 
 	t.Run("federation mode", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := &Config{Mode: "federation"}
-		if !cfg.IsFederation() {
-			t.Error("expected IsFederation to return true for federation mode")
-		}
+		assert.True(t, cfg.IsFederation(), "expected IsFederation to return true for federation mode")
 	})
 
 	t.Run("default mode", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := &Config{}
-		if cfg.IsFederation() {
-			t.Error("expected IsFederation to return false for empty mode")
-		}
+		assert.False(t, cfg.IsFederation(), "expected IsFederation to return false for empty mode")
 	})
 }
 
@@ -641,15 +513,9 @@ func TestGetOrigin(t *testing.T) {
 		}
 
 		origin := cfg.GetOrigin("origin2")
-		if origin == nil {
-			t.Fatal("expected to find origin2")
-		}
-		if origin.ID != "origin2" {
-			t.Errorf("expected ID 'origin2', got %q", origin.ID)
-		}
-		if origin.BaseURL != "https://origin2.com" {
-			t.Errorf("expected base URL 'https://origin2.com', got %q", origin.BaseURL)
-		}
+		require.NotNil(t, origin, "expected to find origin2")
+		assert.Equal(t, "origin2", origin.ID)
+		assert.Equal(t, "https://origin2.com", origin.BaseURL)
 	})
 
 	t.Run("origin not found", func(t *testing.T) {
@@ -664,10 +530,7 @@ func TestGetOrigin(t *testing.T) {
 			},
 		}
 
-		origin := cfg.GetOrigin("nonexistent")
-		if origin != nil {
-			t.Error("expected GetOrigin to return nil for nonexistent origin")
-		}
+		assert.Nil(t, cfg.GetOrigin("nonexistent"), "expected GetOrigin to return nil for nonexistent origin")
 	})
 
 	t.Run("no federation config", func(t *testing.T) {
@@ -675,25 +538,19 @@ func TestGetOrigin(t *testing.T) {
 
 		cfg := &Config{Mode: "single"}
 
-		origin := cfg.GetOrigin("origin1")
-		if origin != nil {
-			t.Error("expected GetOrigin to return nil when no federation config")
-		}
+		assert.Nil(t, cfg.GetOrigin("origin1"), "expected GetOrigin to return nil when no federation config")
 	})
 
 	t.Run("empty origins list", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := &Config{
-			Mode:       "federation",
+			Mode: "federation",
 			Federation: &FederationConfig{
-				CursorSecret: "test-secret",Origins: []OriginConfig{}},
+				CursorSecret: "test-secret", Origins: []OriginConfig{}},
 		}
 
-		origin := cfg.GetOrigin("origin1")
-		if origin != nil {
-			t.Error("expected GetOrigin to return nil for empty origins list")
-		}
+		assert.Nil(t, cfg.GetOrigin("origin1"), "expected GetOrigin to return nil for empty origins list")
 	})
 }
 
@@ -735,11 +592,10 @@ func TestServerConfigValidation(t *testing.T) {
 			validator := NewValidator()
 			err := validator.Validate(cfg)
 
-			if tt.wantErr && err == nil {
-				t.Error("expected validation error but got none")
-			}
-			if !tt.wantErr && err != nil {
-				t.Errorf("unexpected validation error: %v", err)
+			if tt.wantErr {
+				assert.Error(t, err, "expected validation error but got none")
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}
@@ -759,15 +615,10 @@ func TestServerConfigValidation(t *testing.T) {
 		}
 		cfg.setDefaults()
 
-		if cfg.Server.Port != 8080 {
-			t.Errorf("expected port to be set to default 8080, got %d", cfg.Server.Port)
-		}
+		assert.Equal(t, 8080, cfg.Server.Port, "expected port to be set to default 8080")
 
 		validator := NewValidator()
-		err := validator.Validate(cfg)
-		if err != nil {
-			t.Errorf("unexpected validation error after defaults: %v", err)
-		}
+		assert.NoError(t, validator.Validate(cfg), "unexpected validation error after defaults")
 	})
 }
 
@@ -791,10 +642,7 @@ func TestTLSConfigValidation(t *testing.T) {
 		cfg.setDefaults()
 
 		validator := NewValidator()
-		err := validator.Validate(cfg)
-		if err != nil {
-			t.Errorf("unexpected validation error: %v", err)
-		}
+		assert.NoError(t, validator.Validate(cfg))
 	})
 
 	t.Run("TLS enabled with cert and key", func(t *testing.T) {
@@ -817,10 +665,7 @@ func TestTLSConfigValidation(t *testing.T) {
 		cfg.setDefaults()
 
 		validator := NewValidator()
-		err := validator.Validate(cfg)
-		if err != nil {
-			t.Errorf("unexpected validation error: %v", err)
-		}
+		assert.NoError(t, validator.Validate(cfg))
 	})
 
 	t.Run("TLS enabled without cert", func(t *testing.T) {
@@ -843,9 +688,7 @@ func TestTLSConfigValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
+		require.Error(t, err, "expected validation error")
 		// Check if it's a ValidationError with specific TLS errors
 		if ve, ok := err.(*ValidationError); ok {
 			found := false
@@ -855,11 +698,9 @@ func TestTLSConfigValidation(t *testing.T) {
 					break
 				}
 			}
-			if !found {
-				t.Errorf("expected error to mention cert_file in validation errors: %v", ve.Errors)
-			}
-		} else if !strings.Contains(err.Error(), "cert_file") {
-			t.Errorf("expected error to mention cert_file, got: %v", err)
+			assert.True(t, found, "expected error to mention cert_file in validation errors: %v", ve.Errors)
+		} else {
+			assert.Contains(t, err.Error(), "cert_file")
 		}
 	})
 
@@ -883,9 +724,7 @@ func TestTLSConfigValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
+		require.Error(t, err, "expected validation error")
 		// Check if it's a ValidationError with specific TLS errors
 		if ve, ok := err.(*ValidationError); ok {
 			found := false
@@ -895,11 +734,9 @@ func TestTLSConfigValidation(t *testing.T) {
 					break
 				}
 			}
-			if !found {
-				t.Errorf("expected error to mention key_file in validation errors: %v", ve.Errors)
-			}
-		} else if !strings.Contains(err.Error(), "key_file") {
-			t.Errorf("expected error to mention key_file, got: %v", err)
+			assert.True(t, found, "expected error to mention key_file in validation errors: %v", ve.Errors)
+		} else {
+			assert.Contains(t, err.Error(), "key_file")
 		}
 	})
 }
@@ -967,56 +804,30 @@ middleware:
 		defer os.Remove(tmpFile)
 
 		cfg, err := Load(tmpFile)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify server config
-		if cfg.Server.Port != 8080 {
-			t.Errorf("expected port 8080, got %d", cfg.Server.Port)
-		}
-		if !cfg.Server.TLS.Enabled {
-			t.Error("expected TLS to be enabled")
-		}
+		assert.Equal(t, 8080, cfg.Server.Port)
+		assert.True(t, cfg.Server.TLS.Enabled, "expected TLS to be enabled")
 
 		// Verify federation config
-		if cfg.Federation.MaxConcurrent != 20 {
-			t.Errorf("expected max concurrent 20, got %d", cfg.Federation.MaxConcurrent)
-		}
-		if len(cfg.Federation.Origins) != 2 {
-			t.Fatalf("expected 2 origins, got %d", len(cfg.Federation.Origins))
-		}
+		assert.Equal(t, 20, cfg.Federation.MaxConcurrent)
+		require.Len(t, cfg.Federation.Origins, 2)
 
 		// Verify origin details
 		earthSearch := cfg.GetOrigin("earth-search")
-		if earthSearch == nil {
-			t.Fatal("expected to find earth-search origin")
-		}
-		if earthSearch.Name != "Earth Search" {
-			t.Errorf("expected name 'Earth Search', got %q", earthSearch.Name)
-		}
-		if !earthSearch.Searchable {
-			t.Error("expected earth-search to be searchable")
-		}
-		if !earthSearch.AutoDiscover {
-			t.Error("expected earth-search to have auto-discover enabled")
-		}
+		require.NotNil(t, earthSearch, "expected to find earth-search origin")
+		assert.Equal(t, "Earth Search", earthSearch.Name)
+		assert.True(t, earthSearch.Searchable, "expected earth-search to be searchable")
+		assert.True(t, earthSearch.AutoDiscover, "expected earth-search to have auto-discover enabled")
 
 		// Verify middleware
-		if len(cfg.Middleware) != 2 {
-			t.Fatalf("expected 2 middleware, got %d", len(cfg.Middleware))
-		}
-		if cfg.Middleware[0].Name != "logging" {
-			t.Errorf("expected first middleware to be 'logging', got %q", cfg.Middleware[0].Name)
-		}
+		require.Len(t, cfg.Middleware, 2)
+		assert.Equal(t, "logging", cfg.Middleware[0].Name)
 
 		// Verify metrics
-		if !cfg.Metrics.Enabled {
-			t.Error("expected metrics to be enabled")
-		}
-		if cfg.Metrics.Port != 9090 {
-			t.Errorf("expected metrics port 9090, got %d", cfg.Metrics.Port)
-		}
+		assert.True(t, cfg.Metrics.Enabled, "expected metrics to be enabled")
+		assert.Equal(t, 9090, cfg.Metrics.Port)
 	})
 }
 
@@ -1042,23 +853,13 @@ federation:
 		defer os.Remove(tmpFile)
 
 		cfg, err := Load(tmpFile)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
 		origin := cfg.GetOrigin("secure-origin")
-		if origin == nil {
-			t.Fatal("expected to find secure-origin")
-		}
-		if origin.Auth == nil {
-			t.Fatal("expected auth to be configured")
-		}
-		if origin.Auth.Type != "basic" {
-			t.Errorf("expected auth type 'basic', got %q", origin.Auth.Type)
-		}
-		if origin.Auth.Username != "testuser" {
-			t.Errorf("expected username 'testuser', got %q", origin.Auth.Username)
-		}
+		require.NotNil(t, origin, "expected to find secure-origin")
+		require.NotNil(t, origin.Auth, "expected auth to be configured")
+		assert.Equal(t, "basic", origin.Auth.Type)
+		assert.Equal(t, "testuser", origin.Auth.Username)
 	})
 
 	t.Run("origin with bearer token", func(t *testing.T) {
@@ -1080,23 +881,13 @@ federation:
 		defer os.Remove(tmpFile)
 
 		cfg, err := Load(tmpFile)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 
 		origin := cfg.GetOrigin("token-origin")
-		if origin == nil {
-			t.Fatal("expected to find token-origin")
-		}
-		if origin.Auth == nil {
-			t.Fatal("expected auth to be configured")
-		}
-		if origin.Auth.Type != "bearer" {
-			t.Errorf("expected auth type 'bearer', got %q", origin.Auth.Type)
-		}
-		if origin.Auth.Token != "my-secret-token" {
-			t.Errorf("expected token 'my-secret-token', got %q", origin.Auth.Token)
-		}
+		require.NotNil(t, origin, "expected to find token-origin")
+		require.NotNil(t, origin.Auth, "expected auth to be configured")
+		assert.Equal(t, "bearer", origin.Auth.Type)
+		assert.Equal(t, "my-secret-token", origin.Auth.Token)
 	})
 }
 
@@ -1123,10 +914,7 @@ func TestValidationHelpers(t *testing.T) {
 			tt := tt
 			t.Run(tt.name, func(t *testing.T) {
 				t.Parallel()
-				result := IsValidURL(tt.url)
-				if result != tt.valid {
-					t.Errorf("IsValidURL(%q) = %v, want %v", tt.url, result, tt.valid)
-				}
+				assert.Equal(t, tt.valid, IsValidURL(tt.url), "IsValidURL(%q)", tt.url)
 			})
 		}
 	})
@@ -1148,10 +936,7 @@ func TestValidationHelpers(t *testing.T) {
 			tt := tt
 			t.Run(tt.name, func(t *testing.T) {
 				t.Parallel()
-				result := IsValidDuration(tt.duration)
-				if result != tt.valid {
-					t.Errorf("IsValidDuration(%v) = %v, want %v", tt.duration, result, tt.valid)
-				}
+				assert.Equal(t, tt.valid, IsValidDuration(tt.duration), "IsValidDuration(%v)", tt.duration)
 			})
 		}
 	})
@@ -1176,10 +961,7 @@ func TestValidationHelpers(t *testing.T) {
 			tt := tt
 			t.Run(tt.name, func(t *testing.T) {
 				t.Parallel()
-				result := IsValidPort(tt.port)
-				if result != tt.valid {
-					t.Errorf("IsValidPort(%d) = %v, want %v", tt.port, result, tt.valid)
-				}
+				assert.Equal(t, tt.valid, IsValidPort(tt.port), "IsValidPort(%d)", tt.port)
 			})
 		}
 	})
@@ -1187,18 +969,11 @@ func TestValidationHelpers(t *testing.T) {
 	t.Run("ValidateRequiredString", func(t *testing.T) {
 		t.Parallel()
 
-		err := ValidateRequiredString("field_name", "value")
-		if err != nil {
-			t.Errorf("expected no error for non-empty string, got: %v", err)
-		}
+		assert.NoError(t, ValidateRequiredString("field_name", "value"))
 
-		err = ValidateRequiredString("field_name", "")
-		if err == nil {
-			t.Error("expected error for empty string")
-		}
-		if !strings.Contains(err.Error(), "field_name is required") {
-			t.Errorf("expected error to mention field name, got: %v", err)
-		}
+		err := ValidateRequiredString("field_name", "")
+		require.Error(t, err, "expected error for empty string")
+		assert.Contains(t, err.Error(), "field_name is required")
 	})
 }
 
@@ -1215,14 +990,7 @@ func TestMustValidate(t *testing.T) {
 		}
 		cfg.setDefaults()
 
-		// Should not panic
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("MustValidate panicked unexpectedly: %v", r)
-			}
-		}()
-
-		MustValidate(cfg)
+		assert.NotPanics(t, func() { MustValidate(cfg) })
 	})
 
 	t.Run("invalid config panics", func(t *testing.T) {
@@ -1233,14 +1001,7 @@ func TestMustValidate(t *testing.T) {
 		}
 		cfg.setDefaults()
 
-		// Should panic
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("MustValidate should have panicked")
-			}
-		}()
-
-		MustValidate(cfg)
+		assert.Panics(t, func() { MustValidate(cfg) }, "MustValidate should have panicked")
 	})
 }
 
@@ -1265,12 +1026,8 @@ func TestLoggingValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "logging.level") {
-			t.Errorf("expected error about log level, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "logging.level"), "expected error about log level, got: %v", err)
 	})
 
 	t.Run("invalid log format", func(t *testing.T) {
@@ -1293,12 +1050,8 @@ func TestLoggingValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "logging.format") {
-			t.Errorf("expected error about log format, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "logging.format"), "expected error about log format, got: %v", err)
 	})
 
 	t.Run("valid log levels", func(t *testing.T) {
@@ -1322,10 +1075,7 @@ func TestLoggingValidation(t *testing.T) {
 			cfg.setDefaults()
 
 			validator := NewValidator()
-			err := validator.Validate(cfg)
-			if err != nil {
-				t.Errorf("unexpected error for log level %q: %v", level, err)
-			}
+			assert.NoError(t, validator.Validate(cfg), "unexpected error for log level %q", level)
 		}
 	})
 }
@@ -1352,12 +1102,8 @@ func TestTimeoutValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "timeouts.read cannot be negative") {
-			t.Errorf("expected error about negative read timeout, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "timeouts.read cannot be negative"), "expected error about negative read timeout, got: %v", err)
 	})
 
 	t.Run("negative write timeout", func(t *testing.T) {
@@ -1380,12 +1126,8 @@ func TestTimeoutValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "timeouts.write cannot be negative") {
-			t.Errorf("expected error about negative write timeout, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "timeouts.write cannot be negative"), "expected error about negative write timeout, got: %v", err)
 	})
 
 	t.Run("negative idle timeout", func(t *testing.T) {
@@ -1408,12 +1150,8 @@ func TestTimeoutValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "timeouts.idle cannot be negative") {
-			t.Errorf("expected error about negative idle timeout, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "timeouts.idle cannot be negative"), "expected error about negative idle timeout, got: %v", err)
 	})
 }
 
@@ -1435,12 +1173,8 @@ func TestUpstreamValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "upstream.url") {
-			t.Errorf("expected error about upstream URL, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "upstream.url"), "expected error about upstream URL, got: %v", err)
 	})
 
 	t.Run("negative timeout", func(t *testing.T) {
@@ -1460,12 +1194,8 @@ func TestUpstreamValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "upstream.timeout cannot be negative") {
-			t.Errorf("expected error about negative timeout, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "upstream.timeout cannot be negative"), "expected error about negative timeout, got: %v", err)
 	})
 }
 
@@ -1495,12 +1225,8 @@ func TestOriginAuthValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "auth.type is invalid") {
-			t.Errorf("expected error about invalid auth type, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "auth.type is invalid"), "expected error about invalid auth type, got: %v", err)
 	})
 
 	t.Run("basic auth missing username", func(t *testing.T) {
@@ -1528,12 +1254,8 @@ func TestOriginAuthValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "username and password") {
-			t.Errorf("expected error about username/password, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "username and password"), "expected error about username/password, got: %v", err)
 	})
 
 	t.Run("bearer auth missing token", func(t *testing.T) {
@@ -1560,12 +1282,8 @@ func TestOriginAuthValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "token") {
-			t.Errorf("expected error about token, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "token"), "expected error about token, got: %v", err)
 	})
 
 	t.Run("api_key auth missing header", func(t *testing.T) {
@@ -1593,12 +1311,8 @@ func TestOriginAuthValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "api_key_header") {
-			t.Errorf("expected error about api_key_header, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "api_key_header"), "expected error about api_key_header, got: %v", err)
 	})
 
 	t.Run("oauth2 auth missing config", func(t *testing.T) {
@@ -1625,12 +1339,8 @@ func TestOriginAuthValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "oauth2 config") {
-			t.Errorf("expected error about oauth2 config, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "oauth2 config"), "expected error about oauth2 config, got: %v", err)
 	})
 
 	t.Run("oauth2 auth missing token_url", func(t *testing.T) {
@@ -1661,12 +1371,8 @@ func TestOriginAuthValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "token_url") {
-			t.Errorf("expected error about token_url, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "token_url"), "expected error about token_url, got: %v", err)
 	})
 
 	t.Run("oauth2 auth missing client_id", func(t *testing.T) {
@@ -1697,12 +1403,8 @@ func TestOriginAuthValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "client_id") {
-			t.Errorf("expected error about client_id, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "client_id"), "expected error about client_id, got: %v", err)
 	})
 
 	t.Run("valid none auth", func(t *testing.T) {
@@ -1728,10 +1430,7 @@ func TestOriginAuthValidation(t *testing.T) {
 		cfg.setDefaults()
 
 		validator := NewValidator()
-		err := validator.Validate(cfg)
-		if err != nil {
-			t.Errorf("unexpected validation error: %v", err)
-		}
+		assert.NoError(t, validator.Validate(cfg))
 	})
 }
 
@@ -1756,12 +1455,8 @@ func TestFederationValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "conflict_strategy") {
-			t.Errorf("expected error about conflict_strategy, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "conflict_strategy"), "expected error about conflict_strategy, got: %v", err)
 	})
 
 	t.Run("duplicate origin IDs", func(t *testing.T) {
@@ -1783,12 +1478,8 @@ func TestFederationValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "duplicate") {
-			t.Errorf("expected error about duplicate ID, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "duplicate"), "expected error about duplicate ID, got: %v", err)
 	})
 
 	t.Run("invalid origin ID format", func(t *testing.T) {
@@ -1809,12 +1500,8 @@ func TestFederationValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "invalid characters") {
-			t.Errorf("expected error about invalid characters, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "invalid characters"), "expected error about invalid characters, got: %v", err)
 	})
 
 	t.Run("negative origin timeout", func(t *testing.T) {
@@ -1839,12 +1526,8 @@ func TestFederationValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "timeout cannot be negative") {
-			t.Errorf("expected error about negative timeout, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "timeout cannot be negative"), "expected error about negative timeout, got: %v", err)
 	})
 
 	t.Run("invalid origin base_url", func(t *testing.T) {
@@ -1868,12 +1551,8 @@ func TestFederationValidation(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-		if !containsValidationError(err, "not a valid URL") {
-			t.Errorf("expected error about invalid URL, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error")
+		assert.True(t, containsValidationError(err, "not a valid URL"), "expected error about invalid URL, got: %v", err)
 	})
 }
 
@@ -1900,9 +1579,7 @@ func TestValidationWarnings(t *testing.T) {
 		if err != nil {
 			// Check if it's a ValidationError with warnings
 			if ve, ok := err.(*ValidationError); ok {
-				if len(ve.Warnings) == 0 {
-					t.Error("expected warnings for empty host")
-				}
+				assert.NotEmpty(t, ve.Warnings, "expected warnings for empty host")
 			}
 		}
 	})
@@ -1928,9 +1605,7 @@ func TestValidationWarnings(t *testing.T) {
 		// Should succeed but may have warnings
 		if err != nil {
 			if ve, ok := err.(*ValidationError); ok {
-				if len(ve.Warnings) == 0 {
-					t.Error("expected warnings for short timeout")
-				}
+				assert.NotEmpty(t, ve.Warnings, "expected warnings for short timeout")
 			}
 		}
 	})
@@ -1958,12 +1633,8 @@ func TestValidationWarnings(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error for unrecognized middleware name")
-		}
-		if !containsValidationError(err, "is not a recognized middleware") {
-			t.Errorf("expected unrecognized-middleware error, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error for unrecognized middleware name")
+		assert.True(t, containsValidationError(err, "is not a recognized middleware"), "expected unrecognized-middleware error, got: %v", err)
 	})
 
 	t.Run("cors with credentials and wildcard origin rejected", func(t *testing.T) {
@@ -1981,12 +1652,8 @@ func TestValidationWarnings(t *testing.T) {
 		}
 		cfg.setDefaults()
 		err := NewValidator().Validate(cfg)
-		if err == nil {
-			t.Fatal("expected error for cors credentials+wildcard")
-		}
-		if !containsValidationError(err, "allow_credentials cannot be true with wildcard") {
-			t.Errorf("unexpected error: %v", err)
-		}
+		require.Error(t, err, "expected error for cors credentials+wildcard")
+		assert.True(t, containsValidationError(err, "allow_credentials cannot be true with wildcard"), "unexpected error: %v", err)
 	})
 
 	t.Run("cors with non-string origin element rejected", func(t *testing.T) {
@@ -2003,12 +1670,8 @@ func TestValidationWarnings(t *testing.T) {
 		}
 		cfg.setDefaults()
 		err := NewValidator().Validate(cfg)
-		if err == nil {
-			t.Fatal("expected error for non-string origin")
-		}
-		if !containsValidationError(err, "must be a string") {
-			t.Errorf("unexpected error: %v", err)
-		}
+		require.Error(t, err, "expected error for non-string origin")
+		assert.True(t, containsValidationError(err, "must be a string"), "unexpected error: %v", err)
 	})
 
 	t.Run("cors with credentials and exact origins is valid", func(t *testing.T) {
@@ -2025,9 +1688,7 @@ func TestValidationWarnings(t *testing.T) {
 			Upstream: &UpstreamConfig{URL: "https://example.com"},
 		}
 		cfg.setDefaults()
-		if err := NewValidator().Validate(cfg); err != nil {
-			t.Fatalf("unexpected validation error: %v", err)
-		}
+		require.NoError(t, NewValidator().Validate(cfg))
 	})
 
 	t.Run("cache store redis rejected at validation", func(t *testing.T) {
@@ -2044,12 +1705,8 @@ func TestValidationWarnings(t *testing.T) {
 		}
 		cfg.setDefaults()
 		err := NewValidator().Validate(cfg)
-		if err == nil {
-			t.Fatal("expected error for cache.store=redis")
-		}
-		if !containsValidationError(err, "store \"redis\" is not supported") {
-			t.Errorf("unexpected error: %v", err)
-		}
+		require.Error(t, err, "expected error for cache.store=redis")
+		assert.True(t, containsValidationError(err, "store \"redis\" is not supported"), "unexpected error: %v", err)
 	})
 
 	t.Run("cache store memory accepted", func(t *testing.T) {
@@ -2065,9 +1722,7 @@ func TestValidationWarnings(t *testing.T) {
 			Upstream: &UpstreamConfig{URL: "https://example.com"},
 		}
 		cfg.setDefaults()
-		if err := NewValidator().Validate(cfg); err != nil {
-			t.Fatalf("unexpected validation error: %v", err)
-		}
+		require.NoError(t, NewValidator().Validate(cfg))
 	})
 }
 
@@ -2089,12 +1744,8 @@ func TestEdgeCases(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error for empty upstream URL")
-		}
-		if !containsValidationError(err, "upstream.url is required") {
-			t.Errorf("expected error about required upstream URL, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error for empty upstream URL")
+		assert.True(t, containsValidationError(err, "upstream.url is required"), "expected error about required upstream URL, got: %v", err)
 	})
 
 	t.Run("valid middleware names", func(t *testing.T) {
@@ -2118,10 +1769,7 @@ func TestEdgeCases(t *testing.T) {
 			cfg.setDefaults()
 
 			validator := NewValidator()
-			err := validator.Validate(cfg)
-			if err != nil {
-				t.Errorf("unexpected validation error for middleware %q: %v", name, err)
-			}
+			assert.NoError(t, validator.Validate(cfg), "unexpected validation error for middleware %q", name)
 		}
 	})
 
@@ -2146,10 +1794,7 @@ func TestEdgeCases(t *testing.T) {
 			cfg.setDefaults()
 
 			validator := NewValidator()
-			err := validator.Validate(cfg)
-			if err != nil {
-				t.Errorf("unexpected error for log format %q: %v", format, err)
-			}
+			assert.NoError(t, validator.Validate(cfg), "unexpected error for log format %q", format)
 		}
 	})
 
@@ -2173,10 +1818,7 @@ func TestEdgeCases(t *testing.T) {
 			cfg.setDefaults()
 
 			validator := NewValidator()
-			err := validator.Validate(cfg)
-			if err != nil {
-				t.Errorf("unexpected error for conflict strategy %q: %v", strategy, err)
-			}
+			assert.NoError(t, validator.Validate(cfg), "unexpected error for conflict strategy %q", strategy)
 		}
 	})
 
@@ -2207,10 +1849,7 @@ func TestEdgeCases(t *testing.T) {
 			cfg.setDefaults()
 
 			validator := NewValidator()
-			err := validator.Validate(cfg)
-			if err != nil {
-				t.Errorf("unexpected error for auth type %q: %v", authType, err)
-			}
+			assert.NoError(t, validator.Validate(cfg), "unexpected error for auth type %q", authType)
 		}
 	})
 
@@ -2234,10 +1873,7 @@ func TestEdgeCases(t *testing.T) {
 			cfg.setDefaults()
 
 			validator := NewValidator()
-			err := validator.Validate(cfg)
-			if err != nil {
-				t.Errorf("unexpected error for origin ID %q: %v", id, err)
-			}
+			assert.NoError(t, validator.Validate(cfg), "unexpected error for origin ID %q", id)
 		}
 	})
 
@@ -2259,12 +1895,8 @@ func TestEdgeCases(t *testing.T) {
 
 		validator := NewValidator()
 		err := validator.Validate(cfg)
-		if err == nil {
-			t.Fatal("expected validation error for ID starting with number")
-		}
-		if !containsValidationError(err, "invalid characters") {
-			t.Errorf("expected error about invalid ID, got: %v", err)
-		}
+		require.Error(t, err, "expected validation error for ID starting with number")
+		assert.True(t, containsValidationError(err, "invalid characters"), "expected error about invalid ID, got: %v", err)
 	})
 }
 
@@ -2294,11 +1926,9 @@ func TestValidation_RejectsCustomHeadersAsAuthType(t *testing.T) {
 	}
 	cfg.setDefaults()
 
-	if err := NewValidator().Validate(cfg); err == nil {
-		t.Fatal("expected validation error for auth.type=custom_headers, got nil")
-	} else if !containsValidationError(err, "auth.type") {
-		t.Errorf("expected error to mention auth.type, got: %v", err)
-	}
+	err := NewValidator().Validate(cfg)
+	require.Error(t, err, "expected validation error for auth.type=custom_headers")
+	assert.True(t, containsValidationError(err, "auth.type"), "expected error to mention auth.type, got: %v", err)
 }
 
 // TestConfig_ExpandEnv_ErrorsOnUndefined verifies that referencing
@@ -2319,12 +1949,8 @@ upstream:
 	defer os.Remove(tmp)
 
 	_, err := Load(tmp)
-	if err == nil {
-		t.Fatal("expected error for undefined env var, got nil")
-	}
-	if !strings.Contains(err.Error(), varName) {
-		t.Errorf("error should mention the undefined var %q; got: %v", varName, err)
-	}
+	require.Error(t, err, "expected error for undefined env var")
+	assert.Contains(t, err.Error(), varName, "error should mention the undefined var")
 }
 
 // TestConfig_ExpandEnv_DefaultSyntax verifies ${VAR:-default}
@@ -2342,21 +1968,16 @@ upstream:
 	defer os.Remove(tmp)
 
 	cfg, err := Load(tmp)
-	if err != nil {
-		t.Fatalf("expected default to satisfy load, got error: %v", err)
-	}
-	if cfg.Upstream == nil || cfg.Upstream.URL != "https://fallback.example.com" {
-		t.Errorf("expected fallback to apply, got %+v", cfg.Upstream)
-	}
+	require.NoError(t, err, "expected default to satisfy load")
+	require.NotNil(t, cfg.Upstream)
+	assert.Equal(t, "https://fallback.example.com", cfg.Upstream.URL, "expected fallback to apply")
 }
 
 // TestConfig_ExpandEnv_SetVarTakesPriority verifies that when the
 // env var IS set, its value wins over the :-default fallback.
 func TestConfig_ExpandEnv_SetVarTakesPriority(t *testing.T) {
 	const varName = "STAC_PROXY_TEST_SET_8E2F1C"
-	if err := os.Setenv(varName, "https://from-env.example.com"); err != nil {
-		t.Fatalf("setenv: %v", err)
-	}
+	require.NoError(t, os.Setenv(varName, "https://from-env.example.com"))
 	defer os.Unsetenv(varName)
 
 	yaml := `
@@ -2368,12 +1989,8 @@ upstream:
 	defer os.Remove(tmp)
 
 	cfg, err := Load(tmp)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Upstream.URL != "https://from-env.example.com" {
-		t.Errorf("expected env-set value to win, got %q", cfg.Upstream.URL)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "https://from-env.example.com", cfg.Upstream.URL, "expected env-set value to win")
 }
 
 // TestConfig_RejectsUnknownKeys verifies that the YAML decoder runs
@@ -2394,12 +2011,8 @@ not_a_real_key: foo
 	defer os.Remove(tmp)
 
 	_, err := Load(tmp)
-	if err == nil {
-		t.Fatal("expected error for unknown YAML key, got nil")
-	}
-	if !strings.Contains(err.Error(), "not_a_real_key") {
-		t.Errorf("error should mention the unknown key %q; got: %v", "not_a_real_key", err)
-	}
+	require.Error(t, err, "expected error for unknown YAML key")
+	assert.Contains(t, err.Error(), "not_a_real_key", "error should mention the unknown key")
 }
 
 // createTempFile creates a temporary file with the given content
@@ -2409,15 +2022,15 @@ func createTempFile(t *testing.T, content string) string {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "config.yaml")
 
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(tmpFile, []byte(content), 0644), "failed to create temp file")
 
 	return tmpFile
 }
 
 // containsValidationError checks if an error (potentially wrapped) contains
-// a ValidationError with an error message containing the given substring
+// a ValidationError with an error message containing the given substring.
+// Kept because ValidationError.Error() only includes a summary count; the
+// detailed errors live in the Errors slice and need typed inspection.
 func containsValidationError(err error, substring string) bool {
 	if err == nil {
 		return false
@@ -2440,11 +2053,12 @@ func containsValidationError(err error, substring string) bool {
 
 	return false
 }
+
 func TestValidateOrigin_NegativeMaxResponseBytesRejected(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
-		Mode: "federation",
+		Mode:   "federation",
 		Server: ServerConfig{Port: 8080},
 		Federation: &FederationConfig{
 			Origins: []OriginConfig{
@@ -2459,12 +2073,8 @@ func TestValidateOrigin_NegativeMaxResponseBytesRejected(t *testing.T) {
 	cfg.setDefaults()
 
 	err := NewValidator().Validate(cfg)
-	if err == nil {
-		t.Fatal("expected validation error for negative max_response_bytes")
-	}
-	if !containsValidationError(err, "max_response_bytes cannot be negative") {
-		t.Errorf("expected max_response_bytes error, got: %v", err)
-	}
+	require.Error(t, err, "expected validation error for negative max_response_bytes")
+	assert.True(t, containsValidationError(err, "max_response_bytes cannot be negative"), "expected max_response_bytes error, got: %v", err)
 }
 
 // TestValidateOrigin_RejectsNonHTTPScheme covers H8: only http/https
@@ -2479,7 +2089,7 @@ func TestValidateOrigin_RejectsNonHTTPScheme(t *testing.T) {
 	}
 	for _, base := range schemes {
 		cfg := &Config{
-			Mode: "federation",
+			Mode:   "federation",
 			Server: ServerConfig{Port: 8080},
 			Federation: &FederationConfig{
 				Origins: []OriginConfig{{ID: "origin1", BaseURL: base}},
@@ -2488,13 +2098,10 @@ func TestValidateOrigin_RejectsNonHTTPScheme(t *testing.T) {
 		cfg.setDefaults()
 
 		err := NewValidator().Validate(cfg)
-		if err == nil {
-			t.Errorf("scheme %q: expected validation error, got nil", base)
+		if !assert.Error(t, err, "scheme %q: expected validation error", base) {
 			continue
 		}
-		if !containsValidationError(err, "scheme must be http or https") {
-			t.Errorf("scheme %q: expected scheme error, got: %v", base, err)
-		}
+		assert.True(t, containsValidationError(err, "scheme must be http or https"), "scheme %q: expected scheme error, got: %v", base, err)
 	}
 }
 
@@ -2509,7 +2116,7 @@ func TestValidateOrigin_RejectsLoopbackByDefault(t *testing.T) {
 	}
 	for _, base := range hosts {
 		cfg := &Config{
-			Mode: "federation",
+			Mode:   "federation",
 			Server: ServerConfig{Port: 8080},
 			Federation: &FederationConfig{
 				Origins: []OriginConfig{{ID: "origin1", BaseURL: base}},
@@ -2518,13 +2125,10 @@ func TestValidateOrigin_RejectsLoopbackByDefault(t *testing.T) {
 		cfg.setDefaults()
 
 		err := NewValidator().Validate(cfg)
-		if err == nil {
-			t.Errorf("host %q: expected validation error, got nil", base)
+		if !assert.Error(t, err, "host %q: expected validation error", base) {
 			continue
 		}
-		if !containsValidationError(err, "loopback") {
-			t.Errorf("host %q: expected loopback error, got: %v", base, err)
-		}
+		assert.True(t, containsValidationError(err, "loopback"), "host %q: expected loopback error, got: %v", base, err)
 	}
 }
 
@@ -2539,7 +2143,7 @@ func TestValidateOrigin_RejectsRFC1918ByDefault(t *testing.T) {
 	}
 	for _, base := range hosts {
 		cfg := &Config{
-			Mode: "federation",
+			Mode:   "federation",
 			Server: ServerConfig{Port: 8080},
 			Federation: &FederationConfig{
 				Origins: []OriginConfig{{ID: "origin1", BaseURL: base}},
@@ -2548,13 +2152,10 @@ func TestValidateOrigin_RejectsRFC1918ByDefault(t *testing.T) {
 		cfg.setDefaults()
 
 		err := NewValidator().Validate(cfg)
-		if err == nil {
-			t.Errorf("host %q: expected validation error, got nil", base)
+		if !assert.Error(t, err, "host %q: expected validation error", base) {
 			continue
 		}
-		if !containsValidationError(err, "private") {
-			t.Errorf("host %q: expected private-range error, got: %v", base, err)
-		}
+		assert.True(t, containsValidationError(err, "private"), "host %q: expected private-range error, got: %v", base, err)
 	}
 }
 
@@ -2563,7 +2164,7 @@ func TestValidateOrigin_AcceptsLoopbackWhenAllowed(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
-		Mode: "federation",
+		Mode:   "federation",
 		Server: ServerConfig{Port: 8080},
 		Federation: &FederationConfig{
 			AllowPrivateOrigins: true,
@@ -2575,9 +2176,7 @@ func TestValidateOrigin_AcceptsLoopbackWhenAllowed(t *testing.T) {
 	}
 	cfg.setDefaults()
 
-	if err := NewValidator().Validate(cfg); err != nil {
-		t.Errorf("unexpected validation error: %v", err)
-	}
+	assert.NoError(t, NewValidator().Validate(cfg))
 }
 
 // TestValidateUpstream_AcceptsLoopbackWhenAllowed verifies the
@@ -2595,9 +2194,7 @@ func TestValidateUpstream_AcceptsLoopbackWhenAllowed(t *testing.T) {
 	}
 	cfg.setDefaults()
 
-	if err := NewValidator().Validate(cfg); err != nil {
-		t.Errorf("unexpected validation error: %v", err)
-	}
+	assert.NoError(t, NewValidator().Validate(cfg))
 }
 
 // TestValidateUpstream_RejectsLoopbackByDefault: H8 single-origin.
@@ -2614,12 +2211,8 @@ func TestValidateUpstream_RejectsLoopbackByDefault(t *testing.T) {
 	cfg.setDefaults()
 
 	err := NewValidator().Validate(cfg)
-	if err == nil {
-		t.Fatal("expected validation error for loopback upstream")
-	}
-	if !containsValidationError(err, "loopback") {
-		t.Errorf("expected loopback error, got: %v", err)
-	}
+	require.Error(t, err, "expected validation error for loopback upstream")
+	assert.True(t, containsValidationError(err, "loopback"), "expected loopback error, got: %v", err)
 }
 
 // TestValidateOrigin_AcceptsPublicAlways: H8.
@@ -2633,7 +2226,7 @@ func TestValidateOrigin_AcceptsPublicAlways(t *testing.T) {
 	for _, base := range hosts {
 		for _, allow := range []bool{false, true} {
 			cfg := &Config{
-				Mode: "federation",
+				Mode:   "federation",
 				Server: ServerConfig{Port: 8080},
 				Federation: &FederationConfig{
 					AllowPrivateOrigins: allow,
@@ -2643,9 +2236,7 @@ func TestValidateOrigin_AcceptsPublicAlways(t *testing.T) {
 			}
 			cfg.setDefaults()
 
-			if err := NewValidator().Validate(cfg); err != nil {
-				t.Errorf("host %q (allow=%v): unexpected validation error: %v", base, allow, err)
-			}
+			assert.NoError(t, NewValidator().Validate(cfg), "host %q (allow=%v)", base, allow)
 		}
 	}
 }

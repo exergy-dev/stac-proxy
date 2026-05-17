@@ -3,8 +3,10 @@ package cors
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // These tests cover the config-coercion + safety-rule surface owned by
@@ -17,21 +19,15 @@ func TestNewFromConfig_RejectsCredentialsWithWildcard(t *testing.T) {
 		"allowed_origins":   []interface{}{"*"},
 		"allow_credentials": true,
 	})
-	if err == nil {
-		t.Fatal("expected error for credentials+wildcard, got nil")
-	}
-	if !strings.Contains(err.Error(), "wildcard") {
-		t.Fatalf("error should mention wildcard; got %v", err)
-	}
+	require.Error(t, err, "expected error for credentials+wildcard")
+	require.ErrorContains(t, err, "wildcard", "error should mention wildcard")
 }
 
 func TestNewFromConfig_RejectsNonStringOrigin(t *testing.T) {
 	_, err := NewFromConfig(map[string]interface{}{
 		"allowed_origins": []interface{}{"https://example.org", 42},
 	})
-	if err == nil {
-		t.Fatal("expected error for non-string origin element")
-	}
+	require.Error(t, err, "expected error for non-string origin element")
 }
 
 func TestNewFromConfig_MaxAgeAcceptsIntAndFloat(t *testing.T) {
@@ -45,12 +41,8 @@ func TestNewFromConfig_MaxAgeAcceptsIntAndFloat(t *testing.T) {
 				"allowed_origins": []interface{}{"*"},
 				"max_age":         v,
 			})
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if mw == nil {
-				t.Fatal("nil middleware")
-			}
+			require.NoError(t, err)
+			require.NotNil(t, mw, "nil middleware")
 		})
 	}
 }
@@ -60,9 +52,7 @@ func TestNewFromConfig_MaxAgeRejectsBadType(t *testing.T) {
 		"allowed_origins": []interface{}{"*"},
 		"max_age":         "ten-minutes",
 	})
-	if err == nil {
-		t.Fatal("expected error for non-numeric max_age")
-	}
+	require.Error(t, err, "expected error for non-numeric max_age")
 }
 
 func TestNewFromConfig_AcceptsEmptyConfig(t *testing.T) {
@@ -72,12 +62,8 @@ func TestNewFromConfig_AcceptsEmptyConfig(t *testing.T) {
 	// operator forget to list origins"; this layer only fails on
 	// type errors.
 	mw, err := NewFromConfig(map[string]interface{}{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if mw == nil {
-		t.Fatal("nil middleware")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, mw, "nil middleware")
 }
 
 func TestNewFromConfig_AppliesPreflightOnAllowedOrigin(t *testing.T) {
@@ -88,9 +74,7 @@ func TestNewFromConfig_AppliesPreflightOnAllowedOrigin(t *testing.T) {
 	mw, err := NewFromConfig(map[string]interface{}{
 		"allowed_origins": []interface{}{"https://example.org"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	calls := 0
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ })
@@ -101,10 +85,6 @@ func TestNewFromConfig_AppliesPreflightOnAllowedOrigin(t *testing.T) {
 	w := httptest.NewRecorder()
 	mw(inner).ServeHTTP(w, r)
 
-	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://example.org" {
-		t.Fatalf("ACAO=%q", got)
-	}
-	if calls != 0 {
-		t.Fatalf("preflight must not invoke inner handler; got %d calls", calls)
-	}
+	assert.Equal(t, "https://example.org", w.Header().Get("Access-Control-Allow-Origin"), "ACAO")
+	assert.Equal(t, 0, calls, "preflight must not invoke inner handler")
 }

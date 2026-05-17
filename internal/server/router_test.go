@@ -9,6 +9,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/observability"
@@ -24,8 +26,8 @@ func TestBodyLimitMiddleware_LargeBodyRejected(t *testing.T) {
 	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
 		b := make([]byte, limit+1)
 		n, err := r.Body.Read(b)
-		if err == nil && n > limit {
-			t.Errorf("expected read to fail past %d bytes, got n=%d err=nil", limit, n)
+		if err == nil {
+			assert.LessOrEqual(t, n, limit, "expected read to fail past %d bytes, got n=%d err=nil", limit, n)
 		}
 		w.WriteHeader(http.StatusOK)
 	})
@@ -42,12 +44,8 @@ func TestBodyLimitMiddleware_SmallBodyPasses(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
 		b, err := readAll(r.Body)
-		if err != nil {
-			t.Fatalf("unexpected read error: %v", err)
-		}
-		if !strings.HasPrefix(string(b), "tiny") {
-			t.Errorf("body mismatch: %q", b)
-		}
+		require.NoError(t, err, "unexpected read error")
+		assert.True(t, strings.HasPrefix(string(b), "tiny"), "body mismatch: %q", b)
 		w.WriteHeader(http.StatusOK)
 	})
 	wrapped := bodyLimitMiddleware(limit)(mux)
@@ -55,9 +53,7 @@ func TestBodyLimitMiddleware_SmallBodyPasses(t *testing.T) {
 	req := httptest.NewRequest("POST", "/echo", strings.NewReader("tiny payload"))
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "want 200")
 }
 
 func readAll(r interface {
@@ -115,10 +111,9 @@ func TestRouter_MetricsLabelsAreBounded(t *testing.T) {
 	// The pattern slot should have accumulated all 50 requests.
 	const wantPattern = "/collections/{collectionId}/items/{itemId}"
 	got := testutil.ToFloat64(metrics.RequestsTotal.WithLabelValues(http.MethodGet, wantPattern, "200"))
-	if got < 50 {
-		t.Errorf("pattern label %q only accumulated %v of 50 requests — raw path probably leaked into label",
-			wantPattern, got)
-	}
+	assert.GreaterOrEqual(t, got, float64(50),
+		"pattern label %q only accumulated %v of 50 requests — raw path probably leaked into label",
+		wantPattern, got)
 }
 
 // --- H7 trusted-proxy XFF tests --------------------------------------------
@@ -144,9 +139,7 @@ func TestClientIP_IgnoresUntrustedXFF(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
-	if captured != "203.0.113.5" {
-		t.Errorf("client IP = %q, want %q (XFF should be ignored when not trusted)", captured, "203.0.113.5")
-	}
+	assert.Equal(t, "203.0.113.5", captured, "XFF should be ignored when not trusted")
 }
 
 // TestClientIP_ParsesTrustedXFF: when the immediate TCP peer IS in
@@ -169,9 +162,7 @@ func TestClientIP_ParsesTrustedXFF(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
-	if captured != "1.2.3.4" {
-		t.Errorf("client IP = %q, want %q (right-most untrusted XFF entry)", captured, "1.2.3.4")
-	}
+	assert.Equal(t, "1.2.3.4", captured, "right-most untrusted XFF entry")
 }
 
 // TestClientIP_FallsBackToRemoteAddrWhenXFFAllTrusted: every XFF
@@ -194,7 +185,5 @@ func TestClientIP_FallsBackToRemoteAddrWhenXFFAllTrusted(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
-	if captured != "10.0.0.5" {
-		t.Errorf("client IP = %q, want %q (fallback to RemoteAddr)", captured, "10.0.0.5")
-	}
+	assert.Equal(t, "10.0.0.5", captured, "fallback to RemoteAddr")
 }

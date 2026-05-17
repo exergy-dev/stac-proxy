@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 )
 
@@ -55,12 +57,8 @@ func TestHTTPMiddleware_ValidCredentials(t *testing.T) {
 	})
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status: want 200, got %d", rr.Code)
-	}
-	if rr.Header().Get("X-Test-Principal-ID") != "alice" {
-		t.Errorf("principal ID: want alice, got %q", rr.Header().Get("X-Test-Principal-ID"))
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status")
+	assert.Equal(t, "alice", rr.Header().Get("X-Test-Principal-ID"), "principal ID")
 }
 
 // TestHTTPMiddleware_AnonymousAllowed: no provider authenticates AND
@@ -69,12 +67,8 @@ func TestHTTPMiddleware_AnonymousAllowed(t *testing.T) {
 	h := wrap(t, Config{AllowAnonymous: true})
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status: want 200, got %d", rr.Code)
-	}
-	if got := rr.Header().Get("X-Test-Principal-Type"); got != "anonymous" {
-		t.Errorf("principal type: want anonymous, got %q", got)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status")
+	assert.Equal(t, "anonymous", rr.Header().Get("X-Test-Principal-Type"), "principal type")
 }
 
 // TestHTTPMiddleware_RejectsWhenAnonymousDisallowed: no provider matches,
@@ -87,12 +81,8 @@ func TestHTTPMiddleware_RejectsWhenAnonymousDisallowed(t *testing.T) {
 	}))
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("status: want 401, got %d", rr.Code)
-	}
-	if called {
-		t.Error("inner handler ran despite missing credentials")
-	}
+	require.Equal(t, http.StatusUnauthorized, rr.Code, "status")
+	assert.False(t, called, "inner handler ran despite missing credentials")
 }
 
 // TestHTTPMiddleware_ProviderChain: first provider returns nil-nil,
@@ -111,9 +101,7 @@ func TestHTTPMiddleware_ProviderChain(t *testing.T) {
 	})
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
-	if rr.Header().Get("X-Test-Principal-ID") != "bob" {
-		t.Errorf("principal ID: want bob, got %q", rr.Header().Get("X-Test-Principal-ID"))
-	}
+	assert.Equal(t, "bob", rr.Header().Get("X-Test-Principal-ID"), "principal ID")
 }
 
 // TestHTTPMiddleware_ErroringProviderContinuesToNext: a provider
@@ -138,16 +126,13 @@ func TestHTTPMiddleware_ErroringProviderContinuesToNext(t *testing.T) {
 	})
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
-	if rr.Header().Get("X-Test-Principal-ID") != "carol" {
-		t.Errorf("principal ID: want carol, got %q", rr.Header().Get("X-Test-Principal-ID"))
-	}
+	assert.Equal(t, "carol", rr.Header().Get("X-Test-Principal-ID"), "principal ID")
 }
 
 // TestPrincipalFromContext: nil ctx value yields nil principal.
 func TestPrincipalFromContext_Missing(t *testing.T) {
-	if p := PrincipalFromContext(context.Background()); p != nil {
-		t.Fatalf("want nil principal, got %+v", p)
-	}
+	p := PrincipalFromContext(context.Background())
+	require.Nil(t, p, "want nil principal")
 }
 
 // claimingMockProvider is a mock that implements CredentialClaimer.
@@ -166,9 +151,7 @@ func (m *claimingMockProvider) ClaimsCredential(_ *http.Request) bool { return m
 // anonymous by presenting any garbage Bearer token.
 func TestProviderChain_BadSignatureBearerDoesNotFallThroughToAnonymous(t *testing.T) {
 	bearer, err := NewBearerProvider(BearerConfig{Secret: testSecret})
-	if err != nil {
-		t.Fatalf("NewBearerProvider: %v", err)
-	}
+	require.NoError(t, err, "NewBearerProvider")
 
 	// Mint a token signed with the WRONG secret so signature verification fails.
 	bad := createTestToken(jwt.MapClaims{
@@ -190,12 +173,8 @@ func TestProviderChain_BadSignatureBearerDoesNotFallThroughToAnonymous(t *testin
 	req.Header.Set("Authorization", "Bearer "+bad)
 	h.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("status: want 401 (fail-closed), got %d", rr.Code)
-	}
-	if called {
-		t.Fatal("inner handler ran despite bad-signature bearer token")
-	}
+	require.Equal(t, http.StatusUnauthorized, rr.Code, "status: want 401 (fail-closed)")
+	require.False(t, called, "inner handler ran despite bad-signature bearer token")
 }
 
 // TestProviderChain_ClaimingProviderErrorIsHardFailure verifies the
@@ -231,18 +210,13 @@ func TestProviderChain_ClaimingProviderErrorIsHardFailure(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
 
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("status: want 401, got %d", rr.Code)
-	}
-	if called {
-		t.Fatal("inner handler ran despite claiming-provider error")
-	}
+	require.Equal(t, http.StatusUnauthorized, rr.Code, "status")
+	require.False(t, called, "inner handler ran despite claiming-provider error")
 }
 
 func TestPrincipalFromContext_Present(t *testing.T) {
 	ctx := context.WithValue(context.Background(), middleware.PrincipalKey, &Principal{ID: "x", Type: "user"})
 	p := PrincipalFromContext(ctx)
-	if p == nil || p.ID != "x" {
-		t.Fatalf("want principal x, got %+v", p)
-	}
+	require.NotNil(t, p, "want principal x")
+	require.Equal(t, "x", p.ID, "want principal x")
 }

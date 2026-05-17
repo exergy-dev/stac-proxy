@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
 	"github.com/yourorg/stac-proxy/internal/middleware"
@@ -78,9 +80,7 @@ func newPaginatedFederation(t *testing.T, opts ...originOpt) *federation.Handler
 		time.Hour,
 		[]byte(cursorSecret),
 	)
-	if err != nil {
-		t.Fatalf("pagecache.New: %v", err)
-	}
+	require.NoError(t, err, "pagecache.New")
 
 	h, err := federation.NewHandler(federation.HandlerConfig{
 		Origins:          []*federation.Origin{earthSearch, pc},
@@ -91,9 +91,7 @@ func newPaginatedFederation(t *testing.T, opts ...originOpt) *federation.Handler
 		ProxyBaseURL:     proxyPublicBase,
 		PageCache:        pc_cache,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler (paginated): %v", err)
-	}
+	require.NoError(t, err, "NewHandler (paginated)")
 	return h
 }
 
@@ -124,17 +122,11 @@ func TestLive_GETSearchMerges(t *testing.T) {
 		http.MethodGet, q, nil,
 	)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
 
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &fc); err != nil {
-		t.Fatalf("decode FC: %v", err)
-	}
-	if len(fc.Features) == 0 {
-		t.Fatal("GET /search returned no features")
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &fc), "decode FC")
+	require.NotEmpty(t, fc.Features, "GET /search returned no features")
 }
 
 // TestLive_PaginatedNextLink configures a federated paginator
@@ -174,35 +166,22 @@ func TestLive_PaginatedNextLink(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: searchReq},
 		http.MethodPost, "/search", bytes.NewReader(body),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("page 1 status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "page 1 status = %d, body = %s", rr.Code, rr.Body.String())
 
 	var page1 stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &page1); err != nil {
-		t.Fatalf("decode page 1: %v", err)
-	}
-	if len(page1.Features) == 0 {
-		t.Fatal("page 1 returned no features; can't exercise pagination")
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &page1), "decode page 1")
+	require.NotEmpty(t, page1.Features, "page 1 returned no features; can't exercise pagination")
 
 	nextLink := findLink(page1.Links, "next")
-	if nextLink == nil {
-		t.Fatal("page 1 has no rel=next link; pagination wasn't engaged")
-	}
-	if !strings.HasPrefix(nextLink.Href, proxyPublicBase) {
-		t.Errorf("next.href = %q, want prefix %q (proxy base URL not applied)",
-			nextLink.Href, proxyPublicBase)
-	}
+	require.NotNil(t, nextLink, "page 1 has no rel=next link; pagination wasn't engaged")
+	assert.True(t, strings.HasPrefix(nextLink.Href, proxyPublicBase),
+		"next.href = %q, want prefix %q (proxy base URL not applied)",
+		nextLink.Href, proxyPublicBase)
 	method, _ := nextLink.AdditionalFields["method"].(string)
-	if method != http.MethodPost {
-		t.Errorf("next link method = %q, want POST", method)
-	}
+	assert.Equal(t, http.MethodPost, method, "next link method = %q, want POST", method)
 	nextBody, _ := nextLink.AdditionalFields["body"].(map[string]any)
 	cursor, _ := nextBody["token"].(string)
-	if cursor == "" {
-		t.Fatal("next link body has no token; nothing to follow")
-	}
+	require.NotEmpty(t, cursor, "next link body has no token; nothing to follow")
 
 	// Page 1 IDs — page 2 must not repeat them. The dedup state is
 	// encoded in the cursor itself, so this is the integration check
@@ -220,13 +199,9 @@ func TestLive_PaginatedNextLink(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: &page2Req},
 		http.MethodPost, "/search", bytes.NewReader(page2Body),
 	)
-	if rr2.Code != http.StatusOK {
-		t.Fatalf("page 2 status = %d, body = %s", rr2.Code, rr2.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr2.Code, "page 2 status = %d, body = %s", rr2.Code, rr2.Body.String())
 	var page2 stac.FeatureCollection
-	if err := json.Unmarshal(rr2.Body.Bytes(), &page2); err != nil {
-		t.Fatalf("decode page 2: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(rr2.Body.Bytes(), &page2), "decode page 2")
 	if len(page2.Features) == 0 {
 		// Acceptable for a sparsely-populated bbox: the cursor exists
 		// but the second window was empty. Log and continue.
@@ -234,9 +209,8 @@ func TestLive_PaginatedNextLink(t *testing.T) {
 		return
 	}
 	for _, item := range page2.Features {
-		if page1IDs[item.ID] {
-			t.Errorf("page 2 repeats page 1 item %q (cursor dedup broke across the round-trip)", item.ID)
-		}
+		assert.False(t, page1IDs[item.ID],
+			"page 2 repeats page 1 item %q (cursor dedup broke across the round-trip)", item.ID)
 	}
 }
 
@@ -250,20 +224,14 @@ func TestLive_LandingPageLinkRels(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeLanding},
 		http.MethodGet, "/", nil,
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
 
 	// Decode generically; the landing page schema is loose enough
 	// that a strict type pulls in fields we don't care to assert on.
 	var doc map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &doc); err != nil {
-		t.Fatalf("decode landing: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &doc), "decode landing")
 	links, _ := doc["links"].([]any)
-	if len(links) == 0 {
-		t.Fatal("landing has no links")
-	}
+	require.NotEmpty(t, links, "landing has no links")
 
 	// Track required rels. §1.4 mandates self, root, data,
 	// conformance, and search (both GET and POST forms).
@@ -281,10 +249,9 @@ func TestLive_LandingPageLinkRels(t *testing.T) {
 		href, _ := lm["href"].(string)
 		if _, want := required[rel]; want {
 			required[rel]++
-			if !strings.HasPrefix(href, proxyPublicBase) {
-				t.Errorf("link rel=%q href=%q does not start with proxy base %q",
-					rel, href, proxyPublicBase)
-			}
+			assert.True(t, strings.HasPrefix(href, proxyPublicBase),
+				"link rel=%q href=%q does not start with proxy base %q",
+				rel, href, proxyPublicBase)
 		}
 		if rel == "search" {
 			m, _ := lm["method"].(string)
@@ -295,14 +262,10 @@ func TestLive_LandingPageLinkRels(t *testing.T) {
 		}
 	}
 	for rel, count := range required {
-		if count == 0 {
-			t.Errorf("required link rel %q missing from landing page", rel)
-		}
+		assert.NotZero(t, count, "required link rel %q missing from landing page", rel)
 	}
 	for _, m := range []string{http.MethodGet, http.MethodPost} {
-		if !searchMethods[m] {
-			t.Errorf("landing page does not advertise a %s search link", m)
-		}
+		assert.True(t, searchMethods[m], "landing page does not advertise a %s search link", m)
 	}
 }
 
@@ -324,25 +287,18 @@ func TestLive_GetSingleCollection(t *testing.T) {
 		},
 		http.MethodGet, "/collections/sentinel-2-l2a", nil,
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
 
 	var coll map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &coll); err != nil {
-		t.Fatalf("decode collection: %v", err)
-	}
-	if id, _ := coll["id"].(string); id != "sentinel-2-l2a" {
-		t.Errorf("collection.id = %q, want %q", id, "sentinel-2-l2a")
-	}
-	if t_, _ := coll["type"].(string); t_ != "Collection" {
-		t.Errorf("collection.type = %q, want %q", t_, "Collection")
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &coll), "decode collection")
+	id, _ := coll["id"].(string)
+	assert.Equal(t, "sentinel-2-l2a", id, "collection.id = %q, want %q", id, "sentinel-2-l2a")
+	t_, _ := coll["type"].(string)
+	assert.Equal(t, "Collection", t_, "collection.type = %q, want %q", t_, "Collection")
 	// Extent is a STAC-required field; its absence would suggest the
 	// proxy returned a stub rather than a real upstream collection.
-	if _, ok := coll["extent"]; !ok {
-		t.Error("collection has no extent; upstream response may have been stripped")
-	}
+	_, ok := coll["extent"]
+	assert.True(t, ok, "collection has no extent; upstream response may have been stripped")
 }
 
 // TestLive_GetSingleItem does a search to pull a known-good item ID
@@ -375,20 +331,14 @@ func TestLive_GetSingleItem(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: searchReq},
 		http.MethodPost, "/search", bytes.NewReader(body),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("seed search status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "seed search status = %d, body = %s", rr.Code, rr.Body.String())
 	var seedFC stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &seedFC); err != nil {
-		t.Fatalf("decode seed FC: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &seedFC), "decode seed FC")
 	if len(seedFC.Features) == 0 {
 		t.Skip("seed search returned no items; cannot exercise GET /items/{id}")
 	}
 	itemID := seedFC.Features[0].ID
-	if itemID == "" {
-		t.Fatal("seed item has no ID")
-	}
+	require.NotEmpty(t, itemID, "seed item has no ID")
 
 	// Now GET that exact item by ID.
 	itemPath := "/collections/sentinel-2-l2a/items/" + itemID
@@ -400,20 +350,14 @@ func TestLive_GetSingleItem(t *testing.T) {
 		},
 		http.MethodGet, itemPath, nil,
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("item GET status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "item GET status = %d, body = %s", rr.Code, rr.Body.String())
 
 	var item map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &item); err != nil {
-		t.Fatalf("decode item: %v", err)
-	}
-	if gotID, _ := item["id"].(string); gotID != itemID {
-		t.Errorf("item.id = %q, want %q", gotID, itemID)
-	}
-	if t_, _ := item["type"].(string); t_ != "Feature" {
-		t.Errorf("item.type = %q, want Feature", t_)
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &item), "decode item")
+	gotID, _ := item["id"].(string)
+	assert.Equal(t, itemID, gotID, "item.id = %q, want %q", gotID, itemID)
+	t_, _ := item["type"].(string)
+	assert.Equal(t, "Feature", t_, "item.type = %q, want Feature", t_)
 }
 
 // TestLive_CQL2JSONFilterPushdown_PCOnly exercises the Filter
@@ -464,13 +408,9 @@ func TestLive_CQL2JSONFilterPushdown_PCOnly(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: searchReq},
 		http.MethodPost, "/search", bytes.NewReader(body),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &fc); err != nil {
-		t.Fatalf("decode FC: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &fc), "decode FC")
 	if len(fc.Features) == 0 {
 		t.Skip("PC returned no items for the cloud-free Iberian Peninsula query; nothing to assert on (upstream variance)")
 	}
@@ -496,10 +436,9 @@ func TestLive_CQL2JSONFilterPushdown_PCOnly(t *testing.T) {
 			t.Logf("item %s has eo:cloud_cover=%v (>= %g)", item.ID, cloud, cloudCap)
 		}
 	}
-	if violations > 0 {
-		t.Errorf("filter eo:cloud_cover < %g returned %d violating items out of %d (proxy may have dropped the filter)",
-			cloudCap, violations, len(fc.Features))
-	}
+	assert.Zero(t, violations,
+		"filter eo:cloud_cover < %g returned %d violating items out of %d (proxy may have dropped the filter)",
+		cloudCap, violations, len(fc.Features))
 }
 
 // TestLive_NamespaceConflictStrategy reconfigures the handler with
@@ -536,9 +475,7 @@ func TestLive_NamespaceConflictStrategy(t *testing.T) {
 		MaxConcurrent:    2,
 		AggregateTimeout: 60 * time.Second,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler (namespace): %v", err)
-	}
+	require.NoError(t, err, "NewHandler (namespace)")
 
 	end := time.Now().UTC()
 	start := end.Add(-14 * 24 * time.Hour)
@@ -553,13 +490,9 @@ func TestLive_NamespaceConflictStrategy(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: searchReq},
 		http.MethodPost, "/search", bytes.NewReader(body),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &fc); err != nil {
-		t.Fatalf("decode FC: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &fc), "decode FC")
 	if len(fc.Features) == 0 {
 		t.Skip("namespace search returned no items; cannot assert prefixing")
 	}
@@ -571,10 +504,9 @@ func TestLive_NamespaceConflictStrategy(t *testing.T) {
 			prefixed++
 		}
 	}
-	if prefixed == 0 {
-		t.Errorf("no items have origin-prefixed IDs; namespace strategy not applied (sample IDs: %v)",
-			sampleIDs(fc.Features, 5))
-	}
+	assert.NotZero(t, prefixed,
+		"no items have origin-prefixed IDs; namespace strategy not applied (sample IDs: %v)",
+		sampleIDs(fc.Features, 5))
 }
 
 // TestLive_ConformanceClassesAreOriginIntersection asserts a stronger
@@ -590,15 +522,11 @@ func TestLive_ConformanceClassesAreOriginIntersection(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeConformance},
 		http.MethodGet, "/conformance", nil,
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
 	var resp struct {
 		ConformsTo []string `json:"conformsTo"`
 	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode conformance: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp), "decode conformance")
 
 	// Pull origin conformance sets directly so we can verify the
 	// proxy's claim is grounded.
@@ -630,7 +558,8 @@ func TestLive_ConformanceClassesAreOriginIntersection(t *testing.T) {
 			strings.Contains(c, "cql2") {
 			continue
 		}
-		t.Errorf("proxy advertises class %q that is neither in ProxyConformanceCore nor any upstream's conformance set", c)
+		assert.Failf(t, "ungrounded conformance class",
+			"proxy advertises class %q that is neither in ProxyConformanceCore nor any upstream's conformance set", c)
 	}
 }
 
@@ -713,24 +642,14 @@ func TestLive_BackwardsNavigation(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: searchReq},
 		http.MethodPost, "/search", bytes.NewReader(body),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("page 0 status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "page 0 status = %d, body = %s", rr.Code, rr.Body.String())
 	var page0 stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &page0); err != nil {
-		t.Fatalf("decode page 0: %v", err)
-	}
-	if len(page0.Features) == 0 {
-		t.Fatal("page 0 returned no features; cannot exercise backwards nav")
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &page0), "decode page 0")
+	require.NotEmpty(t, page0.Features, "page 0 returned no features; cannot exercise backwards nav")
 	page0Next := findLink(page0.Links, "next")
-	if page0Next == nil {
-		t.Fatal("page 0 has no rel=next; cannot advance to page 1")
-	}
+	require.NotNil(t, page0Next, "page 0 has no rel=next; cannot advance to page 1")
 	page0Token := cursorTokenOf(page0Next)
-	if page0Token == "" {
-		t.Fatal("page 0 next-link token is empty")
-	}
+	require.NotEmpty(t, page0Token, "page 0 next-link token is empty")
 
 	// Page 1: follow page 0's next; must carry self/prev/next link rels.
 	page1Req := *searchReq
@@ -740,23 +659,13 @@ func TestLive_BackwardsNavigation(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: &page1Req},
 		http.MethodPost, "/search", bytes.NewReader(body),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("page 1 status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "page 1 status = %d, body = %s", rr.Code, rr.Body.String())
 	var page1 stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &page1); err != nil {
-		t.Fatalf("decode page 1: %v", err)
-	}
-	if len(page1.Features) == 0 {
-		t.Fatal("page 1 returned no features; cannot exercise backwards nav")
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &page1), "decode page 1")
+	require.NotEmpty(t, page1.Features, "page 1 returned no features; cannot exercise backwards nav")
 
-	if findLink(page1.Links, "self") == nil {
-		t.Error("page 1 missing rel=self")
-	}
-	if findLink(page1.Links, "next") == nil {
-		t.Error("page 1 missing rel=next")
-	}
+	assert.NotNil(t, findLink(page1.Links, "self"), "page 1 missing rel=self")
+	assert.NotNil(t, findLink(page1.Links, "next"), "page 1 missing rel=next")
 	// Page 1's prev IS page 0's cursor — but page 0 had no
 	// incoming cursor, so the chain emits an empty PrevCursor and
 	// the proxy omits the prev link on page 1 (no prev to follow).
@@ -771,23 +680,15 @@ func TestLive_BackwardsNavigation(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: &page2Req},
 		http.MethodPost, "/search", bytes.NewReader(body),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("page 2 status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "page 2 status = %d, body = %s", rr.Code, rr.Body.String())
 	var page2 stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &page2); err != nil {
-		t.Fatalf("decode page 2: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &page2), "decode page 2")
 	prevLink := findLink(page2.Links, "prev")
-	if prevLink == nil {
-		t.Fatal("page 2 missing rel=prev; backwards navigation not advertised")
-	}
+	require.NotNil(t, prevLink, "page 2 missing rel=prev; backwards navigation not advertised")
 
 	// Follow prev: must return page 1's items verbatim.
 	prevToken := cursorTokenOf(prevLink)
-	if prevToken == "" {
-		t.Fatal("page 2's prev-link has no token")
-	}
+	require.NotEmpty(t, prevToken, "page 2's prev-link has no token")
 	prevReq := *searchReq
 	prevReq.Token = prevToken
 	body, _ = json.Marshal(&prevReq)
@@ -795,26 +696,19 @@ func TestLive_BackwardsNavigation(t *testing.T) {
 		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: &prevReq},
 		http.MethodPost, "/search", bytes.NewReader(body),
 	)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("prev follow status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "prev follow status = %d, body = %s", rr.Code, rr.Body.String())
 	var prevPage stac.FeatureCollection
-	if err := json.Unmarshal(rr.Body.Bytes(), &prevPage); err != nil {
-		t.Fatalf("decode prev page: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &prevPage), "decode prev page")
 
-	if len(prevPage.Features) != len(page1.Features) {
-		t.Errorf("prev page has %d items; want %d (page 1's count)",
-			len(prevPage.Features), len(page1.Features))
-	}
+	assert.Equal(t, len(page1.Features), len(prevPage.Features),
+		"prev page has %d items; want %d (page 1's count)",
+		len(prevPage.Features), len(page1.Features))
 	page1IDs := make(map[string]bool, len(page1.Features))
 	for _, it := range page1.Features {
 		page1IDs[it.ID] = true
 	}
 	for _, it := range prevPage.Features {
-		if !page1IDs[it.ID] {
-			t.Errorf("prev page item %q not in page 1 (cache served wrong page)", it.ID)
-		}
+		assert.True(t, page1IDs[it.ID], "prev page item %q not in page 1 (cache served wrong page)", it.ID)
 	}
 }
 

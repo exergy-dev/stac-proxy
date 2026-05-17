@@ -2,8 +2,10 @@ package authz
 
 import (
 	"context"
-	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // namedStubEnforcer returns a fixed decision for testing the composite
@@ -40,12 +42,8 @@ func TestCompositeEnforcer_ConflictingGeofencesReturnsError(t *testing.T) {
 	)
 
 	_, err := composite.Authorize(context.Background(), &AuthzInput{})
-	if err == nil {
-		t.Fatalf("conflicting geofences must return an error, got nil")
-	}
-	if !errors.Is(err, ErrGeofenceMergeUnsupported) {
-		t.Fatalf("error must wrap ErrGeofenceMergeUnsupported, got %v", err)
-	}
+	require.Error(t, err, "conflicting geofences must return an error")
+	require.ErrorIs(t, err, ErrGeofenceMergeUnsupported, "error must wrap ErrGeofenceMergeUnsupported")
 }
 
 // TestCompositeEnforcer_NonConflictingGeofencesMergeCleanly verifies the
@@ -68,16 +66,8 @@ func TestCompositeEnforcer_NonConflictingGeofencesMergeCleanly(t *testing.T) {
 	)
 
 	decision, err := composite.Authorize(context.Background(), &AuthzInput{})
-	if err != nil {
-		t.Fatalf("non-conflicting merge: %v", err)
-	}
-	if !decision.Allowed {
-		t.Fatalf("expected allowed, got denied: %v", decision.Reasons)
-	}
-	if decision.Constraints.Geofence.AllowedArea != "region-A" {
-		t.Errorf("AllowedArea: want region-A, got %v", decision.Constraints.Geofence.AllowedArea)
-	}
-	if !decision.Constraints.Geofence.FilterMode {
-		t.Errorf("FilterMode should be true (OR of inputs)")
-	}
+	require.NoError(t, err, "non-conflicting merge")
+	require.True(t, decision.Allowed, "expected allowed, got denied: %v", decision.Reasons)
+	assert.Equal(t, "region-A", decision.Constraints.Geofence.AllowedArea, "AllowedArea")
+	assert.True(t, decision.Constraints.Geofence.FilterMode, "FilterMode should be true (OR of inputs)")
 }

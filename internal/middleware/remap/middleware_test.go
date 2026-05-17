@@ -8,6 +8,9 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestRemap_NonJSONResponse_NotDecoded (M-remap-1): a response with a
@@ -28,24 +31,16 @@ func TestRemap_NonJSONResponse_NotDecoded(t *testing.T) {
 			{Match: `https?://example.com/`, Replace: `https://proxy/`},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewHTTPMiddleware: %v", err)
-	}
+	require.NoError(t, err, "NewHTTPMiddleware")
 	h := mw(inner)
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/asset.png", nil))
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status: want 200, got %d", rr.Code)
-	}
-	if got := rr.Header().Get("Content-Type"); got != "image/png" {
-		t.Errorf("Content-Type: want image/png, got %q", got)
-	}
-	if !bytes.Equal(rr.Body.Bytes(), binary) {
-		t.Errorf("body mutated by middleware (length got %d, want %d, equal=%v)",
-			rr.Body.Len(), len(binary), bytes.Equal(rr.Body.Bytes(), binary))
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "status")
+	assert.Equal(t, "image/png", rr.Header().Get("Content-Type"), "Content-Type")
+	assert.True(t, bytes.Equal(rr.Body.Bytes(), binary),
+		"body mutated by middleware (length got %d, want %d)", rr.Body.Len(), len(binary))
 }
 
 // TestRemap_JSONResponse_StillRewritten guards against an over-broad
@@ -65,18 +60,14 @@ func TestRemap_JSONResponse_StillRewritten(t *testing.T) {
 			Replace: `https://proxy.example.com/`,
 		}},
 	})
-	if err != nil {
-		t.Fatalf("NewHTTPMiddleware: %v", err)
-	}
+	require.NoError(t, err, "NewHTTPMiddleware")
 	h := mw(inner)
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/items/1", nil))
 
 	matched, _ := regexp.Match(`"href":"https://proxy\.example\.com/items/1"`, rr.Body.Bytes())
-	if !matched {
-		t.Errorf("href was not rewritten: body=%s", rr.Body.String())
-	}
+	assert.True(t, matched, "href was not rewritten: body=%s", rr.Body.String())
 }
 
 // TestRemap_GeoJSONContentType_IsRewritten covers the +json suffix path
@@ -94,17 +85,14 @@ func TestRemap_GeoJSONContentType_IsRewritten(t *testing.T) {
 			Replace: `https://proxy/`,
 		}},
 	})
-	if err != nil {
-		t.Fatalf("NewHTTPMiddleware: %v", err)
-	}
+	require.NoError(t, err, "NewHTTPMiddleware")
 	h := mw(inner)
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
 
-	if !bytes.Contains(rr.Body.Bytes(), []byte("https://proxy/x")) {
-		t.Errorf("application/geo+json body not rewritten: %s", rr.Body.String())
-	}
+	assert.Contains(t, rr.Body.String(), "https://proxy/x",
+		"application/geo+json body not rewritten")
 }
 
 func TestIsJSONContentType(t *testing.T) {
@@ -121,9 +109,7 @@ func TestIsJSONContentType(t *testing.T) {
 		"application/jsonp":                             false, // not actually JSON
 	}
 	for in, want := range cases {
-		if got := isJSONContentType(in); got != want {
-			t.Errorf("isJSONContentType(%q) = %v, want %v", in, got, want)
-		}
+		assert.Equal(t, want, isJSONContentType(in), "isJSONContentType(%q)", in)
 	}
 }
 
@@ -151,6 +137,6 @@ func TestTransformURLs_RespectsMaxDepth(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("transformURLs did not return within 2s on deep input")
+		require.Fail(t, "transformURLs did not return within 2s on deep input")
 	}
 }

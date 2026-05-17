@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Test secret for HMAC signing
@@ -56,24 +58,12 @@ func TestNewBearerProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *BearerProvider) {
-				if p == nil {
-					t.Fatal("expected non-nil provider")
-				}
-				if p.name != "test-bearer" {
-					t.Errorf("expected name=test-bearer, got %s", p.name)
-				}
-				if p.issuer != "https://issuer.example.com" {
-					t.Errorf("expected issuer=https://issuer.example.com, got %s", p.issuer)
-				}
-				if p.audience != "test-audience" {
-					t.Errorf("expected audience=test-audience, got %s", p.audience)
-				}
-				if p.keyFunc == nil {
-					t.Error("expected keyFunc to be set")
-				}
-				if p.claimsFunc == nil {
-					t.Error("expected claimsFunc to be set")
-				}
+				require.NotNil(t, p, "expected non-nil provider")
+				assert.Equal(t, "test-bearer", p.name, "name")
+				assert.Equal(t, "https://issuer.example.com", p.issuer, "issuer")
+				assert.Equal(t, "test-audience", p.audience, "audience")
+				assert.NotNil(t, p.keyFunc, "expected keyFunc to be set")
+				assert.NotNil(t, p.claimsFunc, "expected claimsFunc to be set")
 			},
 		},
 		{
@@ -83,9 +73,7 @@ func TestNewBearerProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *BearerProvider) {
-				if p.name != "bearer" {
-					t.Errorf("expected default name=bearer, got %s", p.name)
-				}
+				assert.Equal(t, "bearer", p.name, "default name")
 			},
 		},
 		{
@@ -98,12 +86,8 @@ func TestNewBearerProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *BearerProvider) {
-				if p.jwksURL != "https://example.com/.well-known/jwks.json" {
-					t.Errorf("expected jwksURL to be set, got %s", p.jwksURL)
-				}
-				if p.keyFunc == nil {
-					t.Error("expected keyFunc to be set")
-				}
+				assert.Equal(t, "https://example.com/.well-known/jwks.json", p.jwksURL, "jwksURL")
+				assert.NotNil(t, p.keyFunc, "expected keyFunc to be set")
 			},
 		},
 		{
@@ -116,9 +100,7 @@ func TestNewBearerProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *BearerProvider) {
-				if p.claimsFunc == nil {
-					t.Error("expected custom claimsFunc to be set")
-				}
+				assert.NotNil(t, p.claimsFunc, "expected custom claimsFunc to be set")
 			},
 		},
 		{
@@ -136,18 +118,14 @@ func TestNewBearerProvider(t *testing.T) {
 			provider, err := NewBearerProvider(tt.config)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				if tt.errString != "" && err.Error() != tt.errString {
-					t.Errorf("expected error %q, got %q", tt.errString, err.Error())
+				require.Error(t, err, "expected error")
+				if tt.errString != "" {
+					assert.Equal(t, tt.errString, err.Error(), "expected error string")
 				}
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err, "unexpected error")
 
 			if tt.validate != nil {
 				tt.validate(t, provider)
@@ -164,9 +142,7 @@ func TestBearerProvider_Name(t *testing.T) {
 		Secret: testSecret,
 	})
 
-	if provider.Name() != "custom-name" {
-		t.Errorf("expected Name()=custom-name, got %s", provider.Name())
-	}
+	assert.Equal(t, "custom-name", provider.Name(), "Name()")
 }
 
 func TestBearerProvider_Authenticate(t *testing.T) {
@@ -203,45 +179,19 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p == nil {
-					t.Fatal("expected non-nil principal")
-				}
-				if p.ID != "user123" {
-					t.Errorf("expected ID=user123, got %s", p.ID)
-				}
-				if p.Email != "test@example.com" {
-					t.Errorf("expected Email=test@example.com, got %s", p.Email)
-				}
-				if p.Name != "Test User" {
-					t.Errorf("expected Name=Test User, got %s", p.Name)
-				}
-				if p.Type != "user" {
-					t.Errorf("expected Type=user, got %s", p.Type)
-				}
-				if len(p.Roles) != 2 {
-					t.Errorf("expected 2 roles, got %d", len(p.Roles))
-				}
-				if !p.HasRole("admin") {
-					t.Error("expected principal to have admin role")
-				}
-				if !p.HasRole("user") {
-					t.Error("expected principal to have user role")
-				}
-				if len(p.Groups) != 2 {
-					t.Errorf("expected 2 groups, got %d", len(p.Groups))
-				}
-				if !p.HasGroup("engineering") {
-					t.Error("expected principal to have engineering group")
-				}
-				if !p.HasGroup("platform") {
-					t.Error("expected principal to have platform group")
-				}
-				if p.Token == "" {
-					t.Error("expected token to be set")
-				}
-				if p.ExpiresAt == 0 {
-					t.Error("expected ExpiresAt to be set")
-				}
+				require.NotNil(t, p, "expected non-nil principal")
+				assert.Equal(t, "user123", p.ID, "ID")
+				assert.Equal(t, "test@example.com", p.Email, "Email")
+				assert.Equal(t, "Test User", p.Name, "Name")
+				assert.Equal(t, "user", p.Type, "Type")
+				assert.Len(t, p.Roles, 2, "expected 2 roles")
+				assert.True(t, p.HasRole("admin"), "expected principal to have admin role")
+				assert.True(t, p.HasRole("user"), "expected principal to have user role")
+				assert.Len(t, p.Groups, 2, "expected 2 groups")
+				assert.True(t, p.HasGroup("engineering"), "expected principal to have engineering group")
+				assert.True(t, p.HasGroup("platform"), "expected principal to have platform group")
+				assert.NotEmpty(t, p.Token, "expected token to be set")
+				assert.NotZero(t, p.ExpiresAt, "expected ExpiresAt to be set")
 			},
 		},
 		{
@@ -263,9 +213,7 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p == nil {
-					t.Fatal("expected non-nil principal")
-				}
+				require.NotNil(t, p, "expected non-nil principal")
 			},
 		},
 		{
@@ -495,15 +443,9 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.ID != "custom-id" {
-					t.Errorf("expected custom ID, got %s", p.ID)
-				}
-				if p.Type != "service" {
-					t.Errorf("expected Type=service, got %s", p.Type)
-				}
-				if p.Attributes["custom"] != "value" {
-					t.Error("expected custom attribute to be set")
-				}
+				assert.Equal(t, "custom-id", p.ID, "expected custom ID")
+				assert.Equal(t, "service", p.Type, "Type")
+				assert.Equal(t, "value", p.Attributes["custom"], "expected custom attribute to be set")
 			},
 		},
 		{
@@ -543,9 +485,7 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.ID != "user123" {
-					t.Errorf("expected ID=user123, got %s", p.ID)
-				}
+				assert.Equal(t, "user123", p.ID, "ID")
 			},
 		},
 		{
@@ -568,9 +508,7 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 			t.Parallel()
 
 			provider, err := NewBearerProvider(tt.config)
-			if err != nil {
-				t.Fatalf("failed to create provider: %v", err)
-			}
+			require.NoError(t, err, "failed to create provider")
 
 			req := tt.setupReq()
 			ctx := context.Background()
@@ -578,30 +516,20 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 			principal, err := provider.Authenticate(ctx, req)
 
 			if tt.wantNil {
-				if principal != nil {
-					t.Errorf("expected nil principal, got %+v", principal)
-				}
-				if err != nil {
-					t.Errorf("expected nil error for non-applicable auth, got %v", err)
-				}
+				assert.Nil(t, principal, "expected nil principal")
+				assert.NoError(t, err, "expected nil error for non-applicable auth")
 				return
 			}
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
+				require.Error(t, err, "expected error")
 				if tt.errSubstr != "" {
-					if !containsString(err.Error(), tt.errSubstr) {
-						t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
-					}
+					assert.Contains(t, err.Error(), tt.errSubstr, "expected error containing %q", tt.errSubstr)
 				}
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err, "unexpected error")
 
 			if tt.validate != nil {
 				tt.validate(t, principal)
@@ -632,24 +560,12 @@ func TestDefaultClaimsFunc(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.ID != "user123" {
-					t.Errorf("expected ID=user123, got %s", p.ID)
-				}
-				if p.Email != "test@example.com" {
-					t.Errorf("expected email=test@example.com, got %s", p.Email)
-				}
-				if p.Name != "Test User" {
-					t.Errorf("expected name=Test User, got %s", p.Name)
-				}
-				if p.Type != "user" {
-					t.Errorf("expected type=user, got %s", p.Type)
-				}
-				if len(p.Roles) != 2 {
-					t.Errorf("expected 2 roles, got %d", len(p.Roles))
-				}
-				if len(p.Groups) != 2 {
-					t.Errorf("expected 2 groups, got %d", len(p.Groups))
-				}
+				assert.Equal(t, "user123", p.ID, "ID")
+				assert.Equal(t, "test@example.com", p.Email, "email")
+				assert.Equal(t, "Test User", p.Name, "name")
+				assert.Equal(t, "user", p.Type, "type")
+				assert.Len(t, p.Roles, 2, "expected 2 roles")
+				assert.Len(t, p.Groups, 2, "expected 2 groups")
 			},
 		},
 		{
@@ -659,15 +575,9 @@ func TestDefaultClaimsFunc(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.ID != "user456" {
-					t.Errorf("expected ID=user456, got %s", p.ID)
-				}
-				if p.Type != "user" {
-					t.Errorf("expected type=user, got %s", p.Type)
-				}
-				if p.Attributes == nil {
-					t.Error("expected attributes map to be initialized")
-				}
+				assert.Equal(t, "user456", p.ID, "ID")
+				assert.Equal(t, "user", p.Type, "type")
+				assert.NotNil(t, p.Attributes, "expected attributes map to be initialized")
 			},
 		},
 		{
@@ -682,9 +592,7 @@ func TestDefaultClaimsFunc(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if p.ExpiresAt == 0 {
-					t.Error("expected ExpiresAt to be recorded")
-				}
+				assert.NotZero(t, p.ExpiresAt, "expected ExpiresAt to be recorded")
 			},
 		},
 		{
@@ -695,15 +603,9 @@ func TestDefaultClaimsFunc(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if len(p.Roles) != 2 {
-					t.Errorf("expected 2 roles (non-string filtered), got %d", len(p.Roles))
-				}
-				if !p.HasRole("admin") {
-					t.Error("expected admin role")
-				}
-				if !p.HasRole("user") {
-					t.Error("expected user role")
-				}
+				assert.Len(t, p.Roles, 2, "expected 2 roles (non-string filtered)")
+				assert.True(t, p.HasRole("admin"), "expected admin role")
+				assert.True(t, p.HasRole("user"), "expected user role")
 			},
 		},
 		{
@@ -714,15 +616,9 @@ func TestDefaultClaimsFunc(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if len(p.Groups) != 2 {
-					t.Errorf("expected 2 groups (non-string filtered), got %d", len(p.Groups))
-				}
-				if !p.HasGroup("group-a") {
-					t.Error("expected group-a")
-				}
-				if !p.HasGroup("group-b") {
-					t.Error("expected group-b")
-				}
+				assert.Len(t, p.Groups, 2, "expected 2 groups (non-string filtered)")
+				assert.True(t, p.HasGroup("group-a"), "expected group-a")
+				assert.True(t, p.HasGroup("group-b"), "expected group-b")
 			},
 		},
 		{
@@ -734,12 +630,8 @@ func TestDefaultClaimsFunc(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Principal) {
-				if len(p.Roles) != 0 {
-					t.Errorf("expected 0 roles, got %d", len(p.Roles))
-				}
-				if len(p.Groups) != 0 {
-					t.Errorf("expected 0 groups, got %d", len(p.Groups))
-				}
+				assert.Empty(t, p.Roles, "expected 0 roles")
+				assert.Empty(t, p.Groups, "expected 0 groups")
 			},
 		},
 		{
@@ -759,20 +651,14 @@ func TestDefaultClaimsFunc(t *testing.T) {
 			principal, err := defaultClaimsFunc(tt.claims)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
+				require.Error(t, err, "expected error")
 				if tt.errSubstr != "" {
-					if !containsString(err.Error(), tt.errSubstr) {
-						t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
-					}
+					assert.Contains(t, err.Error(), tt.errSubstr, "expected error containing %q", tt.errSubstr)
 				}
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err, "unexpected error")
 
 			if tt.validate != nil {
 				tt.validate(t, principal)
@@ -788,9 +674,7 @@ func TestBearerProvider_KeyFunc_HMAC(t *testing.T) {
 	provider, err := NewBearerProvider(BearerConfig{
 		Secret: secret,
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	tests := []struct {
 		name      string
@@ -822,24 +706,16 @@ func TestBearerProvider_KeyFunc_HMAC(t *testing.T) {
 			key, err := provider.keyFunc(tt.token)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
+				require.Error(t, err, "expected error")
 				if tt.errSubstr != "" {
-					if !containsString(err.Error(), tt.errSubstr) {
-						t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
-					}
+					assert.Contains(t, err.Error(), tt.errSubstr, "expected error containing %q", tt.errSubstr)
 				}
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err, "unexpected error")
 
-			if key == nil {
-				t.Error("expected non-nil key")
-			}
+			assert.NotNil(t, key, "expected non-nil key")
 		})
 	}
 }
@@ -850,9 +726,7 @@ func TestBearerProvider_JWKSKeyFunc_RejectsMissingKid(t *testing.T) {
 	provider, err := NewBearerProvider(BearerConfig{
 		JWKSURL: "https://example.com/.well-known/jwks.json",
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	// Token has no kid header; JWKS lookup requires one to pick the
 	// right key, so we expect a friendly error rather than a network
@@ -862,12 +736,8 @@ func TestBearerProvider_JWKSKeyFunc_RejectsMissingKid(t *testing.T) {
 	})
 
 	_, err = provider.jwksKeyFunc(token)
-	if err == nil {
-		t.Error("expected error for missing kid, got nil")
-	}
-	if !containsString(err.Error(), "kid") {
-		t.Errorf("expected 'kid' in error, got %v", err)
-	}
+	require.Error(t, err, "expected error for missing kid")
+	assert.Contains(t, err.Error(), "kid", "expected 'kid' in error")
 }
 
 func TestBearerProvider_Integration(t *testing.T) {
@@ -880,9 +750,7 @@ func TestBearerProvider_Integration(t *testing.T) {
 		Issuer:   "https://auth.example.com",
 		Audience: "api.example.com",
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	// Create a valid token
 	claims := jwt.MapClaims{
@@ -904,41 +772,19 @@ func TestBearerProvider_Integration(t *testing.T) {
 
 	// Authenticate
 	principal, err := provider.Authenticate(context.Background(), req)
-	if err != nil {
-		t.Fatalf("authentication failed: %v", err)
-	}
+	require.NoError(t, err, "authentication failed")
 
 	// Verify complete principal
-	if principal == nil {
-		t.Fatal("expected non-nil principal")
-	}
-	if principal.ID != "integration-user" {
-		t.Errorf("expected ID=integration-user, got %s", principal.ID)
-	}
-	if principal.Email != "integration@example.com" {
-		t.Errorf("expected email=integration@example.com, got %s", principal.Email)
-	}
-	if principal.Name != "Integration User" {
-		t.Errorf("expected name=Integration User, got %s", principal.Name)
-	}
-	if !principal.HasRole("developer") {
-		t.Error("expected developer role")
-	}
-	if !principal.HasRole("tester") {
-		t.Error("expected tester role")
-	}
-	if !principal.HasGroup("qa") {
-		t.Error("expected qa group")
-	}
-	if !principal.HasGroup("engineering") {
-		t.Error("expected engineering group")
-	}
-	if principal.Token != token {
-		t.Error("expected token to match original")
-	}
-	if principal.ExpiresAt == 0 {
-		t.Error("expected expiration to be set")
-	}
+	require.NotNil(t, principal, "expected non-nil principal")
+	assert.Equal(t, "integration-user", principal.ID, "ID")
+	assert.Equal(t, "integration@example.com", principal.Email, "email")
+	assert.Equal(t, "Integration User", principal.Name, "name")
+	assert.True(t, principal.HasRole("developer"), "expected developer role")
+	assert.True(t, principal.HasRole("tester"), "expected tester role")
+	assert.True(t, principal.HasGroup("qa"), "expected qa group")
+	assert.True(t, principal.HasGroup("engineering"), "expected engineering group")
+	assert.Equal(t, token, principal.Token, "expected token to match original")
+	assert.NotZero(t, principal.ExpiresAt, "expected expiration to be set")
 }
 
 func TestBearerProvider_MultipleTokenFormats(t *testing.T) {
@@ -947,9 +793,7 @@ func TestBearerProvider_MultipleTokenFormats(t *testing.T) {
 	provider, err := NewBearerProvider(BearerConfig{
 		Secret: testSecret,
 	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
+	require.NoError(t, err, "failed to create provider")
 
 	tests := []struct {
 		name    string
@@ -984,16 +828,13 @@ func TestBearerProvider_MultipleTokenFormats(t *testing.T) {
 			principal, err := provider.Authenticate(context.Background(), req)
 
 			if tt.wantNil {
-				if principal != nil {
-					t.Errorf("expected nil principal, got %+v", principal)
-				}
+				assert.Nil(t, principal, "expected nil principal")
 			}
 
-			if tt.wantErr && err == nil {
-				t.Error("expected error, got nil")
-			}
-			if !tt.wantErr && err != nil {
-				t.Errorf("unexpected error: %v", err)
+			if tt.wantErr {
+				assert.Error(t, err, "expected error")
+			} else {
+				assert.NoError(t, err, "unexpected error")
 			}
 		})
 	}
@@ -1006,9 +847,7 @@ func TestBearer_LeewayHonored(t *testing.T) {
 	t.Parallel()
 
 	provider, err := NewBearerProvider(BearerConfig{Secret: testSecret})
-	if err != nil {
-		t.Fatalf("NewBearerProvider: %v", err)
-	}
+	require.NoError(t, err, "NewBearerProvider")
 
 	// Expired 5s ago — inside the 30s default leeway, should pass.
 	insideTok := createTestToken(jwt.MapClaims{
@@ -1017,9 +856,8 @@ func TestBearer_LeewayHonored(t *testing.T) {
 	}, testSecret, false, false)
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer "+insideTok)
-	if _, err := provider.Authenticate(context.Background(), req); err != nil {
-		t.Fatalf("expected token within leeway to pass, got: %v", err)
-	}
+	_, err = provider.Authenticate(context.Background(), req)
+	require.NoError(t, err, "expected token within leeway to pass")
 
 	// Expired 60s ago — outside the 30s default leeway, should fail.
 	outsideTok := createTestToken(jwt.MapClaims{
@@ -1028,9 +866,8 @@ func TestBearer_LeewayHonored(t *testing.T) {
 	}, testSecret, false, false)
 	req2 := httptest.NewRequest("GET", "/", nil)
 	req2.Header.Set("Authorization", "Bearer "+outsideTok)
-	if _, err := provider.Authenticate(context.Background(), req2); err == nil {
-		t.Fatal("expected token outside leeway to be rejected")
-	}
+	_, err = provider.Authenticate(context.Background(), req2)
+	require.Error(t, err, "expected token outside leeway to be rejected")
 }
 
 // TestBearer_HSAlgorithmWithJWKSConfigRejected verifies that when the
@@ -1051,9 +888,7 @@ func TestBearer_HSAlgorithmWithJWKSConfigRejected(t *testing.T) {
 		JWKSURL:               srv.URL,
 		AllowInsecureHTTPJWKS: true,
 	})
-	if err != nil {
-		t.Fatalf("NewBearerProvider: %v", err)
-	}
+	require.NoError(t, err, "NewBearerProvider")
 
 	// Mint an HS256 token with a known secret.
 	hsTok := createTestToken(jwt.MapClaims{
@@ -1064,9 +899,7 @@ func TestBearer_HSAlgorithmWithJWKSConfigRejected(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer "+hsTok)
 	_, err = provider.Authenticate(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected HS256 token to be rejected under JWKS config")
-	}
+	require.Error(t, err, "expected HS256 token to be rejected under JWKS config")
 }
 
 // TestBearer_SecretAndJWKSMutuallyExclusive ensures NewBearerProvider
@@ -1079,12 +912,8 @@ func TestBearer_SecretAndJWKSMutuallyExclusive(t *testing.T) {
 		Secret:  testSecret,
 		JWKSURL: "https://example.com/jwks.json",
 	})
-	if err == nil {
-		t.Fatal("expected error when both Secret and JWKSURL are set")
-	}
-	if !containsString(err.Error(), "mutually exclusive") {
-		t.Errorf("expected 'mutually exclusive' in error, got: %v", err)
-	}
+	require.Error(t, err, "expected error when both Secret and JWKSURL are set")
+	assert.Contains(t, err.Error(), "mutually exclusive", "expected 'mutually exclusive' in error")
 }
 
 // TestBearer_JWKSFetchRespectsRequestContext verifies the per-request
@@ -1114,9 +943,7 @@ func TestBearer_JWKSFetchRespectsRequestContext(t *testing.T) {
 		JWKSURL:               srv.URL,
 		AllowInsecureHTTPJWKS: true,
 	})
-	if err != nil {
-		t.Fatalf("NewBearerProvider: %v", err)
-	}
+	require.NoError(t, err, "NewBearerProvider")
 
 	// Mint a syntactically-valid RS256 token (the keyFunc path is
 	// what we're exercising, so signature validity is irrelevant).
@@ -1130,9 +957,7 @@ func TestBearer_JWKSFetchRespectsRequestContext(t *testing.T) {
 	// hangs before returning any keys — the parser will block in
 	// keyFunc waiting for the key, and that block must respect ctx.
 	tokenString, err := tok.SigningString()
-	if err != nil {
-		t.Fatalf("SigningString: %v", err)
-	}
+	require.NoError(t, err, "SigningString")
 	tokenString = tokenString + ".bm9wZQ" // dummy signature; we won't get this far
 
 	req := httptest.NewRequest("GET", "/", nil)
@@ -1146,25 +971,6 @@ func TestBearer_JWKSFetchRespectsRequestContext(t *testing.T) {
 	_, err = provider.Authenticate(req.Context(), req)
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected error from cancelled context, got nil")
-	}
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("Authenticate did not honour request context: took %v (want < 500ms)", elapsed)
-	}
-}
-
-// Helper function to check if a string contains a substring
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && stringContains(s, substr)))
-}
-
-func stringContains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	require.Error(t, err, "expected error from cancelled context")
+	require.LessOrEqual(t, elapsed, 500*time.Millisecond, "Authenticate did not honour request context: took %v (want < 500ms)", elapsed)
 }

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
@@ -52,9 +54,7 @@ func TestHandleConformance_IntersectsProxyAndOrigins(t *testing.T) {
 			AllOriginsSupportFilter: false,
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/conformance", nil),
@@ -62,32 +62,22 @@ func TestHandleConformance_IntersectsProxyAndOrigins(t *testing.T) {
 		RequestType: middleware.RequestTypeConformance,
 	}
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	require.NoError(t, err, "Handle")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "status")
 
 	var body struct {
 		ConformsTo []string `json:"conformsTo"`
 	}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &body), "unmarshal")
 
 	seen := make(map[string]bool, len(body.ConformsTo))
 	for _, c := range body.ConformsTo {
 		seen[c] = true
 	}
 	// Origin A's exclusive class must NOT appear: B doesn't advertise it.
-	if seen["https://example.com/origin-a-only"] {
-		t.Error("origin-a-only class leaked through intersection")
-	}
+	assert.False(t, seen["https://example.com/origin-a-only"], "origin-a-only class leaked through intersection")
 	// Core IS advertised — both origins and the proxy support it.
-	if !seen["https://api.stacspec.org/v1.0.0/core"] {
-		t.Error("core conformance dropped despite all sides supporting it")
-	}
+	assert.True(t, seen["https://api.stacspec.org/v1.0.0/core"], "core conformance dropped despite all sides supporting it")
 }
 
 // TestHandleConformance_NoOriginsFallsBackToProxyCaps verifies that
@@ -108,9 +98,7 @@ func TestHandleConformance_NoOriginsFallsBackToProxyCaps(t *testing.T) {
 		},
 		AggregateTimeout: time.Second,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/conformance", nil),
@@ -118,29 +106,15 @@ func TestHandleConformance_NoOriginsFallsBackToProxyCaps(t *testing.T) {
 		RequestType: middleware.RequestTypeConformance,
 	}
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	require.NoError(t, err, "Handle")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "status")
 
 	var body struct {
 		ConformsTo []string `json:"conformsTo"`
 	}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &body), "unmarshal")
 	// Should fall back to proxy core classes.
-	found := false
-	for _, c := range body.ConformsTo {
-		if c == "https://api.stacspec.org/v1.0.0/core" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected proxy core class in fallback, got %v", body.ConformsTo)
-	}
+	assert.Containsf(t, body.ConformsTo, "https://api.stacspec.org/v1.0.0/core", "expected proxy core class in fallback, got %v", body.ConformsTo)
 }
 
 // TestHandleLanding_EmitsIntersectedConformance verifies the landing
@@ -160,9 +134,7 @@ func TestHandleLanding_EmitsIntersectedConformance(t *testing.T) {
 			{ID: "a", BaseURL: srv.URL, Enabled: true, Timeout: time.Second},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/", nil),
@@ -170,26 +142,12 @@ func TestHandleLanding_EmitsIntersectedConformance(t *testing.T) {
 		RequestType: middleware.RequestTypeLanding,
 	}
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	require.NoError(t, err, "Handle")
 	var body struct {
 		Type       string   `json:"type"`
 		ConformsTo []string `json:"conformsTo"`
 	}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if body.Type != "Catalog" {
-		t.Errorf("type = %q, want Catalog", body.Type)
-	}
-	found := false
-	for _, c := range body.ConformsTo {
-		if c == "https://api.stacspec.org/v1.0.0/core" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("landing conformsTo missing core: %v", body.ConformsTo)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &body), "unmarshal")
+	assert.Equal(t, "Catalog", body.Type, "type")
+	assert.Containsf(t, body.ConformsTo, "https://api.stacspec.org/v1.0.0/core", "landing conformsTo missing core: %v", body.ConformsTo)
 }

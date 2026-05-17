@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
@@ -113,37 +115,20 @@ func TestNewHandler(t *testing.T) {
 			handler, err := NewHandler(tt.config)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				}
+				require.Error(t, err, "expected error but got nil")
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
+			require.NotNil(t, handler, "handler is nil")
 
-			if handler == nil {
-				t.Fatal("handler is nil")
-			}
-
-			if got := handler.OriginCount(); got != tt.wantOrigins {
-				t.Errorf("OriginCount() = %d, want %d", got, tt.wantOrigins)
-			}
+			assert.Equal(t, tt.wantOrigins, handler.OriginCount(), "OriginCount()")
 
 			// Check default values
-			if handler.maxConcurrent <= 0 {
-				t.Error("maxConcurrent not set to default")
-			}
-			if handler.aggregateTimeout <= 0 {
-				t.Error("aggregateTimeout not set to default")
-			}
-			if handler.defaultPageSize <= 0 {
-				t.Error("defaultPageSize not set to default")
-			}
-			if handler.maxPageSize <= 0 {
-				t.Error("maxPageSize not set to default")
-			}
+			assert.Greater(t, handler.maxConcurrent, 0, "maxConcurrent not set to default")
+			assert.Greater(t, handler.aggregateTimeout, time.Duration(0), "aggregateTimeout not set to default")
+			assert.Greater(t, handler.defaultPageSize, 0, "defaultPageSize not set to default")
+			assert.Greater(t, handler.maxPageSize, 0, "maxPageSize not set to default")
 		})
 	}
 }
@@ -169,24 +154,11 @@ func TestHandlerOriginIDs(t *testing.T) {
 		},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	ids := handler.OriginIDs()
-	if len(ids) != 2 {
-		t.Errorf("expected 2 origin IDs, got %d", len(ids))
-	}
-
-	// Check both IDs are present (order may vary)
-	idMap := make(map[string]bool)
-	for _, id := range ids {
-		idMap[id] = true
-	}
-
-	if !idMap["origin1"] || !idMap["origin2"] {
-		t.Errorf("expected origin1 and origin2, got %v", ids)
-	}
+	require.Len(t, ids, 2, "expected 2 origin IDs")
+	assert.ElementsMatch(t, []string{"origin1", "origin2"}, ids)
 }
 
 // TestHandleSearch tests the search request handling
@@ -278,9 +250,7 @@ func TestHandleSearch(t *testing.T) {
 				MaxConcurrent:    10,
 				AggregateTimeout: 10 * time.Second,
 			})
-			if err != nil {
-				t.Fatalf("failed to create handler: %v", err)
-			}
+			require.NoError(t, err, "failed to create handler")
 
 			// Create request
 			req := &request{
@@ -292,23 +262,15 @@ func TestHandleSearch(t *testing.T) {
 
 			// Execute
 			resp, err := handler.Handle(req.Context, req)
-			if err != nil {
-				t.Fatalf("Handle() error = %v", err)
-			}
+			require.NoError(t, err, "Handle()")
 
-			if resp.StatusCode != tt.expectedStatus {
-				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, tt.expectedStatus)
-			}
+			assert.Equal(t, tt.expectedStatus, resp.StatusCode, "StatusCode")
 
 			// Parse response
 			var fc stac.FeatureCollection
-			if err := json.Unmarshal(resp.Body, &fc); err != nil {
-				t.Fatalf("failed to parse response: %v", err)
-			}
+			require.NoError(t, json.Unmarshal(resp.Body, &fc), "failed to parse response")
 
-			if len(fc.Features) != tt.expectedItems {
-				t.Errorf("got %d items, want %d", len(fc.Features), tt.expectedItems)
-			}
+			assert.Len(t, fc.Features, tt.expectedItems, "items count")
 		})
 	}
 }
@@ -352,9 +314,7 @@ func TestHandleSearchWithErrors(t *testing.T) {
 		MaxConcurrent:    10,
 		AggregateTimeout: 10 * time.Second,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
@@ -367,19 +327,13 @@ func TestHandleSearchWithErrors(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
 	// Should still succeed with results from successful origin
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(resp.Body, &fc); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &fc), "failed to parse response")
 
-	if len(fc.Features) != 1 {
-		t.Errorf("expected 1 item from successful origin, got %d", len(fc.Features))
-	}
+	assert.Len(t, fc.Features, 1, "expected 1 item from successful origin")
 }
 
 // TestHandleSearchTimeout tests timeout handling
@@ -421,9 +375,7 @@ func TestHandleSearchTimeout(t *testing.T) {
 		MaxConcurrent:    10,
 		AggregateTimeout: 100 * time.Millisecond, // Very short timeout
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
@@ -435,19 +387,13 @@ func TestHandleSearchTimeout(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
 	// Should return empty results due to timeout
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(resp.Body, &fc); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &fc), "failed to parse response")
 
-	if len(fc.Features) != 0 {
-		t.Errorf("expected 0 items due to timeout, got %d", len(fc.Features))
-	}
+	assert.Empty(t, fc.Features, "expected 0 items due to timeout")
 }
 
 // TestHandleSearchContextCancellation tests context cancellation
@@ -486,9 +432,7 @@ func TestHandleSearchContextCancellation(t *testing.T) {
 		MaxConcurrent:    10,
 		AggregateTimeout: 10 * time.Second,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
@@ -503,19 +447,13 @@ func TestHandleSearchContextCancellation(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
 	// Should return empty results
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(resp.Body, &fc); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &fc), "failed to parse response")
 
-	if len(fc.Features) != 0 {
-		t.Errorf("expected 0 items due to cancellation, got %d", len(fc.Features))
-	}
+	assert.Empty(t, fc.Features, "expected 0 items due to cancellation")
 }
 
 // TestHandleGetCollections tests collection listing
@@ -588,9 +526,7 @@ func TestHandleGetCollections(t *testing.T) {
 				Origins:          origins,
 				ConflictStrategy: ConflictPriorityWins,
 			})
-			if err != nil {
-				t.Fatalf("failed to create handler: %v", err)
-			}
+			require.NoError(t, err, "failed to create handler")
 
 			req := &request{
 				Request:     httptest.NewRequest(http.MethodGet, "/collections", nil),
@@ -599,32 +535,21 @@ func TestHandleGetCollections(t *testing.T) {
 			}
 
 			resp, err := handler.Handle(req.Context, req)
-			if err != nil {
-				t.Fatalf("Handle() error = %v", err)
-			}
+			require.NoError(t, err, "Handle()")
 
-			if resp.StatusCode != tt.expectedStatus {
-				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, tt.expectedStatus)
-			}
+			assert.Equal(t, tt.expectedStatus, resp.StatusCode, "StatusCode")
 
 			var collResp stac.CollectionsResponse
-			if err := json.Unmarshal(resp.Body, &collResp); err != nil {
-				t.Fatalf("failed to parse response: %v", err)
-			}
+			require.NoError(t, json.Unmarshal(resp.Body, &collResp), "failed to parse response")
 
-			if len(collResp.Collections) != tt.expectedCollCount {
-				t.Errorf("got %d collections, want %d", len(collResp.Collections), tt.expectedCollCount)
-			}
+			assert.Len(t, collResp.Collections, tt.expectedCollCount, "collections count")
 
 			// Verify origin metadata is added (as a stac_proxy:origin link).
 			for _, coll := range collResp.Collections {
-				if coll == nil {
-					t.Error("nil collection in response")
+				if !assert.NotNil(t, coll, "nil collection in response") {
 					continue
 				}
-				if stac.CollectionOriginID(coll) == "" {
-					t.Error("missing stac_proxy:origin link")
-				}
+				assert.NotEmpty(t, stac.CollectionOriginID(coll), "missing stac_proxy:origin link")
 			}
 		})
 	}
@@ -683,9 +608,7 @@ func TestHandleGetCollection(t *testing.T) {
 				},
 				ConflictStrategy: ConflictPriorityWins,
 			})
-			if err != nil {
-				t.Fatalf("failed to create handler: %v", err)
-			}
+			require.NoError(t, err, "failed to create handler")
 
 			req := &request{
 				Request:     httptest.NewRequest(http.MethodGet, "/collections/"+tt.collectionID, nil),
@@ -695,31 +618,21 @@ func TestHandleGetCollection(t *testing.T) {
 			}
 
 			resp, err := handler.Handle(req.Context, req)
-			if err != nil {
-				t.Fatalf("Handle() error = %v", err)
-			}
+			require.NoError(t, err, "Handle()")
 
-			if resp.StatusCode != tt.expectedStatus {
-				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, tt.expectedStatus)
-			}
+			assert.Equal(t, tt.expectedStatus, resp.StatusCode, "StatusCode")
 
 			if tt.expectedStatus == http.StatusOK {
 				var coll stac.Collection
-				if err := json.Unmarshal(resp.Body, &coll); err != nil {
-					t.Fatalf("failed to parse response: %v", err)
-				}
+				require.NoError(t, json.Unmarshal(resp.Body, &coll), "failed to parse response")
 
-				if coll.ID != tt.collectionID {
-					t.Errorf("collection ID = %s, want %s", coll.ID, tt.collectionID)
-				}
+				assert.Equal(t, tt.collectionID, coll.ID, "collection ID")
 
 				// stac_proxy:origin is only injected when there is
 				// more than one registered origin (true federation
 				// mode). This test uses a single origin so the
 				// proxied payload passes through unannotated.
-				if got := stac.CollectionOriginID(&coll); got != "" {
-					t.Errorf("unexpected stac_proxy:origin link in single-origin response: %q", got)
-				}
+				assert.Empty(t, stac.CollectionOriginID(&coll), "unexpected stac_proxy:origin link in single-origin response")
 			}
 		})
 	}
@@ -747,9 +660,7 @@ func TestHandleGetCollectionWithPrefix(t *testing.T) {
 		},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	// Request with prefix
 	req := &request{
@@ -760,13 +671,9 @@ func TestHandleGetCollectionWithPrefix(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 }
 
 // TestHandleGetItem tests single item retrieval
@@ -825,9 +732,7 @@ func TestHandleGetItem(t *testing.T) {
 				},
 				ConflictStrategy: ConflictPriorityWins,
 			})
-			if err != nil {
-				t.Fatalf("failed to create handler: %v", err)
-			}
+			require.NoError(t, err, "failed to create handler")
 
 			req := &request{
 				Request:     httptest.NewRequest(http.MethodGet, "/collections/"+tt.collectionID+"/items/"+tt.itemID, nil),
@@ -838,31 +743,21 @@ func TestHandleGetItem(t *testing.T) {
 			}
 
 			resp, err := handler.Handle(req.Context, req)
-			if err != nil {
-				t.Fatalf("Handle() error = %v", err)
-			}
+			require.NoError(t, err, "Handle()")
 
-			if resp.StatusCode != tt.expectedStatus {
-				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, tt.expectedStatus)
-			}
+			assert.Equal(t, tt.expectedStatus, resp.StatusCode, "StatusCode")
 
 			if tt.expectedStatus == http.StatusOK {
 				var item stac.Item
-				if err := json.Unmarshal(resp.Body, &item); err != nil {
-					t.Fatalf("failed to parse response: %v", err)
-				}
+				require.NoError(t, json.Unmarshal(resp.Body, &item), "failed to parse response")
 
-				if item.ID != tt.itemID {
-					t.Errorf("item ID = %s, want %s", item.ID, tt.itemID)
-				}
+				assert.Equal(t, tt.itemID, item.ID, "item ID")
 
 				// stac_proxy:origin is only injected when there is
 				// more than one registered origin (true federation
 				// mode). This test uses a single origin so the
 				// proxied payload passes through unannotated.
-				if got := stac.ItemOriginID(&item); got != "" {
-					t.Errorf("unexpected stac_proxy:origin link in single-origin response: %q", got)
-				}
+				assert.Empty(t, stac.ItemOriginID(&item), "unexpected stac_proxy:origin link in single-origin response")
 			}
 		})
 	}
@@ -890,9 +785,7 @@ func TestHandleGetItemWithPrefix(t *testing.T) {
 		},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	// Request with prefix
 	req := &request{
@@ -904,13 +797,9 @@ func TestHandleGetItemWithPrefix(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 }
 
 // TestHandleGenericProxy tests generic request proxying
@@ -936,9 +825,7 @@ func TestHandleGenericProxy(t *testing.T) {
 		},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/conformance", nil),
@@ -947,13 +834,9 @@ func TestHandleGenericProxy(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 }
 
 // TestHandleGenericProxyNoOrigins tests the generic-proxy fallback
@@ -969,9 +852,7 @@ func TestHandleGenericProxyNoOrigins(t *testing.T) {
 		Origins:          []*Origin{},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/queryables", nil),
@@ -980,13 +861,9 @@ func TestHandleGenericProxyNoOrigins(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
-	}
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "StatusCode")
 }
 
 // TestParseSearchRequest tests search request parsing
@@ -1056,19 +933,12 @@ func TestParseSearchRequest(t *testing.T) {
 			searchReq, err := handler.parseSearchRequest(req)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				}
+				assert.Error(t, err, "expected error but got nil")
 				return
 			}
 
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-
-			if searchReq == nil {
-				t.Error("searchReq is nil")
-			}
+			assert.NoError(t, err)
+			assert.NotNil(t, searchReq, "searchReq is nil")
 		})
 	}
 }
@@ -1091,36 +961,12 @@ func TestParseSearchRequest_GET_ParsesAllParams(t *testing.T) {
 	}
 
 	got, err := h.parseSearchRequest(req)
-	if err != nil {
-		t.Fatalf("parseSearchRequest: %v", err)
-	}
+	require.NoError(t, err, "parseSearchRequest")
 
-	wantCollections := []string{"a", "b"}
-	if len(got.Collections) != len(wantCollections) {
-		t.Fatalf("Collections = %v, want %v", got.Collections, wantCollections)
-	}
-	for i, c := range wantCollections {
-		if got.Collections[i] != c {
-			t.Errorf("Collections[%d] = %q, want %q", i, got.Collections[i], c)
-		}
-	}
-
-	wantBBox := []float64{0, 0, 10, 10}
-	if len(got.BBox) != len(wantBBox) {
-		t.Fatalf("BBox = %v, want %v", got.BBox, wantBBox)
-	}
-	for i, v := range wantBBox {
-		if got.BBox[i] != v {
-			t.Errorf("BBox[%d] = %v, want %v", i, got.BBox[i], v)
-		}
-	}
-
-	if got.Limit != 5 {
-		t.Errorf("Limit = %d, want 5", got.Limit)
-	}
-	if got.Filter != "foo" {
-		t.Errorf("Filter = %q, want %q", got.Filter, "foo")
-	}
+	assert.Equal(t, []string{"a", "b"}, got.Collections, "Collections")
+	assert.Equal(t, []float64{0, 0, 10, 10}, got.BBox, "BBox")
+	assert.Equal(t, 5, got.Limit, "Limit")
+	assert.Equal(t, "foo", got.Filter, "Filter")
 }
 
 // TestEmptySearchResponse tests empty search response generation
@@ -1135,37 +981,20 @@ func TestEmptySearchResponse(t *testing.T) {
 	}
 
 	resp, err := handler.emptySearchResponse(req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(resp.Body, &fc); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &fc), "failed to parse response")
 
-	if fc.Type != "FeatureCollection" {
-		t.Errorf("Type = %s, want FeatureCollection", fc.Type)
-	}
-
-	if len(fc.Features) != 0 {
-		t.Errorf("expected 0 features, got %d", len(fc.Features))
-	}
+	assert.Equal(t, "FeatureCollection", fc.Type, "Type")
+	assert.Empty(t, fc.Features, "expected 0 features")
 
 	sc := stac.SearchContextOf(&fc)
-	if sc == nil {
-		t.Fatalf("Context missing from FeatureCollection")
-	}
-	if sc.Returned != 0 {
-		t.Errorf("Context.Returned = %d, want 0", sc.Returned)
-	}
-	if sc.Matched != 0 {
-		t.Errorf("Context.Matched = %d, want 0", sc.Matched)
-	}
+	require.NotNil(t, sc, "Context missing from FeatureCollection")
+	assert.Equal(t, 0, sc.Returned, "Context.Returned")
+	assert.Equal(t, 0, sc.Matched, "Context.Matched")
 }
 
 // TestBuildSearchResponse tests search response building
@@ -1191,22 +1020,14 @@ func TestBuildSearchResponse(t *testing.T) {
 	}
 
 	resp, err := handler.buildSearchResponse(fc, req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 
 	var parsedFC stac.FeatureCollection
-	if err := json.Unmarshal(resp.Body, &parsedFC); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &parsedFC), "failed to parse response")
 
-	if len(parsedFC.Features) != 2 {
-		t.Errorf("expected 2 features, got %d", len(parsedFC.Features))
-	}
+	assert.Len(t, parsedFC.Features, 2, "expected 2 features")
 }
 
 // TestAdaptRequestForOrigin tests request adaptation for specific origins
@@ -1264,16 +1085,7 @@ func TestAdaptRequestForOrigin(t *testing.T) {
 
 			adapted := handler.adaptRequestForOrigin(tt.req, tt.origin)
 
-			if len(adapted.Collections) != len(tt.expectedCollections) {
-				t.Errorf("expected %d collections, got %d", len(tt.expectedCollections), len(adapted.Collections))
-				return
-			}
-
-			for i, expected := range tt.expectedCollections {
-				if adapted.Collections[i] != expected {
-					t.Errorf("collection[%d] = %s, want %s", i, adapted.Collections[i], expected)
-				}
-			}
+			assert.Equal(t, tt.expectedCollections, adapted.Collections, "collections")
 		})
 	}
 }
@@ -1305,9 +1117,7 @@ func TestFanOutSearch(t *testing.T) {
 		ConflictStrategy: ConflictPriorityWins,
 		MaxConcurrent:    2, // Test concurrency limit
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	searchReq := SampleSearchRequest(
 		WithCollections("collection1"),
@@ -1317,18 +1127,12 @@ func TestFanOutSearch(t *testing.T) {
 	ctx := context.Background()
 	results := handler.fanOutSearch(ctx, origins, searchReq)
 
-	if len(results) != 3 {
-		t.Errorf("expected 3 results, got %d", len(results))
-	}
+	assert.Len(t, results, 3, "expected 3 results")
 
 	// All results should be successful
 	for _, result := range results {
-		if result.Error != nil {
-			t.Errorf("unexpected error in result: %v", result.Error)
-		}
-		if len(result.Items) != 1 {
-			t.Errorf("expected 1 item, got %d", len(result.Items))
-		}
+		assert.NoError(t, result.Error, "unexpected error in result")
+		assert.Len(t, result.Items, 1, "expected 1 item")
 	}
 }
 
@@ -1385,9 +1189,7 @@ func TestSearchOrigin(t *testing.T) {
 				Origins:          []*Origin{origin},
 				ConflictStrategy: ConflictPriorityWins,
 			})
-			if err != nil {
-				t.Fatalf("failed to create handler: %v", err)
-			}
+			require.NoError(t, err, "failed to create handler")
 
 			searchReq := SampleSearchRequest(
 				WithCollections("collection1"),
@@ -1396,16 +1198,10 @@ func TestSearchOrigin(t *testing.T) {
 			result := handler.searchOrigin(context.Background(), origin, searchReq)
 
 			if tt.wantError {
-				if result.Error == nil {
-					t.Error("expected error but got nil")
-				}
+				assert.Error(t, result.Error, "expected error but got nil")
 			} else {
-				if result.Error != nil {
-					t.Errorf("unexpected error: %v", result.Error)
-				}
-				if len(result.Items) != len(tt.mockFC.Features) {
-					t.Errorf("expected %d items, got %d", len(tt.mockFC.Features), len(result.Items))
-				}
+				assert.NoError(t, result.Error, "unexpected error")
+				assert.Lenf(t, result.Items, len(tt.mockFC.Features), "expected %d items", len(tt.mockFC.Features))
 			}
 		})
 	}
@@ -1478,9 +1274,7 @@ func TestHandlerPaginationLimits(t *testing.T) {
 				DefaultPageSize:  tt.defaultLimit,
 				MaxPageSize:      tt.maxLimit,
 			})
-			if err != nil {
-				t.Fatalf("failed to create handler: %v", err)
-			}
+			require.NoError(t, err, "failed to create handler")
 
 			searchReq := SampleSearchRequest(
 				WithCollections("collection1"),
@@ -1495,21 +1289,15 @@ func TestHandlerPaginationLimits(t *testing.T) {
 			}
 
 			resp, err := handler.Handle(req.Context, req)
-			if err != nil {
-				t.Fatalf("Handle() error = %v", err)
-			}
+			require.NoError(t, err, "Handle()")
 
 			var fc2 stac.FeatureCollection
-			if err := json.Unmarshal(resp.Body, &fc2); err != nil {
-				t.Fatalf("failed to parse response: %v", err)
-			}
+			require.NoError(t, json.Unmarshal(resp.Body, &fc2), "failed to parse response")
 
 			// The limit should be applied (Context.Limit may be set)
 			// We can't directly verify the limit sent to origin, but we can verify
 			// that the handler processed it correctly
-			if searchReq.Limit != tt.expectedLimit {
-				t.Errorf("searchReq.Limit = %d, want %d", searchReq.Limit, tt.expectedLimit)
-			}
+			assert.Equal(t, tt.expectedLimit, searchReq.Limit, "searchReq.Limit")
 		})
 	}
 }
@@ -1531,9 +1319,7 @@ func TestHandleWithNoMatchingOrigins(t *testing.T) {
 		},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	// Search for a collection not served by any origin
 	req := &request{
@@ -1546,22 +1332,14 @@ func TestHandleWithNoMatchingOrigins(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(resp.Body, &fc); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &fc), "failed to parse response")
 
-	if len(fc.Features) != 0 {
-		t.Errorf("expected 0 features, got %d", len(fc.Features))
-	}
+	assert.Empty(t, fc.Features, "expected 0 features")
 }
 
 // TestHandleCollectionPriority tests that higher priority origins are tried first
@@ -1599,9 +1377,7 @@ func TestHandleCollectionPriority(t *testing.T) {
 		},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/collections/test-collection", nil),
@@ -1611,14 +1387,10 @@ func TestHandleCollectionPriority(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
 	// Should succeed with lower priority origin after higher priority fails
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 }
 
 // TestHandleSearchWithBbox tests search with bounding box
@@ -1643,9 +1415,7 @@ func TestHandleSearchWithBbox(t *testing.T) {
 		},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
@@ -1657,13 +1427,9 @@ func TestHandleSearchWithBbox(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 }
 
 // TestHandleSearchWithDatetime tests search with datetime filter
@@ -1688,9 +1454,7 @@ func TestHandleSearchWithDatetime(t *testing.T) {
 		},
 		ConflictStrategy: ConflictPriorityWins,
 	})
-	if err != nil {
-		t.Fatalf("failed to create handler: %v", err)
-	}
+	require.NoError(t, err, "failed to create handler")
 
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
@@ -1702,13 +1466,9 @@ func TestHandleSearchWithDatetime(t *testing.T) {
 	}
 
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
+	require.NoError(t, err, "Handle()")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 }
 
 // paginatingTestServer is a minimal STAC search backend used to drive
@@ -1811,12 +1571,8 @@ func TestHandleSearch_MultiPageFederation(t *testing.T) {
 		CursorSecret:     []byte("test-secret-for-handler-pagination"),
 		ProxyBaseURL:     "https://proxy.example.test",
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
-	if handler.searcher == nil {
-		t.Fatal("expected paginated searcher to be initialized")
-	}
+	require.NoError(t, err, "NewHandler")
+	require.NotNil(t, handler.searcher, "expected paginated searcher to be initialized")
 
 	seen := map[string]int{}
 	var pageSizes []int
@@ -1835,13 +1591,9 @@ func TestHandleSearch_MultiPageFederation(t *testing.T) {
 			SearchReq:   searchReq,
 		}
 		resp, err := handler.Handle(req.Context, req)
-		if err != nil {
-			t.Fatalf("page %d: Handle: %v", page, err)
-		}
+		require.NoErrorf(t, err, "page %d: Handle", page)
 		var fc stac.FeatureCollection
-		if err := json.Unmarshal(resp.Body, &fc); err != nil {
-			t.Fatalf("page %d: unmarshal: %v", page, err)
-		}
+		require.NoErrorf(t, json.Unmarshal(resp.Body, &fc), "page %d: unmarshal", page)
 		pageSizes = append(pageSizes, len(fc.Features))
 		for _, it := range fc.Features {
 			seen[it.ID]++
@@ -1851,16 +1603,10 @@ func TestHandleSearch_MultiPageFederation(t *testing.T) {
 			break
 		}
 		u, err := url.Parse(next.Href)
-		if err != nil {
-			t.Fatalf("page %d: parse next href %q: %v", page, next.Href, err)
-		}
-		if !strings.HasPrefix(next.Href, "https://proxy.example.test/search") {
-			t.Errorf("page %d: next.Href should be proxy-rooted, got %q", page, next.Href)
-		}
+		require.NoErrorf(t, err, "page %d: parse next href %q", page, next.Href)
+		assert.Truef(t, strings.HasPrefix(next.Href, "https://proxy.example.test/search"), "page %d: next.Href should be proxy-rooted, got %q", page, next.Href)
 		tok := u.Query().Get("token")
-		if tok == "" {
-			t.Fatalf("page %d: next link missing token", page)
-		}
+		require.NotEmptyf(t, tok, "page %d: next link missing token", page)
 		cursor = tok
 	}
 
@@ -1870,17 +1616,11 @@ func TestHandleSearch_MultiPageFederation(t *testing.T) {
 	//    (cross-page dedup via the searcher's deduplicator).
 	// Total item coverage is governed by H5 (keyset resume) and is
 	// intentionally out of scope here.
-	if len(pageSizes) < 2 {
-		t.Errorf("expected at least 2 pages, got %d (sizes=%v)", len(pageSizes), pageSizes)
-	}
+	assert.GreaterOrEqualf(t, len(pageSizes), 2, "expected at least 2 pages, got %d (sizes=%v)", len(pageSizes), pageSizes)
 	for id, n := range seen {
-		if n != 1 {
-			t.Errorf("item %q returned %d times across pages, want 1", id, n)
-		}
+		assert.Equalf(t, 1, n, "item %q returned %d times across pages, want 1", id, n)
 	}
-	if len(seen) < 4 {
-		t.Errorf("expected at least 4 unique items across pages, got %d", len(seen))
-	}
+	assert.GreaterOrEqualf(t, len(seen), 4, "expected at least 4 unique items across pages, got %d", len(seen))
 
 	// Tampered cursor: a malformed token must be rejected.
 	r := httptest.NewRequest(http.MethodGet, "/search?limit=3", nil)
@@ -1895,9 +1635,8 @@ func TestHandleSearch_MultiPageFederation(t *testing.T) {
 		RequestType: middleware.RequestTypeSearch,
 		SearchReq:   tampered,
 	}
-	if _, err := handler.Handle(req.Context, req); err == nil {
-		t.Error("expected error on tampered cursor")
-	}
+	_, err = handler.Handle(req.Context, req)
+	assert.Error(t, err, "expected error on tampered cursor")
 }
 
 // TestHandleItems_FederatedAcrossOrigins drives B3: a federated
@@ -1932,9 +1671,7 @@ func TestHandleItems_FederatedAcrossOrigins(t *testing.T) {
 		MaxPageSize:      100,
 		CursorSecret:     []byte("test-secret-for-items"),
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	r := httptest.NewRequest(http.MethodGet, "/collections/shared/items", nil)
 	req := &request{
@@ -1944,17 +1681,11 @@ func TestHandleItems_FederatedAcrossOrigins(t *testing.T) {
 		Collection:  "shared",
 	}
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want 200", resp.StatusCode)
-	}
+	require.NoError(t, err, "Handle")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 
 	var fc stac.FeatureCollection
-	if err := json.Unmarshal(resp.Body, &fc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &fc), "unmarshal")
 	// Both origins contribute — at minimum we want items from each.
 	gotA, gotB := false, false
 	for _, it := range fc.Features {
@@ -1965,9 +1696,7 @@ func TestHandleItems_FederatedAcrossOrigins(t *testing.T) {
 			gotB = true
 		}
 	}
-	if !gotA || !gotB {
-		t.Errorf("federated items missing an origin: gotA=%v gotB=%v ids=%v", gotA, gotB, featureIDs(&fc))
-	}
+	assert.Truef(t, gotA && gotB, "federated items missing an origin: gotA=%v gotB=%v ids=%v", gotA, gotB, featureIDs(&fc))
 }
 
 // TestHandleQueryables_IntersectsAcrossOrigins drives B4: the merged
@@ -1988,17 +1717,17 @@ func TestHandleQueryables_IntersectsAcrossOrigins(t *testing.T) {
 	schemaA := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"datetime":           map[string]any{"type": "string"},
-			"eo:cloud_cover":     map[string]any{"type": "number"},
-			"a_only_property":    map[string]any{"type": "string"},
+			"datetime":        map[string]any{"type": "string"},
+			"eo:cloud_cover":  map[string]any{"type": "number"},
+			"a_only_property": map[string]any{"type": "string"},
 		},
 	}
 	schemaB := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"datetime":          map[string]any{"type": "string"},
-			"eo:cloud_cover":    map[string]any{"type": "number"},
-			"b_only_property":   map[string]any{"type": "boolean"},
+			"datetime":        map[string]any{"type": "string"},
+			"eo:cloud_cover":  map[string]any{"type": "number"},
+			"b_only_property": map[string]any{"type": "boolean"},
 		},
 	}
 	srvA := makeServer(schemaA)
@@ -2014,9 +1743,7 @@ func TestHandleQueryables_IntersectsAcrossOrigins(t *testing.T) {
 		MaxConcurrent:    4,
 		AggregateTimeout: 5 * time.Second,
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	r := httptest.NewRequest(http.MethodGet, "/queryables", nil)
 	req := &request{
@@ -2025,30 +1752,16 @@ func TestHandleQueryables_IntersectsAcrossOrigins(t *testing.T) {
 		RequestType: middleware.RequestTypeQueryables,
 	}
 	resp, err := handler.Handle(req.Context, req)
-	if err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("StatusCode = %d, want 200", resp.StatusCode)
-	}
+	require.NoError(t, err, "Handle")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 
 	var merged map[string]any
-	if err := json.Unmarshal(resp.Body, &merged); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &merged), "unmarshal")
 	props, _ := merged["properties"].(map[string]any)
-	if _, ok := props["datetime"]; !ok {
-		t.Error("expected 'datetime' in intersected properties")
-	}
-	if _, ok := props["eo:cloud_cover"]; !ok {
-		t.Error("expected 'eo:cloud_cover' in intersected properties")
-	}
-	if _, ok := props["a_only_property"]; ok {
-		t.Error("a_only_property should have been dropped (origin-B lacks it)")
-	}
-	if _, ok := props["b_only_property"]; ok {
-		t.Error("b_only_property should have been dropped (origin-A lacks it)")
-	}
+	assert.Contains(t, props, "datetime", "expected 'datetime' in intersected properties")
+	assert.Contains(t, props, "eo:cloud_cover", "expected 'eo:cloud_cover' in intersected properties")
+	assert.NotContains(t, props, "a_only_property", "a_only_property should have been dropped (origin-B lacks it)")
+	assert.NotContains(t, props, "b_only_property", "b_only_property should have been dropped (origin-A lacks it)")
 }
 
 func featureIDs(fc *stac.FeatureCollection) []string {
@@ -2087,9 +1800,7 @@ func TestRewriteAssetHref_RespectsRequestCancellation(t *testing.T) {
 		Timeout:       time.Second,
 		RewriteAssets: "sign",
 	})
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+	require.NoError(t, err, "client")
 
 	h := &Handler{
 		proxyBaseURL: "https://proxy.example",
@@ -2108,12 +1819,8 @@ func TestRewriteAssetHref_RespectsRequestCancellation(t *testing.T) {
 	select {
 	case got := <-done:
 		elapsed := time.Since(start)
-		if elapsed > 200*time.Millisecond {
-			t.Errorf("rewrite returned after %s, want < 200ms", elapsed)
-		}
-		if !strings.HasPrefix(got, "cancelled:") {
-			t.Errorf("got %q, want cancellation sentinel", got)
-		}
+		assert.LessOrEqualf(t, elapsed, 200*time.Millisecond, "rewrite returned after %s, want < 200ms", elapsed)
+		assert.Truef(t, strings.HasPrefix(got, "cancelled:"), "got %q, want cancellation sentinel", got)
 	case <-time.After(2 * time.Second):
 		t.Fatal("rewriteAssetHref did not return after request cancellation")
 	}
@@ -2134,9 +1841,7 @@ func TestTransformResponse_SkipsDecodeWhenNoRewriteNeeded(t *testing.T) {
 		Enabled: true,
 		Timeout: time.Second,
 	})
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+	require.NoError(t, err, "client")
 
 	h := &Handler{proxyBaseURL: "https://proxy.example"}
 
@@ -2158,9 +1863,7 @@ func TestTransformResponse_SkipsDecodeWhenNoRewriteNeeded(t *testing.T) {
 
 	out := h.transformResponse(context.Background(), client, resp)
 
-	if !bytes.Equal(out.Body, original) {
-		t.Fatalf("body was mutated; expected pass-through.\n got: %s\nwant: %s", out.Body, original)
-	}
+	require.Truef(t, bytes.Equal(out.Body, original), "body was mutated; expected pass-through.\n got: %s\nwant: %s", out.Body, original)
 }
 
 // TestRewriteLinks_DoesNotRecurseIntoProperties is the M-federation-2
@@ -2179,9 +1882,7 @@ func TestRewriteLinks_DoesNotRecurseIntoProperties(t *testing.T) {
 		Enabled: true,
 		Timeout: time.Second,
 	})
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+	require.NoError(t, err, "client")
 
 	h := &Handler{proxyBaseURL: "https://proxy.example"}
 
@@ -2214,21 +1915,15 @@ func TestRewriteLinks_DoesNotRecurseIntoProperties(t *testing.T) {
 	// Top-level link IS rewritten.
 	topLinks := feature["links"].([]interface{})
 	topHref := topLinks[0].(map[string]interface{})["href"].(string)
-	if topHref != "https://proxy.example/items/x" {
-		t.Errorf("top-level link not rewritten: got %q", topHref)
-	}
+	assert.Equal(t, "https://proxy.example/items/x", topHref, "top-level link not rewritten")
 
 	// Properties subtree is untouched.
 	props := feature["properties"].(map[string]interface{})
 	propLinks := props["links"].([]interface{})
 	propHref := propLinks[0].(map[string]interface{})["href"].(string)
-	if propHref != "https://upstream.example/should/not/be/rewritten" {
-		t.Errorf("properties.links was rewritten: got %q", propHref)
-	}
+	assert.Equal(t, "https://upstream.example/should/not/be/rewritten", propHref, "properties.links was rewritten")
 	nestedHref := props["nested"].(map[string]interface{})["href"].(string)
-	if nestedHref != "https://upstream.example/also/should/stay" {
-		t.Errorf("properties.nested was rewritten: got %q", nestedHref)
-	}
+	assert.Equal(t, "https://upstream.example/also/should/stay", nestedHref, "properties.nested was rewritten")
 }
 
 // TestRewriteLinks_RecursesIntoFeatures verifies that the allowlist
@@ -2243,9 +1938,7 @@ func TestRewriteLinks_RecursesIntoFeatures(t *testing.T) {
 		Enabled: true,
 		Timeout: time.Second,
 	})
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+	require.NoError(t, err, "client")
 	h := &Handler{proxyBaseURL: "https://proxy.example"}
 
 	fc := map[string]interface{}{
@@ -2264,7 +1957,5 @@ func TestRewriteLinks_RecursesIntoFeatures(t *testing.T) {
 
 	feature := fc["features"].([]interface{})[0].(map[string]interface{})
 	href := feature["links"].([]interface{})[0].(map[string]interface{})["href"].(string)
-	if href != "https://proxy.example/items/x" {
-		t.Errorf("feature link not rewritten: got %q", href)
-	}
+	assert.Equal(t, "https://proxy.example/items/x", href, "feature link not rewritten")
 }

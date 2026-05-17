@@ -3,6 +3,8 @@ package authz
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestCompositeAny_FinalDenyShortCircuits verifies that a Final deny
@@ -18,10 +20,7 @@ func TestCompositeAny_FinalDenyShortCircuits(t *testing.T) {
 	composite := NewCompositeEnforcer(CompositeModeAny, finalDeny, allowAll)
 
 	dec, err := composite.Authorize(context.Background(), &AuthzInput{})
-	if err != nil {
-		t.Fatalf("Authorize error: %v", err)
-	}
-	if dec == nil || dec.Allowed {
-		t.Fatalf("want Final deny to short-circuit AlwaysAllow, got %+v", dec)
-	}
+	require.NoError(t, err, "Authorize error")
+	require.NotNil(t, dec, "want Final deny to short-circuit AlwaysAllow, got nil decision")
+	require.False(t, dec.Allowed, "want Final deny to short-circuit AlwaysAllow, got %+v", dec)
 }

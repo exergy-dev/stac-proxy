@@ -6,10 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
@@ -63,9 +64,7 @@ func TestIntegration_FederationFilterRidesAlong(t *testing.T) {
 		Enabled: true,
 		Auth:    federation.AuthConfig{Type: "none"},
 	})
-	if err != nil {
-		t.Fatalf("NewOriginClient A: %v", err)
-	}
+	require.NoError(t, err, "NewOriginClient A")
 	originB, err := federation.NewOriginClient(&federation.Origin{
 		ID:      "origin-b",
 		Name:    "Origin B",
@@ -73,9 +72,7 @@ func TestIntegration_FederationFilterRidesAlong(t *testing.T) {
 		Enabled: true,
 		Auth:    federation.AuthConfig{Type: "none"},
 	})
-	if err != nil {
-		t.Fatalf("NewOriginClient B: %v", err)
-	}
+	require.NoError(t, err, "NewOriginClient B")
 
 	mw := authz.NewHTTPMiddleware(authz.HTTPConfig{
 		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
@@ -104,33 +101,21 @@ func TestIntegration_FederationFilterRidesAlong(t *testing.T) {
 	// origin client (simulating federation fan-out).
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})).ServeHTTP(httptest.NewRecorder(), httpReq)
 
-	if _, _, err := originA.Search(context.Background(), sr); err != nil {
-		t.Fatalf("originA Search: %v", err)
-	}
-	if _, _, err := originB.Search(context.Background(), sr); err != nil {
-		t.Fatalf("originB Search: %v", err)
-	}
+	_, _, err = originA.Search(context.Background(), sr)
+	require.NoError(t, err, "originA Search")
+	_, _, err = originB.Search(context.Background(), sr)
+	require.NoError(t, err, "originB Search")
 
 	for name, body := range map[string][]byte{
 		"origin-a": capA.snapshot(),
 		"origin-b": capB.snapshot(),
 	} {
 		var got map[string]interface{}
-		if err := json.Unmarshal(body, &got); err != nil {
-			t.Fatalf("%s: body not JSON: %v\n%s", name, err, body)
-		}
+		require.NoError(t, json.Unmarshal(body, &got), "%s: body not JSON: %s", name, body)
 		filter, ok := got["filter"].(string)
-		if !ok {
-			t.Fatalf("%s: filter not a string: %T %v", name, got["filter"], got["filter"])
-		}
-		if !strings.Contains(filter, "eo:cloud_cover") {
-			t.Errorf("%s: missing policy predicate: %q", name, filter)
-		}
-		if !strings.Contains(filter, "datetime") {
-			t.Errorf("%s: missing client predicate: %q", name, filter)
-		}
-		if !strings.Contains(filter, "AND") {
-			t.Errorf("%s: not AND-combined: %q", name, filter)
-		}
+		require.True(t, ok, "%s: filter not a string: %T %v", name, got["filter"], got["filter"])
+		assert.Contains(t, filter, "eo:cloud_cover", "%s: missing policy predicate", name)
+		assert.Contains(t, filter, "datetime", "%s: missing client predicate", name)
+		assert.Contains(t, filter, "AND", "%s: not AND-combined", name)
 	}
 }

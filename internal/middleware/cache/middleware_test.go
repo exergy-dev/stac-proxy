@@ -4,11 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
@@ -52,25 +53,16 @@ func TestCacheHit_RestoresStatusAndHeaders(t *testing.T) {
 	// Miss: response flows to client + lands in cache.
 	rr1 := httptest.NewRecorder()
 	h.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/collections/x/items", nil), info))
-	if rr1.Code != http.StatusOK || rr1.Header().Get("X-Cache-Status") != "MISS" {
-		t.Fatalf("first request: status=%d X-Cache-Status=%q", rr1.Code, rr1.Header().Get("X-Cache-Status"))
-	}
+	require.Equal(t, http.StatusOK, rr1.Code, "first request status")
+	require.Equal(t, "MISS", rr1.Header().Get("X-Cache-Status"), "first request X-Cache-Status")
 
 	// Hit: cached response served without invoking upstream again.
 	rr2 := httptest.NewRecorder()
 	h.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/collections/x/items", nil), info))
-	if rr2.Code != http.StatusOK {
-		t.Fatalf("hit status: want 200, got %d", rr2.Code)
-	}
-	if got := rr2.Header().Get("X-Cache-Status"); got != "HIT" {
-		t.Errorf("X-Cache-Status: want HIT, got %q", got)
-	}
-	if got := rr2.Header().Get("Content-Type"); got != "application/geo+json" {
-		t.Errorf("Content-Type on hit: want application/geo+json, got %q", got)
-	}
-	if got := rr2.Header().Get("ETag"); got != `"v1"` {
-		t.Errorf("ETag on hit: want \"v1\", got %q", got)
-	}
+	require.Equal(t, http.StatusOK, rr2.Code, "hit status")
+	assert.Equal(t, "HIT", rr2.Header().Get("X-Cache-Status"), "X-Cache-Status")
+	assert.Equal(t, "application/geo+json", rr2.Header().Get("Content-Type"), "Content-Type on hit")
+	assert.Equal(t, `"v1"`, rr2.Header().Get("ETag"), "ETag on hit")
 }
 
 // TestCacheMiss_NonOKNotCached: a 500 from upstream should NOT land in
@@ -86,9 +78,7 @@ func TestCacheMiss_NonOKNotCached(t *testing.T) {
 	h.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
 	rr2 := httptest.NewRecorder()
 	h.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
-	if rr2.Header().Get("X-Cache-Status") != "MISS" {
-		t.Errorf("error response leaked into cache; want MISS, got %q", rr2.Header().Get("X-Cache-Status"))
-	}
+	assert.Equal(t, "MISS", rr2.Header().Get("X-Cache-Status"), "error response leaked into cache")
 }
 
 // TestCache_NonGetByPasses: a POST is not cached, regardless of status.
@@ -99,9 +89,7 @@ func TestCache_NonGetByPasses(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, withSTACInfo(httptest.NewRequest("POST", "/search", nil), info))
-	if got := rr.Header().Get("X-Cache-Status"); got != "" {
-		t.Errorf("POST request engaged cache: X-Cache-Status=%q", got)
-	}
+	assert.Empty(t, rr.Header().Get("X-Cache-Status"), "POST request engaged cache")
 }
 
 // TestCache_NoSTACInfoPassesThrough: when the router didn't attach
@@ -115,9 +103,7 @@ func TestCache_NoSTACInfoPassesThrough(t *testing.T) {
 	h := NewHTTPMiddleware(Config{Store: store})(inner)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
-	if rr.Code != http.StatusTeapot {
-		t.Errorf("status: want 418, got %d", rr.Code)
-	}
+	assert.Equal(t, http.StatusTeapot, rr.Code, "status")
 }
 
 // --- C2 cache-bypass on authz constraints ---------------------------------
@@ -154,9 +140,7 @@ func TestCache_BypassedWhenAuthzConstrained(t *testing.T) {
 	rr := httptest.NewRecorder()
 	mw(inner).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("first request status = %d", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "first request status")
 
 	// Hit cache: the entry should NOT have been stored. Confirm via
 	// a second request that the X-Cache-Status header is "MISS"
@@ -165,9 +149,7 @@ func TestCache_BypassedWhenAuthzConstrained(t *testing.T) {
 	req2 = req2.WithContext(ctx)
 	rr2 := httptest.NewRecorder()
 	mw(inner).ServeHTTP(rr2, req2)
-	if got := rr2.Header().Get("X-Cache-Status"); got == "HIT" {
-		t.Errorf("expected no cache (constrained request); got X-Cache-Status=HIT")
-	}
+	assert.NotEqual(t, "HIT", rr2.Header().Get("X-Cache-Status"), "expected no cache (constrained request)")
 }
 
 // TestCache_FiltersSensitiveHeadersFromEntry verifies that Set-Cookie
@@ -206,19 +188,11 @@ func TestCache_FiltersSensitiveHeadersFromEntry(t *testing.T) {
 	rr2 := httptest.NewRecorder()
 	mw(inner).ServeHTTP(rr2, req2)
 
-	if got := rr2.Header().Get("X-Cache-Status"); got != "HIT" {
-		t.Fatalf("expected HIT on second request, got %q", got)
-	}
-	if got := rr2.Header().Get("Set-Cookie"); got != "" {
-		t.Errorf("Set-Cookie leaked through cache: %q", got)
-	}
-	if got := rr2.Header().Get("Authorization"); got != "" {
-		t.Errorf("Authorization leaked through cache: %q", got)
-	}
+	require.Equal(t, "HIT", rr2.Header().Get("X-Cache-Status"), "expected HIT on second request")
+	assert.Empty(t, rr2.Header().Get("Set-Cookie"), "Set-Cookie leaked through cache")
+	assert.Empty(t, rr2.Header().Get("Authorization"), "Authorization leaked through cache")
 	// ETag is in the allowlist — should survive.
-	if got := rr2.Header().Get("ETag"); got != `"v1"` {
-		t.Errorf("ETag dropped from cache: %q", got)
-	}
+	assert.Equal(t, `"v1"`, rr2.Header().Get("ETag"), "ETag dropped from cache")
 }
 
 // TestCache_QueryParamOrderInvariant (HIGH H-cache-3): two requests
@@ -244,19 +218,13 @@ func TestCache_QueryParamOrderInvariant(t *testing.T) {
 	// First request: ?a=1&b=2  -> MISS, populates cache.
 	rr1 := httptest.NewRecorder()
 	mw.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/search?a=1&b=2", nil), info))
-	if got := rr1.Header().Get("X-Cache-Status"); got != "MISS" {
-		t.Fatalf("first request X-Cache-Status: want MISS, got %q", got)
-	}
+	require.Equal(t, "MISS", rr1.Header().Get("X-Cache-Status"), "first request X-Cache-Status")
 
 	// Second request: ?b=2&a=1 -> must HIT the same entry.
 	rr2 := httptest.NewRecorder()
 	mw.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/search?b=2&a=1", nil), info))
-	if got := rr2.Header().Get("X-Cache-Status"); got != "HIT" {
-		t.Fatalf("permuted-query request X-Cache-Status: want HIT (cache key must be order-invariant), got %q", got)
-	}
-	if upstreamHits != 1 {
-		t.Errorf("upstream hits = %d, want 1 (second request should not have reached upstream)", upstreamHits)
-	}
+	require.Equal(t, "HIT", rr2.Header().Get("X-Cache-Status"), "permuted-query request X-Cache-Status (cache key must be order-invariant)")
+	assert.Equal(t, 1, upstreamHits, "upstream hits (second request should not have reached upstream)")
 }
 
 // TestCache_DoesNotMixAnonymousAndAuthenticated (C3): the cache key
@@ -304,47 +272,29 @@ func TestCache_DoesNotMixAnonymousAndAuthenticated(t *testing.T) {
 	// 1. Anonymous: MISS, body "anon-body" cached under anon bucket.
 	rr1 := httptest.NewRecorder()
 	mw.ServeHTTP(rr1, newReq(""))
-	if rr1.Code != http.StatusOK {
-		t.Fatalf("anon first request: status=%d", rr1.Code)
-	}
-	if got := rr1.Body.String(); got != "anon-body" {
-		t.Fatalf("anon first request body: want anon-body, got %q", got)
-	}
-	if got := rr1.Header().Get("X-Cache-Status"); got != "MISS" {
-		t.Fatalf("anon first request X-Cache-Status: want MISS, got %q", got)
-	}
+	require.Equal(t, http.StatusOK, rr1.Code, "anon first request status")
+	require.Equal(t, "anon-body", rr1.Body.String(), "anon first request body")
+	require.Equal(t, "MISS", rr1.Header().Get("X-Cache-Status"), "anon first request X-Cache-Status")
 
 	// 2. Authenticated as "alice", same URL/method: must NOT see
 	//    "anon-body". Should MISS its own bucket and get "alice-body".
 	rr2 := httptest.NewRecorder()
 	mw.ServeHTTP(rr2, newReq("alice"))
-	if got := rr2.Body.String(); got != "alice-body" {
-		t.Fatalf("alice first request body: want alice-body (cache MUST be partitioned by principal class), got %q", got)
-	}
-	if got := rr2.Header().Get("X-Cache-Status"); got != "MISS" {
-		t.Fatalf("alice first request X-Cache-Status: want MISS, got %q", got)
-	}
+	require.Equal(t, "alice-body", rr2.Body.String(), "alice first request body (cache MUST be partitioned by principal class)")
+	require.Equal(t, "MISS", rr2.Header().Get("X-Cache-Status"), "alice first request X-Cache-Status")
 
 	// 3. Anonymous again: MUST hit the anon bucket, not Alice's.
 	//    The anon entry must NOT have been overwritten by step 2.
 	rr3 := httptest.NewRecorder()
 	mw.ServeHTTP(rr3, newReq(""))
-	if got := rr3.Body.String(); got != "anon-body" {
-		t.Fatalf("anon second request body: want anon-body (anon entry must be preserved), got %q", got)
-	}
-	if got := rr3.Header().Get("X-Cache-Status"); got != "HIT" {
-		t.Fatalf("anon second request X-Cache-Status: want HIT, got %q", got)
-	}
+	require.Equal(t, "anon-body", rr3.Body.String(), "anon second request body (anon entry must be preserved)")
+	require.Equal(t, "HIT", rr3.Header().Get("X-Cache-Status"), "anon second request X-Cache-Status")
 
 	// 4. Alice again: hits Alice's bucket from step 2.
 	rr4 := httptest.NewRecorder()
 	mw.ServeHTTP(rr4, newReq("alice"))
-	if got := rr4.Body.String(); got != "alice-body" {
-		t.Fatalf("alice second request body: want alice-body (alice entry must be preserved), got %q", got)
-	}
-	if got := rr4.Header().Get("X-Cache-Status"); got != "HIT" {
-		t.Fatalf("alice second request X-Cache-Status: want HIT, got %q", got)
-	}
+	require.Equal(t, "alice-body", rr4.Body.String(), "alice second request body (alice entry must be preserved)")
+	require.Equal(t, "HIT", rr4.Header().Get("X-Cache-Status"), "alice second request X-Cache-Status")
 }
 
 // TestCache_404IsCachedWithNegativeTTL (M-cache-1): a 404 from
@@ -370,24 +320,14 @@ func TestCache_404IsCachedWithNegativeTTL(t *testing.T) {
 
 	rr1 := httptest.NewRecorder()
 	mw.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/collections/x/items/missing", nil), info))
-	if rr1.Code != http.StatusNotFound {
-		t.Fatalf("first request: status=%d, want 404", rr1.Code)
-	}
-	if got := rr1.Header().Get("X-Cache-Status"); got != "MISS" {
-		t.Fatalf("first request X-Cache-Status: want MISS, got %q", got)
-	}
+	require.Equal(t, http.StatusNotFound, rr1.Code, "first request status")
+	require.Equal(t, "MISS", rr1.Header().Get("X-Cache-Status"), "first request X-Cache-Status")
 
 	rr2 := httptest.NewRecorder()
 	mw.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/collections/x/items/missing", nil), info))
-	if rr2.Code != http.StatusNotFound {
-		t.Fatalf("second request: status=%d, want 404 (from cache)", rr2.Code)
-	}
-	if got := rr2.Header().Get("X-Cache-Status"); got != "HIT" {
-		t.Fatalf("second request X-Cache-Status: want HIT, got %q", got)
-	}
-	if n := atomic.LoadUint32(&inner); n != 1 {
-		t.Errorf("inner handler invocations: want 1 (negative cache hit), got %d", n)
-	}
+	require.Equal(t, http.StatusNotFound, rr2.Code, "second request status (from cache)")
+	require.Equal(t, "HIT", rr2.Header().Get("X-Cache-Status"), "second request X-Cache-Status")
+	assert.Equal(t, uint32(1), atomic.LoadUint32(&inner), "inner handler invocations (negative cache hit)")
 }
 
 // TestCache_5xxNotCached (M-cache-1): 5xx responses are NOT in the
@@ -411,41 +351,26 @@ func TestCache_5xxNotCached(t *testing.T) {
 
 	rr1 := httptest.NewRecorder()
 	mw.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
-	if rr1.Code != http.StatusBadGateway {
-		t.Fatalf("first request: status=%d, want 502", rr1.Code)
-	}
+	require.Equal(t, http.StatusBadGateway, rr1.Code, "first request status")
 
 	rr2 := httptest.NewRecorder()
 	mw.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
-	if got := rr2.Header().Get("X-Cache-Status"); got != "MISS" {
-		t.Errorf("5xx leaked into cache: want MISS on second request, got %q", got)
-	}
-	if n := atomic.LoadUint32(&inner); n != 2 {
-		t.Errorf("inner handler invocations: want 2 (5xx must re-fetch), got %d", n)
-	}
+	assert.Equal(t, "MISS", rr2.Header().Get("X-Cache-Status"), "5xx leaked into cache: want MISS on second request")
+	assert.Equal(t, uint32(2), atomic.LoadUint32(&inner), "inner handler invocations (5xx must re-fetch)")
 }
 
 func TestNewFromConfig_RejectsUnknownStore(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewFromConfig(map[string]interface{}{"store": "bogus"})
-	if err == nil {
-		t.Fatal("NewFromConfig(bogus) returned nil error; want explicit rejection")
-	}
-	want := `unknown cache store type "bogus"`
-	if got := err.Error(); !strings.Contains(got, want) {
-		t.Errorf("error = %q, want substring %q", got, want)
-	}
+	require.Error(t, err, "NewFromConfig(bogus) returned nil error; want explicit rejection")
+	assert.ErrorContains(t, err, `unknown cache store type "bogus"`)
 }
 
 func TestNewFromConfig_AcceptsMemory(t *testing.T) {
 	t.Parallel()
 
 	mw, err := NewFromConfig(map[string]interface{}{"store": "memory", "max_size": 100})
-	if err != nil {
-		t.Fatalf("NewFromConfig(memory): %v", err)
-	}
-	if mw == nil {
-		t.Fatal("middleware is nil")
-	}
+	require.NoError(t, err, "NewFromConfig(memory)")
+	require.NotNil(t, mw, "middleware is nil")
 }

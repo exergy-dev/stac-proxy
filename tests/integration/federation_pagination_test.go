@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/federation"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
@@ -116,9 +118,7 @@ func TestIntegration_FederatedPaginationWalk(t *testing.T) {
 		CursorSecret:     []byte("integration-test-secret"),
 		ProxyBaseURL:     "https://proxy.test",
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	walk := func(t *testing.T, urlPath string, info *middleware.STACInfo) (seen map[string]int, pages int) {
 		seen = map[string]int{}
@@ -139,13 +139,9 @@ func TestIntegration_FederatedPaginationWalk(t *testing.T) {
 			req = req.WithContext(ctx)
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
-			if rr.Code != http.StatusOK {
-				t.Fatalf("page %d: status %d body=%s", i, rr.Code, rr.Body.String())
-			}
+			require.Equal(t, http.StatusOK, rr.Code, "page %d: body=%s", i, rr.Body.String())
 			var fc stac.FeatureCollection
-			if err := json.Unmarshal(rr.Body.Bytes(), &fc); err != nil {
-				t.Fatalf("page %d: unmarshal: %v", i, err)
-			}
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &fc), "page %d: unmarshal", i)
 			pages++
 			for _, it := range fc.Features {
 				seen[it.ID]++
@@ -154,34 +150,22 @@ func TestIntegration_FederatedPaginationWalk(t *testing.T) {
 			if next == nil {
 				return seen, pages
 			}
-			if !strings.HasPrefix(next.Href, "https://proxy.test") {
-				t.Errorf("next link not proxy-rooted: %q", next.Href)
-			}
+			assert.True(t, strings.HasPrefix(next.Href, "https://proxy.test"), "next link not proxy-rooted: %q", next.Href)
 			u, err := url.Parse(next.Href)
-			if err != nil {
-				t.Fatalf("page %d: parse next: %v", i, err)
-			}
+			require.NoError(t, err, "page %d: parse next", i)
 			token = u.Query().Get("token")
-			if token == "" {
-				t.Fatalf("page %d: empty token on next link", i)
-			}
+			require.NotEmpty(t, token, "page %d: empty token on next link", i)
 		}
 		return seen, pages
 	}
 
 	t.Run("search endpoint walks multiple pages", func(t *testing.T) {
 		seen, pages := walk(t, "/search?limit=3", &middleware.STACInfo{RequestType: middleware.RequestTypeSearch})
-		if pages < 2 {
-			t.Errorf("expected at least 2 pages, got %d", pages)
-		}
+		assert.GreaterOrEqual(t, pages, 2, "expected at least 2 pages")
 		for id, n := range seen {
-			if n != 1 {
-				t.Errorf("item %q seen %d times across pages", id, n)
-			}
+			assert.Equal(t, 1, n, "item %q seen %d times across pages", id, n)
 		}
-		if len(seen) < 4 {
-			t.Errorf("expected at least 4 unique items, got %d", len(seen))
-		}
+		assert.GreaterOrEqual(t, len(seen), 4, "expected at least 4 unique items")
 	})
 
 	t.Run("items endpoint walks multiple pages", func(t *testing.T) {
@@ -189,13 +173,9 @@ func TestIntegration_FederatedPaginationWalk(t *testing.T) {
 			RequestType: middleware.RequestTypeItems,
 			Collection:  "shared",
 		})
-		if pages < 2 {
-			t.Errorf("expected at least 2 pages, got %d", pages)
-		}
+		assert.GreaterOrEqual(t, pages, 2, "expected at least 2 pages")
 		for id, n := range seen {
-			if n != 1 {
-				t.Errorf("item %q seen %d times across pages", id, n)
-			}
+			assert.Equal(t, 1, n, "item %q seen %d times across pages", id, n)
 		}
 	})
 }

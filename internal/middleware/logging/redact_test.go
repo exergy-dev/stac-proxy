@@ -1,6 +1,11 @@
 package logging
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestRedactQuery_DefaultParams(t *testing.T) {
 	cases := []struct {
@@ -15,33 +20,23 @@ func TestRedactQuery_DefaultParams(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := redactQuery(c.raw, defaultRedactedQueryParams)
-		if got != c.want {
-			t.Errorf("redactQuery(%q) = %q, want %q", c.raw, got, c.want)
-		}
+		assert.Equalf(t, c.want, got, "redactQuery(%q)", c.raw)
 	}
 }
 
 func TestHashRemoteAddr_StripsPort(t *testing.T) {
 	a := hashRemoteAddr("203.0.113.5:11111")
 	b := hashRemoteAddr("203.0.113.5:22222")
-	if a == "" || a != b {
-		t.Errorf("hashRemoteAddr port stripped: %q vs %q", a, b)
-	}
-	if hashRemoteAddr("") != "" {
-		t.Error("hashRemoteAddr(\"\") should be empty")
-	}
+	require.NotEmpty(t, a, "hashRemoteAddr returned empty")
+	assert.Equalf(t, b, a, "hashRemoteAddr port stripped: %q vs %q", a, b)
+	assert.Empty(t, hashRemoteAddr(""), "hashRemoteAddr(\"\") should be empty")
 }
 
 func TestHashShort_DeterministicAndShort(t *testing.T) {
-	if hashShort("") != "" {
-		t.Error("hashShort(\"\") should be empty")
-	}
+	assert.Empty(t, hashShort(""), "hashShort(\"\") should be empty")
 	a := hashShort("Mozilla/5.0")
 	b := hashShort("Mozilla/5.0")
-	if a != b || len(a) != 8 {
-		t.Errorf("hashShort = %q (len %d), want stable 8-char digest", a, len(a))
-	}
-	if hashShort("curl/8") == a {
-		t.Error("distinct inputs collided")
-	}
+	assert.Equalf(t, a, b, "hashShort not stable: %q vs %q", a, b)
+	assert.Lenf(t, a, 8, "hashShort = %q, want 8-char digest", a)
+	assert.NotEqual(t, a, hashShort("curl/8"), "distinct inputs collided")
 }

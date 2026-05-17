@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 )
@@ -38,32 +39,22 @@ func TestFilterByGeofence_DropsOutsideItems(t *testing.T) {
 	})
 
 	out, status := filterByGeofence(body, g)
-	if status != geofenceFiltered {
-		t.Fatalf("filterByGeofence: want geofenceFiltered, got %v", status)
-	}
+	require.Equal(t, geofenceFiltered, status, "filterByGeofence")
 	var fc map[string]interface{}
-	if err := json.Unmarshal(out, &fc); err != nil {
-		t.Fatalf("body not JSON: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(out, &fc), "body not JSON")
 	feats := fc["features"].([]interface{})
-	if len(feats) != 1 {
-		t.Fatalf("want 1 feature after filter, got %d", len(feats))
-	}
-	if id := feats[0].(map[string]interface{})["id"]; id != "inside" {
-		t.Fatalf("want kept item 'inside', got %v", id)
-	}
-	if n, _ := fc["numberReturned"].(float64); int(n) != 1 {
-		t.Fatalf("want numberReturned=1, got %v", fc["numberReturned"])
-	}
+	require.Len(t, feats, 1, "want 1 feature after filter")
+	require.Equal(t, "inside", feats[0].(map[string]interface{})["id"], "want kept item 'inside'")
+	n, _ := fc["numberReturned"].(float64)
+	require.Equal(t, 1, int(n), "want numberReturned=1, got %v", fc["numberReturned"])
 }
 
 func TestFilterByGeofence_NonFeatureCollectionPassesThrough(t *testing.T) {
 	g := &GeofenceConstraint{
 		AllowedArea: map[string]interface{}{"type": "Point", "coordinates": []interface{}{0.0, 0.0}},
 	}
-	if _, status := filterByGeofence([]byte(`{"error":"boom"}`), g); status != geofenceNotApplicable {
-		t.Fatalf("non-FeatureCollection body should be NotApplicable, got %v", status)
-	}
+	_, status := filterByGeofence([]byte(`{"error":"boom"}`), g)
+	require.Equal(t, geofenceNotApplicable, status, "non-FeatureCollection body should be NotApplicable")
 }
 
 // TestFilterByGeofence_MalformedFeatureCollectionFailsClosed asserts
@@ -95,9 +86,8 @@ func TestFilterByGeofence_MalformedFeatureCollectionFailsClosed(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, status := filterByGeofence(c.body, g); status != geofenceMalformed {
-				t.Fatalf("want geofenceMalformed, got %v", status)
-			}
+			_, status := filterByGeofence(c.body, g)
+			require.Equal(t, geofenceMalformed, status, "want geofenceMalformed")
 		})
 	}
 }
@@ -110,13 +100,9 @@ func TestEvaluateCondition_TimeRange(t *testing.T) {
 		"start": "2000-01-01T00:00:00Z",
 		"end":   "2999-12-31T23:59:59Z",
 	}}
-	if !e.evaluateCondition(cond, in) {
-		t.Fatal("want pass for in-range window")
-	}
+	require.True(t, e.evaluateCondition(cond, in), "want pass for in-range window")
 	cond.Config = map[string]interface{}{"start": "2999-01-01T00:00:00Z"}
-	if e.evaluateCondition(cond, in) {
-		t.Fatal("want fail for future-only window")
-	}
+	require.False(t, e.evaluateCondition(cond, in), "want fail for future-only window")
 }
 
 func TestEvaluateCondition_IPRange(t *testing.T) {
@@ -125,13 +111,9 @@ func TestEvaluateCondition_IPRange(t *testing.T) {
 	cond := Condition{Type: "ip_range", Config: map[string]interface{}{
 		"cidrs": []interface{}{"10.0.0.0/8"},
 	}}
-	if !e.evaluateCondition(cond, in) {
-		t.Fatal("want pass for matching CIDR")
-	}
+	require.True(t, e.evaluateCondition(cond, in), "want pass for matching CIDR")
 	cond.Config = map[string]interface{}{"cidrs": []interface{}{"192.168.0.0/16"}}
-	if e.evaluateCondition(cond, in) {
-		t.Fatal("want fail for non-matching CIDR")
-	}
+	require.False(t, e.evaluateCondition(cond, in), "want fail for non-matching CIDR")
 }
 
 func TestEvaluateCondition_Attribute(t *testing.T) {
@@ -142,22 +124,16 @@ func TestEvaluateCondition_Attribute(t *testing.T) {
 	cond := Condition{Type: "attribute", Config: map[string]interface{}{
 		"key": "dept", "value": "research",
 	}}
-	if !e.evaluateCondition(cond, in) {
-		t.Fatal("want pass for matching attribute")
-	}
+	require.True(t, e.evaluateCondition(cond, in), "want pass for matching attribute")
 	cond.Config = map[string]interface{}{"key": "dept", "value": "ops"}
-	if e.evaluateCondition(cond, in) {
-		t.Fatal("want fail for wrong attribute value")
-	}
+	require.False(t, e.evaluateCondition(cond, in), "want fail for wrong attribute value")
 }
 
 func TestEvaluateCondition_UnknownTypeFailsClosed(t *testing.T) {
 	e := &PolicyEnforcer{}
 	in := &AuthzInput{}
 	cond := Condition{Type: "made_up", Config: map[string]interface{}{}}
-	if e.evaluateCondition(cond, in) {
-		t.Fatal("unknown condition type must fail closed")
-	}
+	require.False(t, e.evaluateCondition(cond, in), "unknown condition type must fail closed")
 }
 
 // TestAuthz_GeofencePostFilter ensures the middleware pipeline runs the
@@ -208,11 +184,7 @@ func TestAuthz_GeofencePostFilter(t *testing.T) {
 	})).ServeHTTP(rr, r)
 
 	var fc map[string]interface{}
-	if err := json.Unmarshal(rr.Body.Bytes(), &fc); err != nil {
-		t.Fatalf("body not JSON: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &fc), "body not JSON")
 	feats := fc["features"].([]interface{})
-	if len(feats) != 1 {
-		t.Fatalf("want 1 kept after post-filter, got %d", len(feats))
-	}
+	require.Len(t, feats, 1, "want 1 kept after post-filter")
 }

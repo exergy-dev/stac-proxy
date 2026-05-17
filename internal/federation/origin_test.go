@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -145,44 +147,27 @@ func TestNewOriginClient(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			client, err := NewOriginClient(tt.origin)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				} else if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("error %q does not contain %q", err.Error(), tt.errContains)
+				require.Error(t, err, "expected error but got nil")
+				if tt.errContains != "" {
+					assert.ErrorContainsf(t, err, tt.errContains, "error should contain")
 				}
 				return
 			}
 
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
+			require.NoError(t, err)
 
-			if client == nil {
-				t.Fatal("expected client to be non-nil")
-			}
-
-			if client.origin != tt.origin {
-				t.Error("client origin does not match input origin")
-			}
-
-			if client.httpClient == nil {
-				t.Error("expected httpClient to be non-nil")
-			}
-
-			if client.baseURL == nil {
-				t.Error("expected baseURL to be non-nil")
-			}
-
-			if client.collections == nil {
-				t.Error("expected collections map to be initialized")
-			}
+			require.NotNil(t, client, "expected client to be non-nil")
+			assert.Same(t, tt.origin, client.origin, "client origin does not match input origin")
+			assert.NotNil(t, client.httpClient, "expected httpClient to be non-nil")
+			assert.NotNil(t, client.baseURL, "expected baseURL to be non-nil")
+			assert.NotNil(t, client.collections, "expected collections map to be initialized")
 		})
 	}
 }
@@ -212,18 +197,14 @@ func TestNewOriginClient_AutoDiscover(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Wait a bit for autodiscovery goroutine to complete
 	time.Sleep(100 * time.Millisecond)
 
 	// Check that collections were discovered
 	cached := client.CachedCollections()
-	if len(cached) != 2 {
-		t.Errorf("expected 2 cached collections, got %d", len(cached))
-	}
+	assert.Len(t, cached, 2, "expected 2 cached collections")
 }
 
 func TestOriginClient_DoRequest(t *testing.T) {
@@ -249,16 +230,10 @@ func TestOriginClient_DoRequest(t *testing.T) {
 				json.NewEncoder(w).Encode(map[string]string{"test": "data"})
 			},
 			checkRequest: func(t *testing.T, r *http.Request) {
-				if r.Method != "GET" {
-					t.Errorf("expected method GET, got %s", r.Method)
-				}
-				if r.URL.Path != "/collections" {
-					t.Errorf("expected path /collections, got %s", r.URL.Path)
-				}
+				assert.Equal(t, "GET", r.Method, "method")
+				assert.Equal(t, "/collections", r.URL.Path, "path")
 				accept := r.Header.Get("Accept")
-				if !strings.Contains(accept, "application/geo+json") {
-					t.Errorf("expected Accept header to contain application/geo+json, got %s", accept)
-				}
+				assert.Containsf(t, accept, "application/geo+json", "expected Accept header to contain application/geo+json")
 			},
 			wantErr: false,
 		},
@@ -272,13 +247,8 @@ func TestOriginClient_DoRequest(t *testing.T) {
 				json.NewEncoder(w).Encode(map[string]string{"test": "data"})
 			},
 			checkRequest: func(t *testing.T, r *http.Request) {
-				if r.Method != "POST" {
-					t.Errorf("expected method POST, got %s", r.Method)
-				}
-				contentType := r.Header.Get("Content-Type")
-				if contentType != "application/json" {
-					t.Errorf("expected Content-Type application/json, got %s", contentType)
-				}
+				assert.Equal(t, "POST", r.Method, "method")
+				assert.Equal(t, "application/json", r.Header.Get("Content-Type"), "Content-Type")
 			},
 			wantErr: false,
 		},
@@ -297,15 +267,9 @@ func TestOriginClient_DoRequest(t *testing.T) {
 			},
 			checkRequest: func(t *testing.T, r *http.Request) {
 				username, password, ok := r.BasicAuth()
-				if !ok {
-					t.Error("expected basic auth to be present")
-				}
-				if username != "testuser" {
-					t.Errorf("expected username testuser, got %s", username)
-				}
-				if password != "testpass" {
-					t.Errorf("expected password testpass, got %s", password)
-				}
+				assert.True(t, ok, "expected basic auth to be present")
+				assert.Equal(t, "testuser", username, "username")
+				assert.Equal(t, "testpass", password, "password")
 			},
 			wantErr: false,
 		},
@@ -322,11 +286,7 @@ func TestOriginClient_DoRequest(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			},
 			checkRequest: func(t *testing.T, r *http.Request) {
-				auth := r.Header.Get("Authorization")
-				expected := "Bearer test-bearer-token"
-				if auth != expected {
-					t.Errorf("expected Authorization %q, got %q", expected, auth)
-				}
+				assert.Equal(t, "Bearer test-bearer-token", r.Header.Get("Authorization"), "Authorization")
 			},
 			wantErr: false,
 		},
@@ -345,10 +305,7 @@ func TestOriginClient_DoRequest(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			},
 			checkRequest: func(t *testing.T, r *http.Request) {
-				apiKey := r.Header.Get("X-API-Key")
-				if apiKey != "test-key-123" {
-					t.Errorf("expected X-API-Key test-key-123, got %s", apiKey)
-				}
+				assert.Equal(t, "test-key-123", r.Header.Get("X-API-Key"), "X-API-Key")
 			},
 			wantErr: false,
 		},
@@ -367,10 +324,7 @@ func TestOriginClient_DoRequest(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			},
 			checkRequest: func(t *testing.T, r *http.Request) {
-				apiKey := r.URL.Query().Get("api_key")
-				if apiKey != "test-key-456" {
-					t.Errorf("expected api_key test-key-456, got %s", apiKey)
-				}
+				assert.Equal(t, "test-key-456", r.URL.Query().Get("api_key"), "api_key")
 			},
 			wantErr: false,
 		},
@@ -390,18 +344,15 @@ func TestOriginClient_DoRequest(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			},
 			checkRequest: func(t *testing.T, r *http.Request) {
-				if r.Header.Get("X-Custom-1") != "value1" {
-					t.Errorf("expected X-Custom-1 value1, got %s", r.Header.Get("X-Custom-1"))
-				}
-				if r.Header.Get("X-Custom-2") != "value2" {
-					t.Errorf("expected X-Custom-2 value2, got %s", r.Header.Get("X-Custom-2"))
-				}
+				assert.Equal(t, "value1", r.Header.Get("X-Custom-1"))
+				assert.Equal(t, "value2", r.Header.Get("X-Custom-2"))
 			},
 			wantErr: false,
 		},
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -426,29 +377,19 @@ func TestOriginClient_DoRequest(t *testing.T) {
 			}
 
 			client, err := NewOriginClient(origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
 			// Execute request
 			ctx := context.Background()
 			resp, err := client.DoRequest(ctx, tt.method, tt.path, tt.body)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				}
+				require.Error(t, err, "expected error but got nil")
 				return
 			}
 
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
-
-			if resp == nil {
-				t.Fatal("expected response to be non-nil")
-			}
+			require.NoError(t, err)
+			require.NotNil(t, resp, "expected response to be non-nil")
 			defer resp.Body.Close()
 		})
 	}
@@ -472,16 +413,12 @@ func TestOriginClient_DoRequest_Timeout(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
 	_, err = client.DoRequest(ctx, "GET", "/collections", nil)
 
-	if err == nil {
-		t.Error("expected timeout error but got nil")
-	}
+	assert.Error(t, err, "expected timeout error but got nil")
 }
 
 func TestOriginClient_DoRequest_ContextCancellation(t *testing.T) {
@@ -502,18 +439,14 @@ func TestOriginClient_DoRequest_ContextCancellation(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
 	_, err = client.DoRequest(ctx, "GET", "/collections", nil)
 
-	if err == nil {
-		t.Error("expected context cancellation error but got nil")
-	}
+	assert.Error(t, err, "expected context cancellation error but got nil")
 }
 
 func TestOriginClient_Search(t *testing.T) {
@@ -541,12 +474,8 @@ func TestOriginClient_Search(t *testing.T) {
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			checkResult: func(t *testing.T, fc *stac.FeatureCollection) {
-				if len(fc.Features) != 2 {
-					t.Errorf("expected 2 features, got %d", len(fc.Features))
-				}
-				if fc.Features[0].ID != "item-1" {
-					t.Errorf("expected first item ID item-1, got %s", fc.Features[0].ID)
-				}
+				require.Len(t, fc.Features, 2, "features")
+				assert.Equal(t, "item-1", fc.Features[0].ID, "first item ID")
 			},
 		},
 		{
@@ -558,9 +487,7 @@ func TestOriginClient_Search(t *testing.T) {
 			serverStatus:   http.StatusOK,
 			wantErr:        false,
 			checkResult: func(t *testing.T, fc *stac.FeatureCollection) {
-				if len(fc.Features) != 0 {
-					t.Errorf("expected 0 features, got %d", len(fc.Features))
-				}
+				assert.Empty(t, fc.Features, "expected 0 features")
 			},
 		},
 		{
@@ -574,9 +501,7 @@ func TestOriginClient_Search(t *testing.T) {
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			checkResult: func(t *testing.T, fc *stac.FeatureCollection) {
-				if len(fc.Features) != 1 {
-					t.Errorf("expected 1 feature, got %d", len(fc.Features))
-				}
+				assert.Len(t, fc.Features, 1, "features")
 			},
 		},
 		{
@@ -590,9 +515,7 @@ func TestOriginClient_Search(t *testing.T) {
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			checkResult: func(t *testing.T, fc *stac.FeatureCollection) {
-				if len(fc.Features) != 1 {
-					t.Errorf("expected 1 feature, got %d", len(fc.Features))
-				}
+				assert.Len(t, fc.Features, 1, "features")
 			},
 		},
 		{
@@ -619,17 +542,14 @@ func TestOriginClient_Search(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			// Create test server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/search" {
-					t.Errorf("expected path /search, got %s", r.URL.Path)
-				}
-				if r.Method != "POST" {
-					t.Errorf("expected method POST, got %s", r.Method)
-				}
+				assert.Equal(t, "/search", r.URL.Path, "path")
+				assert.Equal(t, "POST", r.Method, "method")
 
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
@@ -649,31 +569,22 @@ func TestOriginClient_Search(t *testing.T) {
 			}
 
 			client, err := NewOriginClient(origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
 			// Execute search
 			ctx := context.Background()
 			fc, _, err := client.Search(ctx, tt.request)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				} else if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("error %q does not contain %q", err.Error(), tt.errContains)
+				require.Error(t, err, "expected error but got nil")
+				if tt.errContains != "" {
+					assert.ErrorContainsf(t, err, tt.errContains, "error message")
 				}
 				return
 			}
 
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
-
-			if fc == nil {
-				t.Fatal("expected feature collection to be non-nil")
-			}
+			require.NoError(t, err)
+			require.NotNil(t, fc, "expected feature collection to be non-nil")
 
 			if tt.checkResult != nil {
 				tt.checkResult(t, fc)
@@ -705,12 +616,8 @@ func TestOriginClient_GetCollections(t *testing.T) {
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			checkResult: func(t *testing.T, collections []*stac.Collection) {
-				if len(collections) != 3 {
-					t.Errorf("expected 3 collections, got %d", len(collections))
-				}
-				if collections[0].ID != "col-1" {
-					t.Errorf("expected first collection ID col-1, got %s", collections[0].ID)
-				}
+				require.Len(t, collections, 3)
+				assert.Equal(t, "col-1", collections[0].ID, "first collection ID")
 			},
 		},
 		{
@@ -721,9 +628,7 @@ func TestOriginClient_GetCollections(t *testing.T) {
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			checkResult: func(t *testing.T, collections []*stac.Collection) {
-				if len(collections) != 0 {
-					t.Errorf("expected 0 collections, got %d", len(collections))
-				}
+				assert.Empty(t, collections, "expected 0 collections")
 			},
 		},
 		{
@@ -741,17 +646,14 @@ func TestOriginClient_GetCollections(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			// Create test server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/collections" {
-					t.Errorf("expected path /collections, got %s", r.URL.Path)
-				}
-				if r.Method != "GET" {
-					t.Errorf("expected method GET, got %s", r.Method)
-				}
+				assert.Equal(t, "/collections", r.URL.Path)
+				assert.Equal(t, "GET", r.Method)
 
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
@@ -771,27 +673,21 @@ func TestOriginClient_GetCollections(t *testing.T) {
 			}
 
 			client, err := NewOriginClient(origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
 			// Execute get collections
 			ctx := context.Background()
 			collections, err := client.GetCollections(ctx)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				} else if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("error %q does not contain %q", err.Error(), tt.errContains)
+				require.Error(t, err, "expected error but got nil")
+				if tt.errContains != "" {
+					assert.ErrorContainsf(t, err, tt.errContains, "error message")
 				}
 				return
 			}
 
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
+			require.NoError(t, err)
 
 			if tt.checkResult != nil {
 				tt.checkResult(t, collections)
@@ -821,9 +717,7 @@ func TestOriginClient_GetCollection(t *testing.T) {
 			wantErr:        false,
 			wantNil:        false,
 			checkResult: func(t *testing.T, collection *stac.Collection) {
-				if collection.ID != "test-collection" {
-					t.Errorf("expected collection ID test-collection, got %s", collection.ID)
-				}
+				assert.Equal(t, "test-collection", collection.ID, "collection ID")
 			},
 		},
 		{
@@ -850,18 +744,15 @@ func TestOriginClient_GetCollection(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			// Create test server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				expectedPath := fmt.Sprintf("/collections/%s", tt.collectionID)
-				if r.URL.Path != expectedPath {
-					t.Errorf("expected path %s, got %s", expectedPath, r.URL.Path)
-				}
-				if r.Method != "GET" {
-					t.Errorf("expected method GET, got %s", r.Method)
-				}
+				assert.Equal(t, expectedPath, r.URL.Path)
+				assert.Equal(t, "GET", r.Method)
 
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
@@ -881,38 +772,28 @@ func TestOriginClient_GetCollection(t *testing.T) {
 			}
 
 			client, err := NewOriginClient(origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
 			// Execute get collection
 			ctx := context.Background()
 			collection, err := client.GetCollection(ctx, tt.collectionID)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				} else if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("error %q does not contain %q", err.Error(), tt.errContains)
+				require.Error(t, err, "expected error but got nil")
+				if tt.errContains != "" {
+					assert.ErrorContainsf(t, err, tt.errContains, "error message")
 				}
 				return
 			}
 
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
+			require.NoError(t, err)
 
 			if tt.wantNil {
-				if collection != nil {
-					t.Error("expected collection to be nil for 404")
-				}
+				assert.Nil(t, collection, "expected collection to be nil for 404")
 				return
 			}
 
-			if collection == nil {
-				t.Fatal("expected collection to be non-nil")
-			}
+			require.NotNil(t, collection, "expected collection to be non-nil")
 
 			if tt.checkResult != nil {
 				tt.checkResult(t, collection)
@@ -944,9 +825,7 @@ func TestOriginClient_GetItem(t *testing.T) {
 			wantErr:        false,
 			wantNil:        false,
 			checkResult: func(t *testing.T, item *stac.Item) {
-				if item.ID != "test-item" {
-					t.Errorf("expected item ID test-item, got %s", item.ID)
-				}
+				assert.Equal(t, "test-item", item.ID, "item ID")
 			},
 		},
 		{
@@ -976,18 +855,15 @@ func TestOriginClient_GetItem(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			// Create test server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				expectedPath := fmt.Sprintf("/collections/%s/items/%s", tt.collectionID, tt.itemID)
-				if r.URL.Path != expectedPath {
-					t.Errorf("expected path %s, got %s", expectedPath, r.URL.Path)
-				}
-				if r.Method != "GET" {
-					t.Errorf("expected method GET, got %s", r.Method)
-				}
+				assert.Equal(t, expectedPath, r.URL.Path)
+				assert.Equal(t, "GET", r.Method)
 
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
@@ -1007,38 +883,28 @@ func TestOriginClient_GetItem(t *testing.T) {
 			}
 
 			client, err := NewOriginClient(origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
 			// Execute get item
 			ctx := context.Background()
 			item, err := client.GetItem(ctx, tt.collectionID, tt.itemID)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				} else if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("error %q does not contain %q", err.Error(), tt.errContains)
+				require.Error(t, err, "expected error but got nil")
+				if tt.errContains != "" {
+					assert.ErrorContainsf(t, err, tt.errContains, "error message")
 				}
 				return
 			}
 
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
+			require.NoError(t, err)
 
 			if tt.wantNil {
-				if item != nil {
-					t.Error("expected item to be nil for 404")
-				}
+				assert.Nil(t, item, "expected item to be nil for 404")
 				return
 			}
 
-			if item == nil {
-				t.Fatal("expected item to be non-nil")
-			}
+			require.NotNil(t, item, "expected item to be non-nil")
 
 			if tt.checkResult != nil {
 				tt.checkResult(t, item)
@@ -1128,6 +994,7 @@ func TestOriginClient_Retry(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1154,30 +1021,22 @@ func TestOriginClient_Retry(t *testing.T) {
 			}
 
 			client, err := NewOriginClient(origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
 			// Execute request
 			ctx := context.Background()
 			resp, err := client.DoRequest(ctx, "GET", "/collections/test", nil)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				}
+				assert.Error(t, err, "expected error but got nil")
 			} else {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
+				assert.NoError(t, err)
 				if resp != nil {
 					resp.Body.Close()
 				}
 			}
 
-			if attempt != tt.wantAttempts {
-				t.Errorf("expected %d attempts, got %d", tt.wantAttempts, attempt)
-			}
+			assert.Equalf(t, tt.wantAttempts, attempt, "expected %d attempts", tt.wantAttempts)
 		})
 	}
 }
@@ -1204,27 +1063,9 @@ func TestOriginClient_DiscoverCollections(t *testing.T) {
 			wantErr:      false,
 			checkCache: func(t *testing.T, client *OriginClient) {
 				cached := client.CachedCollections()
-				if len(cached) != 2 {
-					t.Errorf("expected 2 cached collections, got %d", len(cached))
-				}
-
-				hasCol1 := false
-				hasCol2 := false
-				for _, id := range cached {
-					if id == "col-1" {
-						hasCol1 = true
-					}
-					if id == "col-2" {
-						hasCol2 = true
-					}
-				}
-
-				if !hasCol1 {
-					t.Error("expected col-1 in cache")
-				}
-				if !hasCol2 {
-					t.Error("expected col-2 in cache")
-				}
+				require.Len(t, cached, 2, "cached collections")
+				assert.Contains(t, cached, "col-1", "expected col-1 in cache")
+				assert.Contains(t, cached, "col-2", "expected col-2 in cache")
 			},
 		},
 		{
@@ -1235,10 +1076,7 @@ func TestOriginClient_DiscoverCollections(t *testing.T) {
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			checkCache: func(t *testing.T, client *OriginClient) {
-				cached := client.CachedCollections()
-				if len(cached) != 0 {
-					t.Errorf("expected 0 cached collections, got %d", len(cached))
-				}
+				assert.Empty(t, client.CachedCollections(), "expected 0 cached collections")
 			},
 		},
 		{
@@ -1249,6 +1087,7 @@ func TestOriginClient_DiscoverCollections(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1271,25 +1110,18 @@ func TestOriginClient_DiscoverCollections(t *testing.T) {
 			}
 
 			client, err := NewOriginClient(origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
 			// Execute discovery
 			ctx := context.Background()
 			err = client.DiscoverCollections(ctx)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error but got nil")
-				}
+				require.Error(t, err, "expected error but got nil")
 				return
 			}
 
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
+			require.NoError(t, err)
 
 			if tt.checkCache != nil {
 				tt.checkCache(t, client)
@@ -1390,22 +1222,18 @@ func TestOriginClient_HasCollection(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			client, err := NewOriginClient(tt.origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
 			if tt.setupCache != nil {
 				tt.setupCache(client)
 			}
 
-			got := client.HasCollection(tt.collectionID)
-			if got != tt.want {
-				t.Errorf("HasCollection(%q) = %v, want %v", tt.collectionID, got, tt.want)
-			}
+			assert.Equalf(t, tt.want, client.HasCollection(tt.collectionID), "HasCollection(%q)", tt.collectionID)
 		})
 	}
 }
@@ -1419,15 +1247,11 @@ func TestOriginClient_CachedCollections(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	// Initially empty
 	cached := client.CachedCollections()
-	if len(cached) != 0 {
-		t.Errorf("expected 0 cached collections initially, got %d", len(cached))
-	}
+	assert.Empty(t, cached, "expected 0 cached collections initially")
 
 	// Add some collections
 	client.collectionsLock.Lock()
@@ -1438,20 +1262,11 @@ func TestOriginClient_CachedCollections(t *testing.T) {
 
 	// Check cached
 	cached = client.CachedCollections()
-	if len(cached) != 3 {
-		t.Errorf("expected 3 cached collections, got %d", len(cached))
-	}
+	require.Len(t, cached, 3, "cached collections")
 
 	// Verify all collections are present
-	found := make(map[string]bool)
-	for _, id := range cached {
-		found[id] = true
-	}
-
 	for _, expectedID := range []string{"col-1", "col-2", "col-3"} {
-		if !found[expectedID] {
-			t.Errorf("expected %s in cached collections", expectedID)
-		}
+		assert.Containsf(t, cached, expectedID, "expected %s in cached collections", expectedID)
 	}
 }
 
@@ -1465,14 +1280,9 @@ func TestOriginClient_Origin(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
-	got := client.Origin()
-	if got != origin {
-		t.Error("Origin() did not return the same origin instance")
-	}
+	assert.Same(t, origin, client.Origin(), "Origin() did not return the same origin instance")
 }
 
 func TestOriginClient_BaseURL(t *testing.T) {
@@ -1501,6 +1311,7 @@ func TestOriginClient_BaseURL(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1510,14 +1321,9 @@ func TestOriginClient_BaseURL(t *testing.T) {
 			}
 
 			client, err := NewOriginClient(origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
-			got := client.BaseURL()
-			if got != tt.wantBaseURL {
-				t.Errorf("BaseURL() = %q, want %q", got, tt.wantBaseURL)
-			}
+			assert.Equal(t, tt.wantBaseURL, client.BaseURL(), "BaseURL()")
 		})
 	}
 }
@@ -1565,6 +1371,7 @@ func TestOriginClient_URLConstruction(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1585,20 +1392,14 @@ func TestOriginClient_URLConstruction(t *testing.T) {
 			}
 
 			client, err := NewOriginClient(origin)
-			if err != nil {
-				t.Fatalf("failed to create client: %v", err)
-			}
+			require.NoError(t, err, "failed to create client")
 
 			ctx := context.Background()
 			resp, err := client.DoRequest(ctx, "GET", tt.path, nil)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 			defer resp.Body.Close()
 
-			if capturedURL != tt.path {
-				t.Errorf("expected URL path %q, got %q", tt.path, capturedURL)
-			}
+			assert.Equal(t, tt.path, capturedURL, "URL path")
 		})
 	}
 }
@@ -1718,19 +1519,13 @@ func TestOriginClient_Search_InvalidJSON(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
 	_, _, err = client.Search(ctx, sampleSearchRequest())
 
-	if err == nil {
-		t.Error("expected error for invalid JSON but got nil")
-	}
-	if !strings.Contains(err.Error(), "parse") {
-		t.Errorf("expected parse error, got: %v", err)
-	}
+	require.Error(t, err, "expected error for invalid JSON")
+	assert.ErrorContainsf(t, err, "parse", "expected parse error")
 }
 
 func TestOriginClient_GetCollections_InvalidJSON(t *testing.T) {
@@ -1751,16 +1546,12 @@ func TestOriginClient_GetCollections_InvalidJSON(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
 	_, err = client.GetCollections(ctx)
 
-	if err == nil {
-		t.Error("expected error for invalid JSON but got nil")
-	}
+	assert.Error(t, err, "expected error for invalid JSON")
 }
 
 func TestOriginClient_GetCollection_InvalidJSON(t *testing.T) {
@@ -1781,16 +1572,12 @@ func TestOriginClient_GetCollection_InvalidJSON(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
 	_, err = client.GetCollection(ctx, "test-collection")
 
-	if err == nil {
-		t.Error("expected error for invalid JSON but got nil")
-	}
+	assert.Error(t, err, "expected error for invalid JSON")
 }
 
 func TestOriginClient_GetItem_InvalidJSON(t *testing.T) {
@@ -1811,16 +1598,12 @@ func TestOriginClient_GetItem_InvalidJSON(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
 	_, err = client.GetItem(ctx, "test-collection", "test-item")
 
-	if err == nil {
-		t.Error("expected error for invalid JSON but got nil")
-	}
+	assert.Error(t, err, "expected error for invalid JSON")
 }
 
 func TestOriginClient_Retry_ContextCancellation(t *testing.T) {
@@ -1849,9 +1632,7 @@ func TestOriginClient_Retry_ContextCancellation(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	// Create context that will be cancelled during retry
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
@@ -1859,17 +1640,11 @@ func TestOriginClient_Retry_ContextCancellation(t *testing.T) {
 
 	_, err = client.DoRequest(ctx, "GET", "/test", nil)
 
-	if err == nil {
-		t.Error("expected context cancellation error but got nil")
-	}
+	assert.Error(t, err, "expected context cancellation error but got nil")
 
 	// Should have attempted at least once but not all retries
-	if attempt == 0 {
-		t.Error("expected at least one attempt")
-	}
-	if attempt >= 5 {
-		t.Errorf("expected fewer than 5 attempts due to context cancellation, got %d", attempt)
-	}
+	assert.NotZero(t, attempt, "expected at least one attempt")
+	assert.Lessf(t, attempt, 5, "expected fewer than 5 attempts due to context cancellation")
 }
 
 func TestOriginClient_DoRequest_InvalidMethod(t *testing.T) {
@@ -1882,17 +1657,13 @@ func TestOriginClient_DoRequest_InvalidMethod(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
 	// Invalid method with control characters
 	_, err = client.DoRequest(ctx, "GET\n", "/collections", nil)
 
-	if err == nil {
-		t.Error("expected error for invalid method but got nil")
-	}
+	assert.Error(t, err, "expected error for invalid method but got nil")
 }
 
 func TestOriginClient_DiscoverCollections_UpdateCache(t *testing.T) {
@@ -1926,33 +1697,21 @@ func TestOriginClient_DiscoverCollections_UpdateCache(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
 
 	// First discovery
-	err = client.DiscoverCollections(ctx)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.NoError(t, client.DiscoverCollections(ctx))
 
 	cached := client.CachedCollections()
-	if len(cached) != 1 {
-		t.Errorf("expected 1 cached collection after first discovery, got %d", len(cached))
-	}
+	assert.Len(t, cached, 1, "expected 1 cached collection after first discovery")
 
 	// Second discovery should replace the cache
-	err = client.DiscoverCollections(ctx)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.NoError(t, client.DiscoverCollections(ctx))
 
 	cached = client.CachedCollections()
-	if len(cached) != 2 {
-		t.Errorf("expected 2 cached collections after second discovery, got %d", len(cached))
-	}
+	assert.Len(t, cached, 2, "expected 2 cached collections after second discovery")
 }
 
 func TestOriginClient_Search_MarshalError(t *testing.T) {
@@ -1965,9 +1724,7 @@ func TestOriginClient_Search_MarshalError(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
 
@@ -1978,12 +1735,8 @@ func TestOriginClient_Search_MarshalError(t *testing.T) {
 
 	_, _, err = client.Search(ctx, req)
 
-	if err == nil {
-		t.Error("expected marshal error but got nil")
-	}
-	if !strings.Contains(err.Error(), "marshal") {
-		t.Errorf("expected marshal error, got: %v", err)
-	}
+	require.Error(t, err, "expected marshal error but got nil")
+	assert.ErrorContainsf(t, err, "marshal", "expected marshal error")
 }
 
 func TestOriginClient_Retry_BackoffProgression(t *testing.T) {
@@ -2009,38 +1762,26 @@ func TestOriginClient_Retry_BackoffProgression(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
 	resp, err := client.DoRequest(ctx, "GET", "/test", nil)
-	if err != nil {
-		t.Fatalf("DoRequest: %v", err)
-	}
+	require.NoError(t, err, "DoRequest")
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("final status = %d, want 502 after retry exhaustion", resp.StatusCode)
-	}
+	assert.Equalf(t, http.StatusBadGateway, resp.StatusCode, "final status; want 502 after retry exhaustion")
 
 	// Verify exponential backoff
-	if len(requestTimes) != 4 { // initial + 3 retries
-		t.Errorf("expected 4 attempts, got %d", len(requestTimes))
-	}
+	require.Len(t, requestTimes, 4, "expected 4 attempts (initial + 3 retries)")
 
 	if len(requestTimes) >= 2 {
 		delay1 := requestTimes[1].Sub(requestTimes[0])
-		if delay1 < 40*time.Millisecond {
-			t.Errorf("first retry delay too short: %v", delay1)
-		}
+		assert.GreaterOrEqualf(t, delay1, 40*time.Millisecond, "first retry delay too short: %v", delay1)
 	}
 
 	if len(requestTimes) >= 3 {
 		delay2 := requestTimes[2].Sub(requestTimes[1])
 		// Second delay should be roughly 2x first (100ms), but allow for timing variance
-		if delay2 < 80*time.Millisecond {
-			t.Errorf("second retry delay too short: %v", delay2)
-		}
+		assert.GreaterOrEqualf(t, delay2, 80*time.Millisecond, "second retry delay too short: %v", delay2)
 	}
 }
 
@@ -2053,15 +1794,10 @@ func TestOriginClient_HasCollection_EmptyCache(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	// With empty cache and no explicit collections, should return false
-	has := client.HasCollection("any-collection")
-	if has {
-		t.Error("expected false for empty cache with no explicit collections")
-	}
+	assert.False(t, client.HasCollection("any-collection"), "expected false for empty cache with no explicit collections")
 }
 
 // TestOriginClient_DoRequest_PathPrefixedBaseURL is a regression test
@@ -2113,20 +1849,13 @@ func TestOriginClient_DoRequest_PathPrefixedBaseURL(t *testing.T) {
 				Enabled: true,
 				Timeout: 5 * time.Second,
 			})
-			if err != nil {
-				t.Fatalf("NewOriginClient: %v", err)
-			}
+			require.NoError(t, err, "NewOriginClient")
 
 			resp, err := client.DoRequest(context.Background(), http.MethodGet, tt.callerPath, nil)
-			if err != nil {
-				t.Fatalf("DoRequest: %v", err)
-			}
+			require.NoError(t, err, "DoRequest")
 			resp.Body.Close()
 
-			if gotPath != tt.wantPath {
-				t.Errorf("path = %q, want %q (base=%q, caller=%q)",
-					gotPath, tt.wantPath, tt.basePath, tt.callerPath)
-			}
+			assert.Equalf(t, tt.wantPath, gotPath, "path (base=%q, caller=%q)", tt.basePath, tt.callerPath)
 		})
 	}
 }
@@ -2162,17 +1891,11 @@ func TestOriginClient_RejectsOversizedResponse(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	_, _, err = client.Search(context.Background(), sampleSearchRequest())
-	if err == nil {
-		t.Fatal("expected error for oversized response, got nil")
-	}
-	if !strings.Contains(err.Error(), "exceeded") {
-		t.Errorf("error %q does not contain 'exceeded'", err.Error())
-	}
+	require.Error(t, err, "expected error for oversized response")
+	assert.ErrorContains(t, err, "exceeded", "error should contain 'exceeded'")
 }
 
 func TestOriginClient_AcceptsUnderLimit(t *testing.T) {
@@ -2196,17 +1919,12 @@ func TestOriginClient_AcceptsUnderLimit(t *testing.T) {
 	}
 
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
+	require.NoError(t, err, "failed to create client")
 
 	got, _, err := client.Search(context.Background(), sampleSearchRequest())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got == nil || len(got.Features) != 1 {
-		t.Fatalf("expected 1 feature, got %+v", got)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Len(t, got.Features, 1, "expected 1 feature")
 }
 
 func TestOriginClient_DefaultMaxResponseBytes(t *testing.T) {
@@ -2217,10 +1935,6 @@ func TestOriginClient_DefaultMaxResponseBytes(t *testing.T) {
 		BaseURL: "https://api.example.com",
 	}
 	client, err := NewOriginClient(origin)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	if got, want := client.MaxResponseBytes(), int64(32<<20); got != want {
-		t.Errorf("default MaxResponseBytes = %d, want %d", got, want)
-	}
+	require.NoError(t, err, "failed to create client")
+	assert.Equal(t, int64(32<<20), client.MaxResponseBytes(), "default MaxResponseBytes")
 }

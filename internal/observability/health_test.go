@@ -5,8 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // HealthChecker is now a thin adapter over alexliesenfeld/health. These
@@ -27,12 +28,8 @@ func TestHealth_DoesNotLeakErrorDetailsByDefault(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.HealthHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/health", nil))
 
-	if rr.Code == http.StatusOK {
-		t.Fatal("unhealthy check should not return 200")
-	}
-	if strings.Contains(rr.Body.String(), secret) {
-		t.Fatalf("error string leaked into body: %s", rr.Body.String())
-	}
+	require.NotEqual(t, http.StatusOK, rr.Code, "unhealthy check should not return 200")
+	require.NotContains(t, rr.Body.String(), secret, "error string leaked into body")
 }
 
 func TestHealth_HealthyReturns200(t *testing.T) {
@@ -43,9 +40,7 @@ func TestHealth_HealthyReturns200(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	h.HealthHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status %d, want 200; body=%s", rr.Code, rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
 }
 
 func TestHealth_LivenessAlwaysOK(t *testing.T) {
@@ -59,12 +54,8 @@ func TestHealth_LivenessAlwaysOK(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	h.LivenessHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/health/live", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("liveness status %d, want 200", rr.Code)
-	}
-	if !strings.Contains(rr.Body.String(), "alive") {
-		t.Fatalf("liveness body missing 'alive': %s", rr.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "liveness status")
+	require.Contains(t, rr.Body.String(), "alive", "liveness body missing 'alive'")
 }
 
 func TestHealth_LazyBuild_AddCheckBeforeHandler(t *testing.T) {
@@ -74,9 +65,7 @@ func TestHealth_LazyBuild_AddCheckBeforeHandler(t *testing.T) {
 	h.AddCheckFunc("late", func(ctx context.Context) error { return nil })
 	rr := httptest.NewRecorder()
 	h.HealthHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status %d, want 200", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code)
 }
 
 func TestNewOriginCheck_5xxIsDown(t *testing.T) {
@@ -86,9 +75,7 @@ func TestNewOriginCheck_5xxIsDown(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewOriginCheck("origin", srv.URL, nil)
-	if err := c.Check(context.Background()); err == nil {
-		t.Fatal("5xx upstream should fail check")
-	}
+	require.Error(t, c.Check(context.Background()), "5xx upstream should fail check")
 }
 
 func TestNewOriginCheck_2xxIsUp(t *testing.T) {
@@ -98,7 +85,5 @@ func TestNewOriginCheck_2xxIsUp(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewOriginCheck("origin", srv.URL, nil)
-	if err := c.Check(context.Background()); err != nil {
-		t.Fatalf("2xx upstream should pass: %v", err)
-	}
+	require.NoError(t, c.Check(context.Background()), "2xx upstream should pass")
 }

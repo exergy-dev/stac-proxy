@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Helper functions for creating test origins
@@ -68,18 +71,10 @@ func TestNewCollectionRouter(t *testing.T) {
 	t.Run("creates empty router", func(t *testing.T) {
 		t.Parallel()
 		router := NewCollectionRouter()
-		if router == nil {
-			t.Fatal("NewCollectionRouter returned nil")
-		}
-		if router.collectionToOrigins == nil {
-			t.Error("collectionToOrigins map is nil")
-		}
-		if len(router.collectionToOrigins) != 0 {
-			t.Errorf("collectionToOrigins length = %d, want 0", len(router.collectionToOrigins))
-		}
-		if router.allOrigins != nil {
-			t.Errorf("allOrigins = %v, want nil (uninitialized slice)", router.allOrigins)
-		}
+		require.NotNil(t, router, "NewCollectionRouter returned nil")
+		assert.NotNil(t, router.collectionToOrigins, "collectionToOrigins map is nil")
+		assert.Empty(t, router.collectionToOrigins, "collectionToOrigins length")
+		assert.Nil(t, router.allOrigins, "allOrigins should be uninitialized slice")
 	})
 }
 
@@ -95,15 +90,9 @@ func TestRegister(t *testing.T) {
 
 		router.Register(origin)
 
-		if len(router.allOrigins) != 1 {
-			t.Errorf("allOrigins length = %d, want 1", len(router.allOrigins))
-		}
-		if router.allOrigins[0].ID != "origin-1" {
-			t.Errorf("allOrigins[0].ID = %s, want origin-1", router.allOrigins[0].ID)
-		}
-		if len(router.collectionToOrigins) != 0 {
-			t.Errorf("collectionToOrigins length = %d, want 0 (no explicit collections)", len(router.collectionToOrigins))
-		}
+		require.Len(t, router.allOrigins, 1, "allOrigins length")
+		assert.Equal(t, "origin-1", router.allOrigins[0].ID, "allOrigins[0].ID")
+		assert.Empty(t, router.collectionToOrigins, "collectionToOrigins length (no explicit collections)")
 	})
 
 	t.Run("register origin with explicit collections", func(t *testing.T) {
@@ -113,27 +102,19 @@ func TestRegister(t *testing.T) {
 
 		router.Register(origin)
 
-		if len(router.allOrigins) != 1 {
-			t.Errorf("allOrigins length = %d, want 1", len(router.allOrigins))
-		}
-		if len(router.collectionToOrigins) != 3 {
-			t.Errorf("collectionToOrigins length = %d, want 3", len(router.collectionToOrigins))
-		}
+		assert.Len(t, router.allOrigins, 1, "allOrigins length")
+		assert.Len(t, router.collectionToOrigins, 3, "collectionToOrigins length")
 
 		// Verify each collection is mapped
 		for _, coll := range []string{"coll-a", "coll-b", "coll-c"} {
 			origins, ok := router.collectionToOrigins[coll]
-			if !ok {
-				t.Errorf("collection %s not found in mapping", coll)
+			if !assert.Truef(t, ok, "collection %s not found in mapping", coll) {
 				continue
 			}
-			if len(origins) != 1 {
-				t.Errorf("collection %s: origins length = %d, want 1", coll, len(origins))
+			if !assert.Lenf(t, origins, 1, "collection %s: origins length", coll) {
 				continue
 			}
-			if origins[0].ID != "origin-1" {
-				t.Errorf("collection %s: origin ID = %s, want origin-1", coll, origins[0].ID)
-			}
+			assert.Equalf(t, "origin-1", origins[0].ID, "collection %s: origin ID", coll)
 		}
 	})
 
@@ -147,15 +128,9 @@ func TestRegister(t *testing.T) {
 		router.Register(origin)
 
 		// Collections should be registered with prefix
-		if _, ok := router.collectionToOrigins["coll-a"]; ok {
-			t.Error("collection coll-a should not exist without prefix")
-		}
-		if _, ok := router.collectionToOrigins["prefix_coll-a"]; !ok {
-			t.Error("collection prefix_coll-a not found")
-		}
-		if _, ok := router.collectionToOrigins["prefix_coll-b"]; !ok {
-			t.Error("collection prefix_coll-b not found")
-		}
+		assert.NotContains(t, router.collectionToOrigins, "coll-a", "collection coll-a should not exist without prefix")
+		assert.Contains(t, router.collectionToOrigins, "prefix_coll-a", "collection prefix_coll-a not found")
+		assert.Contains(t, router.collectionToOrigins, "prefix_coll-b", "collection prefix_coll-b not found")
 	})
 
 	t.Run("register multiple origins for same collection", func(t *testing.T) {
@@ -167,14 +142,10 @@ func TestRegister(t *testing.T) {
 		router.Register(origin1)
 		router.Register(origin2)
 
-		if len(router.allOrigins) != 2 {
-			t.Errorf("allOrigins length = %d, want 2", len(router.allOrigins))
-		}
+		assert.Len(t, router.allOrigins, 2, "allOrigins length")
 
 		origins := router.collectionToOrigins["shared-coll"]
-		if len(origins) != 2 {
-			t.Errorf("shared-coll origins length = %d, want 2", len(origins))
-		}
+		assert.Len(t, origins, 2, "shared-coll origins length")
 
 		foundOrigin1, foundOrigin2 := false, false
 		for _, o := range origins {
@@ -185,9 +156,7 @@ func TestRegister(t *testing.T) {
 				foundOrigin2 = true
 			}
 		}
-		if !foundOrigin1 || !foundOrigin2 {
-			t.Error("both origins should be registered for shared-coll")
-		}
+		assert.True(t, foundOrigin1 && foundOrigin2, "both origins should be registered for shared-coll")
 	})
 
 	t.Run("register non-searchable origin without collections", func(t *testing.T) {
@@ -200,9 +169,7 @@ func TestRegister(t *testing.T) {
 		router.Register(origin)
 
 		// Should not be added to allOrigins (not searchable and no collections)
-		if len(router.allOrigins) != 0 {
-			t.Errorf("allOrigins length = %d, want 0 (not searchable, no collections)", len(router.allOrigins))
-		}
+		assert.Empty(t, router.allOrigins, "allOrigins should be empty (not searchable, no collections)")
 	})
 
 	t.Run("register non-searchable origin with collections", func(t *testing.T) {
@@ -215,12 +182,8 @@ func TestRegister(t *testing.T) {
 		router.Register(origin)
 
 		// Should be added to allOrigins (has collections)
-		if len(router.allOrigins) != 1 {
-			t.Errorf("allOrigins length = %d, want 1 (has collections)", len(router.allOrigins))
-		}
-		if len(router.collectionToOrigins) != 1 {
-			t.Errorf("collectionToOrigins length = %d, want 1", len(router.collectionToOrigins))
-		}
+		assert.Len(t, router.allOrigins, 1, "allOrigins length (has collections)")
+		assert.Len(t, router.collectionToOrigins, 1, "collectionToOrigins length")
 	})
 }
 
@@ -242,9 +205,7 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route(nil)
 
-		if len(results) != 2 {
-			t.Errorf("results length = %d, want 2 (only searchable origins)", len(results))
-		}
+		assert.Len(t, results, 2, "results length (only searchable origins)")
 
 		foundOrigin1, foundOrigin2 := false, false
 		for _, o := range results {
@@ -254,13 +215,9 @@ func TestRoute(t *testing.T) {
 			if o.ID == "origin-2" {
 				foundOrigin2 = true
 			}
-			if o.ID == "origin-3" {
-				t.Error("origin-3 should not be in results (not searchable)")
-			}
+			assert.NotEqual(t, "origin-3", o.ID, "origin-3 should not be in results (not searchable)")
 		}
-		if !foundOrigin1 || !foundOrigin2 {
-			t.Error("both searchable origins should be in results")
-		}
+		assert.True(t, foundOrigin1 && foundOrigin2, "both searchable origins should be in results")
 	})
 
 	t.Run("empty slice collection filter returns all searchable origins", func(t *testing.T) {
@@ -274,9 +231,7 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route([]string{})
 
-		if len(results) != 2 {
-			t.Errorf("results length = %d, want 2", len(results))
-		}
+		assert.Len(t, results, 2, "results length")
 	})
 
 	t.Run("route to origin with explicit collection", func(t *testing.T) {
@@ -290,12 +245,8 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route([]string{"coll-a"})
 
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("route to multiple origins with explicit collections", func(t *testing.T) {
@@ -309,9 +260,7 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route([]string{"coll-a", "coll-b"})
 
-		if len(results) != 2 {
-			t.Errorf("results length = %d, want 2", len(results))
-		}
+		assert.Len(t, results, 2, "results length")
 	})
 
 	t.Run("route to origin without explicit collections", func(t *testing.T) {
@@ -326,12 +275,8 @@ func TestRoute(t *testing.T) {
 		results := router.Route([]string{"unknown-collection"})
 
 		// origin-1 should match (no explicit collection list, no exclusions)
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("disabled origins are filtered out", func(t *testing.T) {
@@ -345,12 +290,8 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route([]string{"coll-a"})
 
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1 (only enabled origins)", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length (only enabled origins)")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("disabled origins filtered in empty collection query", func(t *testing.T) {
@@ -364,12 +305,8 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route(nil)
 
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1 (disabled origin filtered)", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length (disabled origin filtered)")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("excluded collections are not routed", func(t *testing.T) {
@@ -383,9 +320,7 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route([]string{"coll-exclude"})
 
-		if len(results) != 0 {
-			t.Errorf("results length = %d, want 0 (collection excluded)", len(results))
-		}
+		assert.Empty(t, results, "results should be empty (collection excluded)")
 	})
 
 	t.Run("non-excluded collection routes correctly", func(t *testing.T) {
@@ -399,12 +334,8 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route([]string{"coll-allowed"})
 
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("collection with prefix routes correctly", func(t *testing.T) {
@@ -418,18 +349,12 @@ func TestRoute(t *testing.T) {
 
 		// Query without prefix should not match
 		results := router.Route([]string{"coll-a"})
-		if len(results) != 0 {
-			t.Errorf("results length = %d, want 0 (query without prefix)", len(results))
-		}
+		assert.Empty(t, results, "results should be empty (query without prefix)")
 
 		// Query with prefix should match
 		results = router.Route([]string{"prefix_coll-a"})
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1 (query with prefix)", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length (query with prefix)")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("deduplicates origins in results", func(t *testing.T) {
@@ -443,12 +368,8 @@ func TestRoute(t *testing.T) {
 		results := router.Route([]string{"coll-a", "coll-b"})
 
 		// Should only appear once in results
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1 (origin should be deduplicated)", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length (origin should be deduplicated)")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("mixed explicit and implicit collection routing", func(t *testing.T) {
@@ -463,9 +384,7 @@ func TestRoute(t *testing.T) {
 		results := router.Route([]string{"coll-a"})
 
 		// Both should match: origin-1 explicitly, origin-2 implicitly
-		if len(results) != 2 {
-			t.Errorf("results length = %d, want 2", len(results))
-		}
+		assert.Len(t, results, 2, "results length")
 
 		foundOrigin1, foundOrigin2 := false, false
 		for _, o := range results {
@@ -476,9 +395,7 @@ func TestRoute(t *testing.T) {
 				foundOrigin2 = true
 			}
 		}
-		if !foundOrigin1 || !foundOrigin2 {
-			t.Error("both origins should match coll-a")
-		}
+		assert.True(t, foundOrigin1 && foundOrigin2, "both origins should match coll-a")
 	})
 
 	t.Run("no matching origins returns empty slice", func(t *testing.T) {
@@ -490,12 +407,8 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route([]string{"coll-nonexistent"})
 
-		if len(results) != 0 {
-			t.Errorf("results length = %d, want 0", len(results))
-		}
-		if results == nil {
-			t.Error("results should be empty slice, not nil")
-		}
+		assert.Empty(t, results, "results length")
+		assert.NotNil(t, results, "results should be empty slice, not nil")
 	})
 
 	t.Run("multiple collections same origin", func(t *testing.T) {
@@ -509,9 +422,7 @@ func TestRoute(t *testing.T) {
 
 		results := router.Route([]string{"coll-a", "coll-c"})
 
-		if len(results) != 2 {
-			t.Errorf("results length = %d, want 2", len(results))
-		}
+		assert.Len(t, results, 2, "results length")
 	})
 }
 
@@ -529,12 +440,8 @@ func TestRouteCollection(t *testing.T) {
 
 		results := router.RouteCollection("coll-a")
 
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("is equivalent to Route with single collection", func(t *testing.T) {
@@ -549,9 +456,7 @@ func TestRouteCollection(t *testing.T) {
 		results1 := router.RouteCollection("coll-a")
 		results2 := router.Route([]string{"coll-a"})
 
-		if len(results1) != len(results2) {
-			t.Errorf("RouteCollection returned %d origins, Route returned %d", len(results1), len(results2))
-		}
+		assert.Equalf(t, len(results2), len(results1), "RouteCollection vs Route origin count")
 	})
 }
 
@@ -568,25 +473,17 @@ func TestUpdateFromDiscovery(t *testing.T) {
 		router.Register(origin1)
 
 		// Verify initial state
-		if _, ok := router.collectionToOrigins["old-coll"]; !ok {
-			t.Error("old-coll should be registered initially")
-		}
+		assert.Contains(t, router.collectionToOrigins, "old-coll", "old-coll should be registered initially")
 
 		// Update with new collections
 		router.UpdateFromDiscovery("origin-1", []string{"new-coll-a", "new-coll-b"})
 
 		// Old collection should be removed
-		if _, ok := router.collectionToOrigins["old-coll"]; ok {
-			t.Error("old-coll should be removed after discovery update")
-		}
+		assert.NotContains(t, router.collectionToOrigins, "old-coll", "old-coll should be removed after discovery update")
 
 		// New collections should be added
-		if _, ok := router.collectionToOrigins["new-coll-a"]; !ok {
-			t.Error("new-coll-a should be registered after discovery")
-		}
-		if _, ok := router.collectionToOrigins["new-coll-b"]; !ok {
-			t.Error("new-coll-b should be registered after discovery")
-		}
+		assert.Contains(t, router.collectionToOrigins, "new-coll-a", "new-coll-a should be registered after discovery")
+		assert.Contains(t, router.collectionToOrigins, "new-coll-b", "new-coll-b should be registered after discovery")
 	})
 
 	t.Run("updates collections with prefix", func(t *testing.T) {
@@ -601,15 +498,9 @@ func TestUpdateFromDiscovery(t *testing.T) {
 		// Update with new collections (should apply prefix)
 		router.UpdateFromDiscovery("origin-1", []string{"new-coll"})
 
-		if _, ok := router.collectionToOrigins["prefix_old-coll"]; ok {
-			t.Error("prefix_old-coll should be removed")
-		}
-		if _, ok := router.collectionToOrigins["prefix_new-coll"]; !ok {
-			t.Error("prefix_new-coll should be registered with prefix")
-		}
-		if _, ok := router.collectionToOrigins["new-coll"]; ok {
-			t.Error("new-coll should not be registered without prefix")
-		}
+		assert.NotContains(t, router.collectionToOrigins, "prefix_old-coll", "prefix_old-coll should be removed")
+		assert.Contains(t, router.collectionToOrigins, "prefix_new-coll", "prefix_new-coll should be registered with prefix")
+		assert.NotContains(t, router.collectionToOrigins, "new-coll", "new-coll should not be registered without prefix")
 	})
 
 	t.Run("does not affect other origins", func(t *testing.T) {
@@ -626,15 +517,13 @@ func TestUpdateFromDiscovery(t *testing.T) {
 
 		// origin-2's collections should remain unchanged
 		origins := router.collectionToOrigins["coll-b"]
-		if len(origins) != 1 || origins[0].ID != "origin-2" {
-			t.Error("coll-b for origin-2 should remain unchanged")
-		}
+		require.Len(t, origins, 1, "coll-b for origin-2 should remain unchanged")
+		assert.Equal(t, "origin-2", origins[0].ID, "coll-b for origin-2 should remain unchanged")
 
 		// shared-coll should still have origin-2
 		origins = router.collectionToOrigins["shared-coll"]
-		if len(origins) != 1 || origins[0].ID != "origin-2" {
-			t.Error("shared-coll should still have origin-2")
-		}
+		require.Len(t, origins, 1, "shared-coll should still have origin-2")
+		assert.Equal(t, "origin-2", origins[0].ID, "shared-coll should still have origin-2")
 	})
 
 	t.Run("handles non-existent origin gracefully", func(t *testing.T) {
@@ -648,12 +537,8 @@ func TestUpdateFromDiscovery(t *testing.T) {
 		router.UpdateFromDiscovery("non-existent", []string{"new-coll"})
 
 		// Should not panic or modify anything
-		if _, ok := router.collectionToOrigins["new-coll"]; ok {
-			t.Error("new-coll should not be registered for non-existent origin")
-		}
-		if _, ok := router.collectionToOrigins["coll-a"]; !ok {
-			t.Error("coll-a should remain unchanged")
-		}
+		assert.NotContains(t, router.collectionToOrigins, "new-coll", "new-coll should not be registered for non-existent origin")
+		assert.Contains(t, router.collectionToOrigins, "coll-a", "coll-a should remain unchanged")
 	})
 
 	t.Run("handles empty collection list", func(t *testing.T) {
@@ -667,12 +552,8 @@ func TestUpdateFromDiscovery(t *testing.T) {
 		router.UpdateFromDiscovery("origin-1", []string{})
 
 		// Old collections should be removed
-		if _, ok := router.collectionToOrigins["coll-a"]; ok {
-			t.Error("coll-a should be removed")
-		}
-		if _, ok := router.collectionToOrigins["coll-b"]; ok {
-			t.Error("coll-b should be removed")
-		}
+		assert.NotContains(t, router.collectionToOrigins, "coll-a", "coll-a should be removed")
+		assert.NotContains(t, router.collectionToOrigins, "coll-b", "coll-b should be removed")
 	})
 
 	t.Run("removes origin from shared collection", func(t *testing.T) {
@@ -686,21 +567,15 @@ func TestUpdateFromDiscovery(t *testing.T) {
 
 		// Both origins should be registered for shared-coll
 		origins := router.collectionToOrigins["shared-coll"]
-		if len(origins) != 2 {
-			t.Errorf("shared-coll should have 2 origins, got %d", len(origins))
-		}
+		assert.Len(t, origins, 2, "shared-coll should have 2 origins")
 
 		// Update origin-1 to remove shared-coll
 		router.UpdateFromDiscovery("origin-1", []string{"other-coll"})
 
 		// shared-coll should now only have origin-2
 		origins = router.collectionToOrigins["shared-coll"]
-		if len(origins) != 1 {
-			t.Errorf("shared-coll should have 1 origin, got %d", len(origins))
-		}
-		if origins[0].ID != "origin-2" {
-			t.Errorf("shared-coll should have origin-2, got %s", origins[0].ID)
-		}
+		require.Len(t, origins, 1, "shared-coll should have 1 origin")
+		assert.Equal(t, "origin-2", origins[0].ID, "shared-coll should have origin-2")
 	})
 
 	t.Run("cleans up collection when last origin removed", func(t *testing.T) {
@@ -714,9 +589,7 @@ func TestUpdateFromDiscovery(t *testing.T) {
 		router.UpdateFromDiscovery("origin-1", []string{"other-coll"})
 
 		// coll-unique should be removed from map entirely
-		if _, ok := router.collectionToOrigins["coll-unique"]; ok {
-			t.Error("coll-unique should be removed from map when no origins serve it")
-		}
+		assert.NotContains(t, router.collectionToOrigins, "coll-unique", "coll-unique should be removed from map when no origins serve it")
 	})
 }
 
@@ -736,9 +609,7 @@ func TestGetCollectionOrigins(t *testing.T) {
 
 		results := router.GetCollectionOrigins("coll-a")
 
-		if len(results) != 2 {
-			t.Errorf("results length = %d, want 2", len(results))
-		}
+		assert.Len(t, results, 2, "results length")
 	})
 
 	t.Run("filters disabled origins", func(t *testing.T) {
@@ -752,12 +623,8 @@ func TestGetCollectionOrigins(t *testing.T) {
 
 		results := router.GetCollectionOrigins("coll-a")
 
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1 (disabled filtered)", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length (disabled filtered)")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("returns origins without explicit collections", func(t *testing.T) {
@@ -769,12 +636,8 @@ func TestGetCollectionOrigins(t *testing.T) {
 
 		results := router.GetCollectionOrigins("any-collection")
 
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("excludes excluded collections", func(t *testing.T) {
@@ -786,9 +649,7 @@ func TestGetCollectionOrigins(t *testing.T) {
 
 		results := router.GetCollectionOrigins("excluded-coll")
 
-		if len(results) != 0 {
-			t.Errorf("results length = %d, want 0 (collection excluded)", len(results))
-		}
+		assert.Empty(t, results, "results should be empty (collection excluded)")
 	})
 
 	t.Run("returns empty slice for non-existent collection", func(t *testing.T) {
@@ -800,12 +661,8 @@ func TestGetCollectionOrigins(t *testing.T) {
 
 		results := router.GetCollectionOrigins("non-existent")
 
-		if len(results) != 0 {
-			t.Errorf("results length = %d, want 0", len(results))
-		}
-		if results == nil {
-			t.Error("results should be empty slice, not nil")
-		}
+		assert.Empty(t, results, "results length")
+		assert.NotNil(t, results, "results should be empty slice, not nil")
 	})
 }
 
@@ -827,9 +684,7 @@ func TestAllOrigins(t *testing.T) {
 
 		results := router.AllOrigins()
 
-		if len(results) != 3 {
-			t.Errorf("results length = %d, want 3", len(results))
-		}
+		assert.Len(t, results, 3, "results length")
 	})
 
 	t.Run("returns copy of origins", func(t *testing.T) {
@@ -846,9 +701,7 @@ func TestAllOrigins(t *testing.T) {
 		if len(results1) > 0 {
 			results1[0] = nil
 		}
-		if results2[0] == nil {
-			t.Error("results2 should not be affected by modifications to results1")
-		}
+		assert.NotNil(t, results2[0], "results2 should not be affected by modifications to results1")
 	})
 
 	t.Run("returns empty slice for no origins", func(t *testing.T) {
@@ -857,9 +710,7 @@ func TestAllOrigins(t *testing.T) {
 
 		results := router.AllOrigins()
 
-		if len(results) != 0 {
-			t.Errorf("results length = %d, want 0", len(results))
-		}
+		assert.Empty(t, results, "results length")
 	})
 
 	t.Run("includes disabled origins", func(t *testing.T) {
@@ -873,9 +724,7 @@ func TestAllOrigins(t *testing.T) {
 
 		results := router.AllOrigins()
 
-		if len(results) != 2 {
-			t.Errorf("results length = %d, want 2 (includes disabled)", len(results))
-		}
+		assert.Len(t, results, 2, "results length (includes disabled)")
 	})
 }
 
@@ -897,14 +746,10 @@ func TestEnabledOrigins(t *testing.T) {
 
 		results := router.EnabledOrigins()
 
-		if len(results) != 2 {
-			t.Errorf("results length = %d, want 2 (only enabled)", len(results))
-		}
+		assert.Len(t, results, 2, "results length (only enabled)")
 
 		for _, o := range results {
-			if !o.Enabled {
-				t.Errorf("origin %s is disabled but in enabled origins list", o.ID)
-			}
+			assert.Truef(t, o.Enabled, "origin %s is disabled but in enabled origins list", o.ID)
 		}
 	})
 
@@ -917,12 +762,8 @@ func TestEnabledOrigins(t *testing.T) {
 
 		results := router.EnabledOrigins()
 
-		if len(results) != 0 {
-			t.Errorf("results length = %d, want 0", len(results))
-		}
-		if results == nil {
-			t.Error("results should be empty slice, not nil")
-		}
+		assert.Empty(t, results, "results length")
+		assert.NotNil(t, results, "results should be empty slice, not nil")
 	})
 }
 
@@ -937,19 +778,13 @@ func TestOriginCount(t *testing.T) {
 		origin1 := testOrigin("origin-1")
 		origin2 := testOrigin("origin-2")
 
-		if router.OriginCount() != 0 {
-			t.Errorf("initial count = %d, want 0", router.OriginCount())
-		}
+		assert.Equal(t, 0, router.OriginCount(), "initial count")
 
 		router.Register(origin1)
-		if router.OriginCount() != 1 {
-			t.Errorf("count after 1 registration = %d, want 1", router.OriginCount())
-		}
+		assert.Equal(t, 1, router.OriginCount(), "count after 1 registration")
 
 		router.Register(origin2)
-		if router.OriginCount() != 2 {
-			t.Errorf("count after 2 registrations = %d, want 2", router.OriginCount())
-		}
+		assert.Equal(t, 2, router.OriginCount(), "count after 2 registrations")
 	})
 
 	t.Run("includes disabled origins", func(t *testing.T) {
@@ -961,9 +796,7 @@ func TestOriginCount(t *testing.T) {
 		router.Register(origin1)
 		router.Register(origin2)
 
-		if router.OriginCount() != 2 {
-			t.Errorf("count = %d, want 2 (includes disabled)", router.OriginCount())
-		}
+		assert.Equal(t, 2, router.OriginCount(), "count (includes disabled)")
 	})
 }
 
@@ -976,23 +809,17 @@ func TestCollectionCount(t *testing.T) {
 		t.Parallel()
 		router := NewCollectionRouter()
 
-		if router.CollectionCount() != 0 {
-			t.Errorf("initial count = %d, want 0", router.CollectionCount())
-		}
+		assert.Equal(t, 0, router.CollectionCount(), "initial count")
 
 		origin1 := testOrigin("origin-1", routerWithCollections("coll-a", "coll-b"))
 		router.Register(origin1)
 
-		if router.CollectionCount() != 2 {
-			t.Errorf("count after registering 2 collections = %d, want 2", router.CollectionCount())
-		}
+		assert.Equal(t, 2, router.CollectionCount(), "count after registering 2 collections")
 
 		origin2 := testOrigin("origin-2", routerWithCollections("coll-c"))
 		router.Register(origin2)
 
-		if router.CollectionCount() != 3 {
-			t.Errorf("count after registering 1 more collection = %d, want 3", router.CollectionCount())
-		}
+		assert.Equal(t, 3, router.CollectionCount(), "count after registering 1 more collection")
 	})
 
 	t.Run("does not count origins without explicit collections", func(t *testing.T) {
@@ -1002,9 +829,7 @@ func TestCollectionCount(t *testing.T) {
 
 		router.Register(origin1)
 
-		if router.CollectionCount() != 0 {
-			t.Errorf("count = %d, want 0 (no explicit collections)", router.CollectionCount())
-		}
+		assert.Equal(t, 0, router.CollectionCount(), "count (no explicit collections)")
 	})
 
 	t.Run("does not double-count shared collections", func(t *testing.T) {
@@ -1016,9 +841,7 @@ func TestCollectionCount(t *testing.T) {
 		router.Register(origin1)
 		router.Register(origin2)
 
-		if router.CollectionCount() != 1 {
-			t.Errorf("count = %d, want 1 (shared collection counted once)", router.CollectionCount())
-		}
+		assert.Equal(t, 1, router.CollectionCount(), "count (shared collection counted once)")
 	})
 }
 
@@ -1032,12 +855,8 @@ func TestIsExcluded(t *testing.T) {
 		router := NewCollectionRouter()
 		origin := testOrigin("origin-1", withExclude("excluded-a", "excluded-b"))
 
-		if !router.isExcluded(origin, "excluded-a") {
-			t.Error("excluded-a should be excluded")
-		}
-		if !router.isExcluded(origin, "excluded-b") {
-			t.Error("excluded-b should be excluded")
-		}
+		assert.True(t, router.isExcluded(origin, "excluded-a"), "excluded-a should be excluded")
+		assert.True(t, router.isExcluded(origin, "excluded-b"), "excluded-b should be excluded")
 	})
 
 	t.Run("returns false for non-excluded collection", func(t *testing.T) {
@@ -1045,9 +864,7 @@ func TestIsExcluded(t *testing.T) {
 		router := NewCollectionRouter()
 		origin := testOrigin("origin-1", withExclude("excluded-a"))
 
-		if router.isExcluded(origin, "allowed-coll") {
-			t.Error("allowed-coll should not be excluded")
-		}
+		assert.False(t, router.isExcluded(origin, "allowed-coll"), "allowed-coll should not be excluded")
 	})
 
 	t.Run("returns false when no exclusions", func(t *testing.T) {
@@ -1055,9 +872,7 @@ func TestIsExcluded(t *testing.T) {
 		router := NewCollectionRouter()
 		origin := testOrigin("origin-1")
 
-		if router.isExcluded(origin, "any-coll") {
-			t.Error("any-coll should not be excluded when no exclusions defined")
-		}
+		assert.False(t, router.isExcluded(origin, "any-coll"), "any-coll should not be excluded when no exclusions defined")
 	})
 }
 
@@ -1115,9 +930,7 @@ func TestRouterConcurrency(t *testing.T) {
 		}
 
 		// Verify all origins were registered
-		if router.OriginCount() != 10 {
-			t.Errorf("origin count = %d, want 10", router.OriginCount())
-		}
+		assert.Equal(t, 10, router.OriginCount(), "origin count")
 	})
 
 	t.Run("concurrent reads and writes are safe", func(t *testing.T) {
@@ -1178,12 +991,8 @@ func TestRouterComplexScenarios(t *testing.T) {
 		results := router.Route([]string{"o1_coll-a"})
 
 		// origin-1 matches (explicit), origin-2 excluded
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1", len(results))
-		}
-		if results[0].ID != "origin-1" {
-			t.Errorf("result origin ID = %s, want origin-1", results[0].ID)
-		}
+		require.Len(t, results, 1, "results length")
+		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 	})
 
 	t.Run("priority does not affect routing decision", func(t *testing.T) {
@@ -1198,9 +1007,7 @@ func TestRouterComplexScenarios(t *testing.T) {
 		results := router.Route([]string{"coll-a"})
 
 		// Both should be returned regardless of priority
-		if len(results) != 2 {
-			t.Errorf("results length = %d, want 2 (priority doesn't filter)", len(results))
-		}
+		assert.Len(t, results, 2, "results length (priority doesn't filter)")
 	})
 
 	t.Run("searchable flag only affects empty collection queries", func(t *testing.T) {
@@ -1214,15 +1021,11 @@ func TestRouterComplexScenarios(t *testing.T) {
 
 		// Should still route to explicit collection
 		results := router.Route([]string{"coll-a"})
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1 (explicit collection)", len(results))
-		}
+		assert.Len(t, results, 1, "results length (explicit collection)")
 
 		// Should not appear in empty collection query
 		results = router.Route(nil)
-		if len(results) != 0 {
-			t.Errorf("results length = %d, want 0 (not searchable)", len(results))
-		}
+		assert.Empty(t, results, "results length (not searchable)")
 	})
 
 	t.Run("update discovery with same collections is idempotent", func(t *testing.T) {
@@ -1236,12 +1039,8 @@ func TestRouterComplexScenarios(t *testing.T) {
 		router.UpdateFromDiscovery("origin-1", []string{"coll-a"})
 
 		origins := router.collectionToOrigins["coll-a"]
-		if len(origins) != 1 {
-			t.Errorf("coll-a origins length = %d, want 1", len(origins))
-		}
-		if origins[0].ID != "origin-1" {
-			t.Errorf("origin ID = %s, want origin-1", origins[0].ID)
-		}
+		require.Len(t, origins, 1, "coll-a origins length")
+		assert.Equal(t, "origin-1", origins[0].ID, "origin ID")
 	})
 
 	t.Run("large number of collections", func(t *testing.T) {
@@ -1257,15 +1056,11 @@ func TestRouterComplexScenarios(t *testing.T) {
 		origin1 := testOrigin("origin-1", routerWithCollections(collections...))
 		router.Register(origin1)
 
-		if router.CollectionCount() != 1000 {
-			t.Errorf("collection count = %d, want 1000", router.CollectionCount())
-		}
+		assert.Equal(t, 1000, router.CollectionCount(), "collection count")
 
 		// Route to one of them
 		results := router.Route([]string{"coll-000"})
-		if len(results) != 1 {
-			t.Errorf("results length = %d, want 1", len(results))
-		}
+		assert.Len(t, results, 1, "results length")
 	})
 
 	t.Run("large number of origins", func(t *testing.T) {
@@ -1278,14 +1073,10 @@ func TestRouterComplexScenarios(t *testing.T) {
 			router.Register(origin)
 		}
 
-		if router.OriginCount() != 100 {
-			t.Errorf("origin count = %d, want 100", router.OriginCount())
-		}
+		assert.Equal(t, 100, router.OriginCount(), "origin count")
 
 		results := router.Route(nil)
-		if len(results) != 100 {
-			t.Errorf("results length = %d, want 100 (all searchable)", len(results))
-		}
+		assert.Len(t, results, 100, "results length (all searchable)")
 	})
 }
 
@@ -1310,17 +1101,12 @@ func TestRouter_PrecomputesImplicitAllOnce(t *testing.T) {
 	router.Register(testOrigin("explicit", routerWithCollections("c1", "c2")))
 
 	priorRegisterRecomputes := recomputes
-	if priorRegisterRecomputes < 3 {
-		t.Fatalf("expected at least one recompute per Register; got %d", priorRegisterRecomputes)
-	}
+	require.GreaterOrEqualf(t, priorRegisterRecomputes, 3, "expected at least one recompute per Register; got %d", priorRegisterRecomputes)
 
 	// Now slam Route() — none of these should trigger a recompute.
 	for i := 0; i < 100; i++ {
 		_ = router.Route([]string{"c1", "c2", "c-other"})
 	}
 
-	if recomputes != priorRegisterRecomputes {
-		t.Errorf("Route() triggered recomputes: prior=%d now=%d (expected stable)",
-			priorRegisterRecomputes, recomputes)
-	}
+	assert.Equalf(t, priorRegisterRecomputes, recomputes, "Route() triggered recomputes: prior=%d now=%d (expected stable)", priorRegisterRecomputes, recomputes)
 }

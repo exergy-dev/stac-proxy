@@ -9,11 +9,12 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // OIDCProvider is now a thin adapter over coreos/go-oidc. These tests
@@ -35,9 +36,7 @@ type oidcTestServer struct {
 func newOIDCServer(t *testing.T) *oidcTestServer {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("rsa: %v", err)
-	}
+	require.NoError(t, err, "rsa")
 	const kid = "test-kid"
 
 	mux := http.NewServeMux()
@@ -78,9 +77,7 @@ func (s *oidcTestServer) sign(t *testing.T, claims jwt.MapClaims) string {
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	tok.Header["kid"] = s.kid
 	signed, err := tok.SignedString(s.priv)
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	require.NoError(t, err, "sign")
 	return signed
 }
 
@@ -93,9 +90,7 @@ func (s *oidcTestServer) provider(t *testing.T, audience string, allowlist []str
 		AllowInsecureHTTP:  true,
 		AttributeAllowlist: allowlist,
 	})
-	if err != nil {
-		t.Fatalf("NewOIDCProvider: %v", err)
-	}
+	require.NoError(t, err, "NewOIDCProvider")
 	return p
 }
 
@@ -105,20 +100,14 @@ func TestOIDC_RejectsHTTPIssuerByDefault(t *testing.T) {
 		Name:      "oidc",
 		IssuerURL: "http://insecure.example",
 	})
-	if err == nil {
-		t.Fatal("expected https-required error, got nil")
-	}
-	if !strings.Contains(err.Error(), "https") {
-		t.Errorf("error should mention https; got: %v", err)
-	}
+	require.Error(t, err, "expected https-required error")
+	assert.Contains(t, err.Error(), "https", "error should mention https")
 }
 
 func TestOIDC_RequiresIssuerURL(t *testing.T) {
 	t.Parallel()
 	_, err := NewOIDCProvider(OIDCConfig{Name: "oidc"})
-	if err == nil {
-		t.Fatal("expected error for missing IssuerURL")
-	}
+	require.Error(t, err, "expected error for missing IssuerURL")
 }
 
 func TestOIDC_ValidTokenRoundTrip(t *testing.T) {
@@ -136,18 +125,10 @@ func TestOIDC_ValidTokenRoundTrip(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+signed)
 
 	princ, err := p.Authenticate(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Authenticate: %v", err)
-	}
-	if princ.ID != "user-1" {
-		t.Errorf("ID=%q", princ.ID)
-	}
-	if princ.Email != "user@example.com" {
-		t.Errorf("Email=%q", princ.Email)
-	}
-	if princ.Name != "Alice" {
-		t.Errorf("Name=%q", princ.Name)
-	}
+	require.NoError(t, err, "Authenticate")
+	assert.Equal(t, "user-1", princ.ID, "ID")
+	assert.Equal(t, "user@example.com", princ.Email, "Email")
+	assert.Equal(t, "Alice", princ.Name, "Name")
 }
 
 // M-auth-4: claims not on the allowlist must never reach Attributes.
@@ -165,15 +146,10 @@ func TestOIDC_OnlyAllowlistedClaimsCopied(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+signed)
 	princ, err := p.Authenticate(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Authenticate: %v", err)
-	}
-	if princ.Attributes["email"] != "user@example.com" {
-		t.Errorf("email missing")
-	}
-	if _, ok := princ.Attributes["evil_attr"]; ok {
-		t.Error("non-allowlisted claim leaked")
-	}
+	require.NoError(t, err, "Authenticate")
+	assert.Equal(t, "user@example.com", princ.Attributes["email"], "email missing")
+	_, ok := princ.Attributes["evil_attr"]
+	assert.False(t, ok, "non-allowlisted claim leaked")
 }
 
 // auth_method must always be "oidc"; a token claiming otherwise — even
@@ -191,12 +167,8 @@ func TestOIDC_AuthMethodSetServerSide(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+signed)
 	princ, err := p.Authenticate(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Authenticate: %v", err)
-	}
-	if princ.Attributes["auth_method"] != "oidc" {
-		t.Fatalf("auth_method=%q, want \"oidc\"", princ.Attributes["auth_method"])
-	}
+	require.NoError(t, err, "Authenticate")
+	require.Equal(t, "oidc", princ.Attributes["auth_method"], "auth_method")
 }
 
 // Regression: an attacker holding only the public RSA key tries to forge
@@ -218,16 +190,12 @@ func TestOIDC_RejectsHS256ForgedWithPublicKey(t *testing.T) {
 	})
 	forged.Header["kid"] = s.kid
 	tokenStr, err := forged.SignedString([]byte("any-secret"))
-	if err != nil {
-		t.Fatalf("sign forged: %v", err)
-	}
+	require.NoError(t, err, "sign forged")
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenStr)
 	princ, err := p.Authenticate(context.Background(), req)
-	if err == nil {
-		t.Fatalf("forged HS256 accepted; principal=%+v", princ)
-	}
+	require.Error(t, err, "forged HS256 accepted; principal=%+v", princ)
 }
 
 func TestOIDC_RolesExtractedFromCommonClaims(t *testing.T) {
@@ -246,16 +214,12 @@ func TestOIDC_RolesExtractedFromCommonClaims(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+signed)
 	princ, err := p.Authenticate(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Authenticate: %v", err)
-	}
+	require.NoError(t, err, "Authenticate")
 	roles := map[string]bool{}
 	for _, r := range princ.Roles {
 		roles[r] = true
 	}
 	for _, want := range []string{"admin", "editor", "team-a"} {
-		if !roles[want] {
-			t.Errorf("missing role %q in %v", want, princ.Roles)
-		}
+		assert.True(t, roles[want], "missing role %q in %v", want, princ.Roles)
 	}
 }

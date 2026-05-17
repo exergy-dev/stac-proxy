@@ -14,13 +14,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // helper: build a JWKS document from a list of (kid, *rsa.PublicKey)
@@ -62,9 +63,7 @@ func mintRS256(t *testing.T, priv *rsa.PrivateKey, kid string, claims jwt.MapCla
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	tok.Header["kid"] = kid
 	signed, err := tok.SignedString(priv)
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	require.NoError(t, err, "sign")
 	return signed
 }
 
@@ -102,31 +101,22 @@ func TestJWKSClient_CachesAndRotates(t *testing.T) {
 		AllowInsecureHTTP:  true,
 		MinRefreshInterval: time.Nanosecond,
 	})
-	if err != nil {
-		t.Fatalf("NewJWKSClient: %v", err)
-	}
+	require.NoError(t, err, "NewJWKSClient")
 	ctx := context.Background()
 
 	// First fetch populates the cache.
-	if _, err := c.Key(ctx, "k1"); err != nil {
-		t.Fatalf("k1 first: %v", err)
-	}
+	_, err = c.Key(ctx, "k1")
+	require.NoError(t, err, "k1 first")
 	// Second fetch should hit the cache (no extra HTTP).
-	if _, err := c.Key(ctx, "k1"); err != nil {
-		t.Fatalf("k1 second: %v", err)
-	}
-	if got := atomic.LoadInt64(hits); got != 1 {
-		t.Fatalf("want 1 JWKS GET, got %d", got)
-	}
+	_, err = c.Key(ctx, "k1")
+	require.NoError(t, err, "k1 second")
+	require.Equal(t, int64(1), atomic.LoadInt64(hits), "want 1 JWKS GET")
 
 	// Now ask for k2 — cache miss should force a refresh.
 	serveK2.Store(true)
-	if _, err := c.Key(ctx, "k2"); err != nil {
-		t.Fatalf("k2 after rotation: %v", err)
-	}
-	if got := atomic.LoadInt64(hits); got != 2 {
-		t.Fatalf("want 2 GETs after rotation, got %d", got)
-	}
+	_, err = c.Key(ctx, "k2")
+	require.NoError(t, err, "k2 after rotation")
+	require.Equal(t, int64(2), atomic.LoadInt64(hits), "want 2 GETs after rotation")
 }
 
 func TestBearerProvider_VerifiesJWTAgainstJWKS(t *testing.T) {
@@ -145,9 +135,7 @@ func TestBearerProvider_VerifiesJWTAgainstJWKS(t *testing.T) {
 		JWKSURL:               srv.URL,
 		AllowInsecureHTTPJWKS: true,
 	})
-	if err != nil {
-		t.Fatalf("NewBearerProvider: %v", err)
-	}
+	require.NoError(t, err, "NewBearerProvider")
 
 	token := mintRS256(t, priv, "primary", jwt.MapClaims{
 		"iss": "https://issuer.example.com",
@@ -159,15 +147,9 @@ func TestBearerProvider_VerifiesJWTAgainstJWKS(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	princ, err := p.Authenticate(req.Context(), req)
-	if err != nil {
-		t.Fatalf("authenticate: %v", err)
-	}
-	if princ == nil {
-		t.Fatal("nil principal")
-	}
-	if princ.ID != "user-42" {
-		t.Fatalf("want sub=user-42, got %q", princ.ID)
-	}
+	require.NoError(t, err, "authenticate")
+	require.NotNil(t, princ, "nil principal")
+	require.Equal(t, "user-42", princ.ID, "want sub=user-42")
 }
 
 func TestBearerProvider_RejectsExpiredToken(t *testing.T) {
@@ -193,9 +175,8 @@ func TestBearerProvider_RejectsExpiredToken(t *testing.T) {
 	})
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	if _, err := p.Authenticate(req.Context(), req); err == nil {
-		t.Fatal("want error for expired token")
-	}
+	_, err := p.Authenticate(req.Context(), req)
+	require.Error(t, err, "want error for expired token")
 }
 
 func TestParseRSAKey_AndECKey_RoundTrip(t *testing.T) {
@@ -207,16 +188,11 @@ func TestParseRSAKey_AndECKey_RoundTrip(t *testing.T) {
 		E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
 	}
 	got, err := parseRSAKey(jwk)
-	if err != nil {
-		t.Fatalf("parseRSAKey: %v", err)
-	}
+	require.NoError(t, err, "parseRSAKey")
 	rsaKey, ok := got.(*rsa.PublicKey)
-	if !ok {
-		t.Fatal("not *rsa.PublicKey")
-	}
-	if rsaKey.N.Cmp(priv.PublicKey.N) != 0 || rsaKey.E != priv.PublicKey.E {
-		t.Fatal("RSA key mismatch")
-	}
+	require.True(t, ok, "not *rsa.PublicKey")
+	require.Zero(t, rsaKey.N.Cmp(priv.PublicKey.N), "RSA key N mismatch")
+	require.Equal(t, priv.PublicKey.E, rsaKey.E, "RSA key E mismatch")
 
 	// EC round-trip
 	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -227,16 +203,11 @@ func TestParseRSAKey_AndECKey_RoundTrip(t *testing.T) {
 		Y:   base64.RawURLEncoding.EncodeToString(ec.PublicKey.Y.Bytes()),
 	}
 	gotEC, err := parseECKey(ecJWK)
-	if err != nil {
-		t.Fatalf("parseECKey: %v", err)
-	}
+	require.NoError(t, err, "parseECKey")
 	ecKey, ok := gotEC.(*ecdsa.PublicKey)
-	if !ok {
-		t.Fatal("not *ecdsa.PublicKey")
-	}
-	if ecKey.X.Cmp(ec.PublicKey.X) != 0 || ecKey.Y.Cmp(ec.PublicKey.Y) != 0 {
-		t.Fatal("EC key mismatch")
-	}
+	require.True(t, ok, "not *ecdsa.PublicKey")
+	require.Zero(t, ecKey.X.Cmp(ec.PublicKey.X), "EC key X mismatch")
+	require.Zero(t, ecKey.Y.Cmp(ec.PublicKey.Y), "EC key Y mismatch")
 }
 
 // TestJWKS_UnknownKidDoesNotFloodIdP exercises the flood-floor +
@@ -258,9 +229,7 @@ func TestJWKS_UnknownKidDoesNotFloodIdP(t *testing.T) {
 		AllowInsecureHTTP: true,
 		// Defaults: 30s floor, 60s negative cache.
 	})
-	if err != nil {
-		t.Fatalf("NewJWKSClient: %v", err)
-	}
+	require.NoError(t, err, "NewJWKSClient")
 
 	ctx := context.Background()
 	const N = 100
@@ -283,12 +252,8 @@ func TestJWKS_UnknownKidDoesNotFloodIdP(t *testing.T) {
 	// request, so a single refresh is the expected steady state.
 	// Allow a small margin for serial bursts that arrive after a
 	// just-finished refresh (clock resolution): cap at 5.
-	if got > 5 {
-		t.Fatalf("want ≤ 5 JWKS GETs under unknown-kid flood, got %d", got)
-	}
-	if got == 0 {
-		t.Fatalf("want ≥ 1 JWKS GET (the initial refresh attempt), got 0")
-	}
+	require.LessOrEqual(t, got, int64(5), "want ≤ 5 JWKS GETs under unknown-kid flood, got %d", got)
+	require.GreaterOrEqual(t, got, int64(1), "want ≥ 1 JWKS GET (the initial refresh attempt), got 0")
 }
 
 // TestJWKS_NegativeCacheClearedOnSuccessfulRefresh verifies a kid that
@@ -315,15 +280,12 @@ func TestJWKS_NegativeCacheClearedOnSuccessfulRefresh(t *testing.T) {
 		MinRefreshInterval: time.Nanosecond,
 		NegativeCacheTTL:   time.Nanosecond,
 	})
-	if err != nil {
-		t.Fatalf("NewJWKSClient: %v", err)
-	}
+	require.NoError(t, err, "NewJWKSClient")
 	ctx := context.Background()
 
 	// First lookup: kid absent → negative-cached.
-	if _, err := c.Key(ctx, "new-kid"); err == nil {
-		t.Fatal("want error for absent kid")
-	}
+	_, err = c.Key(ctx, "new-kid")
+	require.Error(t, err, "want error for absent kid")
 
 	// Now publish it.
 	serveKey.Store(true)
@@ -331,9 +293,8 @@ func TestJWKS_NegativeCacheClearedOnSuccessfulRefresh(t *testing.T) {
 	// Wait long enough for both the floor and the negative-cache TTL
 	// to elapse. With both at 1ns this is immediate.
 	time.Sleep(time.Microsecond)
-	if _, err := c.Key(ctx, "new-kid"); err != nil {
-		t.Fatalf("rotation lookup: %v", err)
-	}
+	_, err = c.Key(ctx, "new-kid")
+	require.NoError(t, err, "rotation lookup")
 }
 
 // TestJWKS_RejectsEncKeysAndLogsParseErrors verifies the use=sig filter
@@ -376,23 +337,18 @@ func TestJWKS_RejectsEncKeysAndLogsParseErrors(t *testing.T) {
 		AllowInsecureHTTP: true,
 		Logger:            logger,
 	})
-	if err != nil {
-		t.Fatalf("NewJWKSClient: %v", err)
-	}
+	require.NoError(t, err, "NewJWKSClient")
 	ctx := context.Background()
 
 	// The good key should be available.
-	if _, err := c.Key(ctx, "good"); err != nil {
-		t.Fatalf("good key fetch: %v", err)
-	}
+	_, err = c.Key(ctx, "good")
+	require.NoError(t, err, "good key fetch")
 	// The enc-use key must NOT be admitted.
-	if _, err := c.Key(ctx, "enc-only"); err == nil {
-		t.Fatal("want error for use=enc kid; the key should not have been cached")
-	}
+	_, err = c.Key(ctx, "enc-only")
+	require.Error(t, err, "want error for use=enc kid; the key should not have been cached")
 	// The malformed key must NOT be admitted.
-	if _, err := c.Key(ctx, "broken"); err == nil {
-		t.Fatal("want error for malformed kid; parse error should have skipped it")
-	}
+	_, err = c.Key(ctx, "broken")
+	require.Error(t, err, "want error for malformed kid; parse error should have skipped it")
 
 	// Internal sanity: the cache contains exactly the good kid.
 	c.mu.RLock()
@@ -401,18 +357,14 @@ func TestJWKS_RejectsEncKeysAndLogsParseErrors(t *testing.T) {
 		cached = append(cached, k)
 	}
 	c.mu.RUnlock()
-	if len(cached) != 1 || cached[0] != "good" {
-		t.Fatalf("want only [good] cached, got %v", cached)
-	}
+	require.Len(t, cached, 1, "want only [good] cached, got %v", cached)
+	require.Equal(t, "good", cached[0], "want only [good] cached, got %v", cached)
 
 	// Verify the structured log entries reference the offending kids.
 	out := buf.String()
-	if !strings.Contains(out, `"jwk_kid":"enc-only"`) || !strings.Contains(out, `"jwk_use":"enc"`) {
-		t.Errorf("expected enc-only kid + use=enc warning in log, got: %s", out)
-	}
-	if !strings.Contains(out, `"jwk_kid":"broken"`) {
-		t.Errorf("expected broken kid in parse-error warning, got: %s", out)
-	}
+	assert.Contains(t, out, `"jwk_kid":"enc-only"`, "expected enc-only kid in warning")
+	assert.Contains(t, out, `"jwk_use":"enc"`, "expected use=enc in warning")
+	assert.Contains(t, out, `"jwk_kid":"broken"`, "expected broken kid in parse-error warning")
 }
 
 // logBuffer is a minimal sync io.Writer for capturing slog JSON output
@@ -487,26 +439,21 @@ func TestJWKS_StaleWhileRevalidate_KeepsServingDuringOutage(t *testing.T) {
 	}
 
 	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
-		TTL:                time.Minute,           // soft
-		HardTTL:            10 * time.Minute,      // hard
+		TTL:                time.Minute,      // soft
+		HardTTL:            10 * time.Minute, // hard
 		AllowInsecureHTTP:  true,
 		MinRefreshInterval: time.Nanosecond, // not relevant to this test
 	})
-	if err != nil {
-		t.Fatalf("NewJWKSClient: %v", err)
-	}
+	require.NoError(t, err, "NewJWKSClient")
 	c.now = clock
 
 	ctx := context.Background()
 
 	// Initial fetch populates the cache.
-	if _, err := c.Key(ctx, "k1"); err != nil {
-		t.Fatalf("initial fetch: %v", err)
-	}
+	_, err = c.Key(ctx, "k1")
+	require.NoError(t, err, "initial fetch")
 	initialHits := atomic.LoadInt64(hits)
-	if initialHits != 1 {
-		t.Fatalf("want 1 initial GET, got %d", initialHits)
-	}
+	require.Equal(t, int64(1), initialHits, "want 1 initial GET")
 
 	// Now break the upstream and advance past the soft TTL.
 	fail.Store(true)
@@ -518,15 +465,9 @@ func TestJWKS_StaleWhileRevalidate_KeepsServingDuringOutage(t *testing.T) {
 	start := time.Now()
 	got, err := c.Key(ctx, "k1")
 	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("stale fetch: %v", err)
-	}
-	if got == nil {
-		t.Fatal("want stale-cached key, got nil")
-	}
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("stale fetch should not block on upstream; took %v", elapsed)
-	}
+	require.NoError(t, err, "stale fetch")
+	require.NotNil(t, got, "want stale-cached key")
+	require.LessOrEqual(t, elapsed, 500*time.Millisecond, "stale fetch should not block on upstream; took %v", elapsed)
 
 	// The background refresh should have been kicked off; wait briefly
 	// for it to attempt the upstream and bump the hits counter.
@@ -537,23 +478,19 @@ func TestJWKS_StaleWhileRevalidate_KeepsServingDuringOutage(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if atomic.LoadInt64(hits) <= initialHits {
-		t.Fatalf("background refresh did not query upstream; hits stayed at %d", initialHits)
-	}
+	require.Greater(t, atomic.LoadInt64(hits), initialHits, "background refresh did not query upstream; hits stayed at %d", initialHits)
 
 	// Even after the failed background refresh, subsequent foreground
 	// calls (still under HardTTL) keep returning the cached key.
-	if _, err := c.Key(ctx, "k1"); err != nil {
-		t.Fatalf("post-refresh stale fetch: %v", err)
-	}
+	_, err = c.Key(ctx, "k1")
+	require.NoError(t, err, "post-refresh stale fetch")
 
 	// Past the hard TTL, the entries are treated as missing. With the
 	// upstream still failing, the foreground refresh now surfaces an
 	// error.
 	advance(15 * time.Minute)
-	if _, err := c.Key(ctx, "k1"); err == nil {
-		t.Fatal("want error past HardTTL with failing upstream")
-	}
+	_, err = c.Key(ctx, "k1")
+	require.Error(t, err, "want error past HardTTL with failing upstream")
 }
 
 // silence unused-import vet checks; only here for future debug taps.

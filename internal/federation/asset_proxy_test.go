@@ -11,6 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestAssetHrefUnderOrigin covers the SSRF defense: a decoded asset
@@ -35,9 +38,7 @@ func TestAssetHrefUnderOrigin(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := assetHrefUnderOrigin(tt.href, tt.base); got != tt.expect {
-				t.Errorf("got %v want %v", got, tt.expect)
-			}
+			assert.Equal(t, tt.expect, assetHrefUnderOrigin(tt.href, tt.base))
 		})
 	}
 }
@@ -56,9 +57,7 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 			RewriteAssets: mode,
 		}
 		c, err := NewOriginClient(o)
-		if err != nil {
-			t.Fatalf("client: %v", err)
-		}
+		require.NoError(t, err, "client")
 		return c
 	}
 
@@ -67,25 +66,19 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 	t.Run("never preserves href", func(t *testing.T) {
 		t.Parallel()
 		h := &Handler{proxyBaseURL: "https://proxy.example"}
-		if got := h.rewriteAssetHref(ctx, mkClient("never"), href); got != href {
-			t.Errorf("got %q, want unchanged", got)
-		}
+		assert.Equal(t, href, h.rewriteAssetHref(ctx, mkClient("never"), href), "want unchanged")
 	})
 
 	t.Run("default (empty) preserves href", func(t *testing.T) {
 		t.Parallel()
 		h := &Handler{proxyBaseURL: "https://proxy.example"}
-		if got := h.rewriteAssetHref(ctx, mkClient(""), href); got != href {
-			t.Errorf("got %q, want unchanged", got)
-		}
+		assert.Equal(t, href, h.rewriteAssetHref(ctx, mkClient(""), href), "want unchanged")
 	})
 
 	t.Run("sign without signer falls back to passthrough", func(t *testing.T) {
 		t.Parallel()
 		h := &Handler{proxyBaseURL: "https://proxy.example"}
-		if got := h.rewriteAssetHref(ctx, mkClient("sign"), href); got != href {
-			t.Errorf("got %q, want unchanged (no signer wired)", got)
-		}
+		assert.Equal(t, href, h.rewriteAssetHref(ctx, mkClient("sign"), href), "want unchanged (no signer wired)")
 	})
 
 	t.Run("sign with signer adds sig+exp", func(t *testing.T) {
@@ -95,9 +88,7 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 			assetSigner:  fakeSigner{prefix: "?sig=X"},
 		}
 		got := h.rewriteAssetHref(ctx, mkClient("sign"), href)
-		if !strings.Contains(got, "?sig=X") {
-			t.Errorf("got %q, want signed url", got)
-		}
+		assert.Containsf(t, got, "?sig=X", "got %q, want signed url", got)
 	})
 
 	t.Run("proxy mode rewrites to /assets/{id}/{ref}", func(t *testing.T) {
@@ -105,26 +96,18 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 		h := &Handler{proxyBaseURL: "https://proxy.example"}
 		got := h.rewriteAssetHref(ctx, mkClient("proxy"), href)
 		const wantPrefix = "https://proxy.example/assets/originA/"
-		if !strings.HasPrefix(got, wantPrefix) {
-			t.Errorf("got %q, want prefix %q", got, wantPrefix)
-		}
+		require.Truef(t, strings.HasPrefix(got, wantPrefix), "got %q, want prefix %q", got, wantPrefix)
 		// And the suffix should base64-url-decode back to the href.
 		ref := strings.TrimPrefix(got, wantPrefix)
 		decoded, err := base64.RawURLEncoding.DecodeString(ref)
-		if err != nil {
-			t.Fatalf("ref not base64-decodable: %v", err)
-		}
-		if string(decoded) != href {
-			t.Errorf("decoded ref = %q, want %q", string(decoded), href)
-		}
+		require.NoErrorf(t, err, "ref not base64-decodable")
+		assert.Equalf(t, href, string(decoded), "decoded ref mismatch")
 	})
 
 	t.Run("proxy mode with empty proxyBaseURL falls back to passthrough", func(t *testing.T) {
 		t.Parallel()
 		h := &Handler{}
-		if got := h.rewriteAssetHref(ctx, mkClient("proxy"), href); got != href {
-			t.Errorf("got %q, want unchanged", got)
-		}
+		assert.Equal(t, href, h.rewriteAssetHref(ctx, mkClient("proxy"), href), "want unchanged")
 	})
 }
 
@@ -182,9 +165,7 @@ func TestServeAssetHTTP_StreamsAndForwardsRange(t *testing.T) {
 		},
 		ProxyBaseURL: "https://proxy.example",
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	assetURL := upstream.URL + "/items/x/asset.bin"
 	ref := base64.RawURLEncoding.EncodeToString([]byte(assetURL))
@@ -195,23 +176,13 @@ func TestServeAssetHTTP_StreamsAndForwardsRange(t *testing.T) {
 
 	handler.ServeAssetHTTP(rec, req, "a", ref)
 
-	if rec.Code != http.StatusPartialContent {
-		t.Fatalf("status = %d, want 206; body=%q", rec.Code, rec.Body.String())
-	}
-	if got := rec.Header().Get("Content-Range"); got != "bytes 0-1023/1048576" {
-		t.Errorf("Content-Range = %q", got)
-	}
-	if n := rec.Body.Len(); n != 1024 {
-		t.Errorf("body length = %d, want 1024", n)
-	}
+	require.Equalf(t, http.StatusPartialContent, rec.Code, "status; body=%q", rec.Body.String())
+	assert.Equal(t, "bytes 0-1023/1048576", rec.Header().Get("Content-Range"), "Content-Range")
+	assert.Equalf(t, 1024, rec.Body.Len(), "body length")
 	// Range was forwarded.
-	if got := gotRange.Load(); got != "bytes=0-1023" {
-		t.Errorf("upstream did not see Range: %v", got)
-	}
+	assert.Equal(t, "bytes=0-1023", gotRange.Load(), "upstream did not see Range")
 	// Origin's configured bearer auth was applied to the upstream call.
-	if got := gotAuth.Load(); got != "Bearer upstream-token" {
-		t.Errorf("upstream auth = %v, want 'Bearer upstream-token'", got)
-	}
+	assert.Equal(t, "Bearer upstream-token", gotAuth.Load(), "upstream auth")
 }
 
 // TestServeAssetHTTP_RejectsOutOfOriginRef verifies the SSRF defense
@@ -229,18 +200,14 @@ func TestServeAssetHTTP_RejectsOutOfOriginRef(t *testing.T) {
 			{ID: "a", BaseURL: upstream.URL, Enabled: true, Timeout: time.Second, RewriteAssets: "proxy"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	bad := base64.RawURLEncoding.EncodeToString([]byte("https://attacker.example/something"))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/assets/a/"+bad, nil)
 	handler.ServeAssetHTTP(rec, req, "a", bad)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 for ref outside origin base", rec.Code)
-	}
+	assert.Equalf(t, http.StatusBadRequest, rec.Code, "status; want 400 for ref outside origin base")
 }
 
 // TestServeAssetHTTP_OriginNotInProxyModeIs404 verifies that the
@@ -257,18 +224,14 @@ func TestServeAssetHTTP_OriginNotInProxyModeIs404(t *testing.T) {
 			{ID: "a", BaseURL: upstream.URL, Enabled: true, Timeout: time.Second /* no RewriteAssets */},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	ref := base64.RawURLEncoding.EncodeToString([]byte(upstream.URL + "/x"))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/assets/a/"+ref, nil)
 	handler.ServeAssetHTTP(rec, req, "a", ref)
 
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404 for non-proxy origin", rec.Code)
-	}
+	assert.Equalf(t, http.StatusNotFound, rec.Code, "status; want 404 for non-proxy origin")
 }
 
 // TestServeAssetHTTP_UnknownOriginIs404 covers the path where the
@@ -277,18 +240,14 @@ func TestServeAssetHTTP_UnknownOriginIs404(t *testing.T) {
 	t.Parallel()
 
 	handler, err := NewHandler(HandlerConfig{})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	ref := base64.RawURLEncoding.EncodeToString([]byte("https://example.com/x"))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/assets/missing/"+ref, nil)
 	handler.ServeAssetHTTP(rec, req, "missing", ref)
 
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404 for unknown origin", rec.Code)
-	}
+	assert.Equalf(t, http.StatusNotFound, rec.Code, "status; want 404 for unknown origin")
 }
 
 // TestServeAssetHTTP_ClientCancelAbortsUpstream verifies that
@@ -315,9 +274,7 @@ func TestServeAssetHTTP_ClientCancelAbortsUpstream(t *testing.T) {
 			{ID: "a", BaseURL: upstream.URL, Enabled: true, Timeout: 5 * time.Second, RewriteAssets: "proxy"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
+	require.NoError(t, err, "NewHandler")
 
 	ref := base64.RawURLEncoding.EncodeToString([]byte(upstream.URL + "/x"))
 
@@ -362,9 +319,7 @@ func TestRewriteLinks_WalksAssets(t *testing.T) {
 		Timeout:       time.Second,
 		RewriteAssets: "proxy",
 	})
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+	require.NoError(t, err, "client")
 
 	h := &Handler{proxyBaseURL: "https://proxy.example"}
 
@@ -386,9 +341,7 @@ func TestRewriteLinks_WalksAssets(t *testing.T) {
 	feat := data["features"].([]any)[0].(map[string]any)
 	gotHref := feat["assets"].(map[string]any)["data"].(map[string]any)["href"].(string)
 	const wantPrefix = "https://proxy.example/assets/a/"
-	if !strings.HasPrefix(gotHref, wantPrefix) {
-		t.Errorf("asset href = %q, want prefix %q", gotHref, wantPrefix)
-	}
+	assert.Truef(t, strings.HasPrefix(gotHref, wantPrefix), "asset href = %q, want prefix %q", gotHref, wantPrefix)
 }
 
 // Ensure unused imports compile away.
