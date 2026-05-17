@@ -14,7 +14,6 @@ import (
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
-	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 // Config contains configuration for the rate limit middleware.
@@ -114,13 +113,6 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(info.ResetAt, 10))
 
 			if !allowed {
-				if m := observability.Default(); m != nil {
-					keyType := "principal"
-					if principalID == "" {
-						keyType = "ip"
-					}
-					m.RateLimitExceeded.WithLabelValues(keyType).Inc()
-				}
 				w.Header().Set("Retry-After", strconv.Itoa(info.RetryAfter))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)

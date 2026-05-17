@@ -15,7 +15,6 @@ import (
 type Config struct {
 	Server     ServerConfig       `yaml:"server"`
 	Logging    LoggingConfig      `yaml:"logging"`
-	Metrics    MetricsConfig      `yaml:"metrics"`
 	Middleware []MiddlewareConfig `yaml:"middleware"`
 	Mode       string             `yaml:"mode"` // "single" or "federation"
 	Upstream   *UpstreamConfig    `yaml:"upstream"`
@@ -70,27 +69,6 @@ type TimeoutConfig struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level"`  // debug, info, warn, error
 	Format string `yaml:"format"` // json, console
-}
-
-// MetricsConfig contains Prometheus metrics settings.
-type MetricsConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Path    string `yaml:"path"`
-	// BindAddr is the host:port the metrics server listens on. The
-	// default `127.0.0.1:9090` keeps metrics on the loopback interface
-	// so they aren't reachable from the public network. Operators
-	// wanting LAN-wide scrape must set it explicitly (e.g.
-	// `0.0.0.0:9090`) — typically only safe when the proxy runs in a
-	// private subnet behind a firewall, or when paired with an
-	// `auth_token` below.
-	BindAddr string `yaml:"bind_addr"`
-	// Port is retained for backward-compat config shape but is only
-	// consulted when BindAddr is empty.
-	Port int `yaml:"port"`
-	// AuthToken, when set, is required as a Bearer token on /metrics
-	// requests. Combined with a non-loopback BindAddr this gives a
-	// minimum gate for cross-host scrape.
-	AuthToken string `yaml:"auth_token"`
 }
 
 // HealthConfig contains health check settings.

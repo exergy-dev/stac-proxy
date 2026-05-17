@@ -25,7 +25,6 @@ import (
 	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
-	"github.com/yourorg/stac-proxy/internal/observability"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -330,16 +329,6 @@ func injectCQL2Filter(sr *stac.SearchRequest, constraints *AuthzConstraints, spa
 	sr.Filter = encoded
 	if sr.FilterLang == "" {
 		sr.FilterLang = "cql2-text"
-	}
-	if mt := observability.Default(); mt != nil {
-		reason := observability.CQL2ReasonPolicy
-		switch {
-		case updated.GeofencePushedDown && userExpr != nil:
-			reason = observability.CQL2ReasonMerged
-		case updated.GeofencePushedDown:
-			reason = observability.CQL2ReasonGeofence
-		}
-		mt.CQL2Injected.WithLabelValues(sr.FilterLang, reason).Inc()
 	}
 	return updated, nil
 }

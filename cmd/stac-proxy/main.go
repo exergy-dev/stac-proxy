@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"crypto/x509"
 	"flag"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -120,12 +118,6 @@ const shutdownTimeout = 30 * time.Second
 
 // run starts the proxy server.
 func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
-	// Initialize metrics and publish them as the process-wide
-	// default so middleware/handlers can emit without us threading
-	// the Metrics pointer through every constructor.
-	metrics := observability.NewMetrics("stac_proxy")
-	observability.SetDefault(metrics)
-
 	// Initialize health checker. Checks are appended as origins are
 	// built; the underlying alexliesenfeld/health.Checker is lazily
 	// constructed on first request to /health.
@@ -134,7 +126,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// Build the federation handler. Single-origin mode is modeled as a
 	// federation-of-1 — the single-origin code path collapses into
 	// reverseProxyOnce against the synthetic "primary" origin.
-	handler, err := buildFederationHandler(ctx, cfg, logger, healthChecker, metrics)
+	handler, err := buildFederationHandler(ctx, cfg, logger, healthChecker)
 	if err != nil {
 		return fmt.Errorf("failed to build handler: %w", err)
 	}
@@ -195,7 +187,6 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	router := server.NewRouter(server.RouterConfig{
 		Handler:         handler,
 		HealthChecker:   healthChecker,
-		Metrics:         metrics,
 		MaxBodyBytes:    cfg.Server.MaxBodyBytes,
 		HTTPMiddlewares: httpMiddlewares,
 		TrustedProxies:  cfg.Server.TrustedProxies,
@@ -217,21 +208,6 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
 
-	// Start metrics server if enabled. We retain the *http.Server
-	// handle so the shutdown drain can call Shutdown on it in
-	// parallel with the main server — otherwise the metrics
-	// goroutine leaks past SIGTERM and the process never exits
-	// cleanly.
-	var metricsSrv *http.Server
-	if cfg.Metrics.Enabled {
-		metricsSrv = newMetricsServer(cfg.Metrics, metrics, logger)
-		go func() {
-			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				logger.Error("Metrics server error", "error", err)
-			}
-		}()
-	}
-
 	// Start health checks
 	healthChecker.Start()
 	defer healthChecker.Stop()
@@ -243,34 +219,15 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 
 	// Watch for parent-context cancellation (signal received) and
 	// trigger graceful shutdown. srv.Start() will then return
-	// http.ErrServerClosed and main can exit cleanly. Both the main
-	// and metrics servers shut down in parallel via a small WaitGroup
-	// so neither blocks the other on slow drains.
+	// http.ErrServerClosed and main can exit cleanly.
 	go func() {
 		<-ctx.Done()
-		logger.Info("Shutdown signal received; draining",
-			"timeout", shutdownTimeout)
+		logger.Info("Shutdown signal received; draining", "timeout", shutdownTimeout)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := srv.Shutdown(shutdownCtx); err != nil {
-				logger.Error("Server shutdown error", "error", err)
-			}
-		}()
-		if metricsSrv != nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
-					logger.Error("Metrics server shutdown error", "error", err)
-				}
-			}()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("Server shutdown error", "error", err)
 		}
-		wg.Wait()
 	}()
 
 	// Start server (blocks until Shutdown is called)
@@ -656,7 +613,7 @@ func intFromAny(v interface{}) (int, bool) {
 // single-origin mode (cfg.Mode != "federation") it synthesizes a
 // single-element Origins list from cfg.Upstream, so the same code
 // path handles both deployment shapes.
-func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker, metrics *observability.Metrics) (*federation.Handler, error) {
+func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker) (*federation.Handler, error) {
 	// Single-origin → federation-of-1 translation.
 	if !cfg.IsFederation() {
 		return buildSingleOriginAsFederation(ctx, cfg, logger, health)
@@ -970,59 +927,6 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 	health.AddCheck(observability.NewOriginCheckWithClient("upstream", cfg.Upstream.URL, hc))
 
 	return handler, nil
-}
-
-// newMetricsServer constructs the Prometheus metrics *http.Server
-// without starting it. The caller is responsible for invoking
-// ListenAndServe in a goroutine and Shutdown during drain — exposing
-// the handle keeps the metrics goroutine joinable on SIGTERM rather
-// than orphaned.
-//
-// The metrics listener defaults to 127.0.0.1:9090 so /metrics is not
-// reachable from the public network; operators wanting cross-host
-// scrape must explicitly set Metrics.BindAddr (and ideally
-// Metrics.AuthToken).
-func newMetricsServer(cfg config.MetricsConfig, metrics *observability.Metrics, logger *slog.Logger) *http.Server {
-	addr := cfg.BindAddr
-	if addr == "" {
-		port := cfg.Port
-		if port == 0 {
-			port = 9090
-		}
-		addr = fmt.Sprintf("127.0.0.1:%d", port)
-	}
-	logger.Info("Starting metrics server",
-		"address", addr,
-		"auth_required", cfg.AuthToken != "",
-	)
-
-	path := cfg.Path
-	if path == "" {
-		path = "/metrics"
-	}
-
-	handler := metrics.Handler()
-	if cfg.AuthToken != "" {
-		token := "Bearer " + cfg.AuthToken
-		inner := handler
-		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(token)) != 1 {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			inner.ServeHTTP(w, r)
-		})
-	}
-
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-
-	return &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
 }
 
 // initLogger builds a structured slog.Logger from config. Format

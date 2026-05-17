@@ -23,7 +23,6 @@ import (
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 	"github.com/yourorg/stac-proxy/internal/middleware/authz"
-	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 // normalizeQuery returns a canonical form of raw with parameters sorted
@@ -245,16 +244,9 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			if data, ok := store.Get(r.Context(), key); ok {
 				if entry, ok := decodeEntry(data); ok {
 					writeCachedResponse(w, entry)
-					if m := observability.Default(); m != nil {
-						m.CacheHits.WithLabelValues(cacheReq.RequestType).Inc()
-					}
 					return
 				}
 				// Corrupt entry — fall through to upstream as if miss.
-			}
-
-			if m := observability.Default(); m != nil {
-				m.CacheMisses.WithLabelValues(cacheReq.RequestType).Inc()
 			}
 
 			cap := httpx.NewResponseCapture()

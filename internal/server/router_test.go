@@ -7,13 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 func TestBodyLimitMiddleware_LargeBodyRejected(t *testing.T) {
@@ -73,47 +70,6 @@ func readAll(r interface {
 			return out, err
 		}
 	}
-}
-
-// TestRouter_MetricsLabelsAreBounded is the C3 regression test:
-// firing requests against /collections/{X}/items/{Y} with many distinct
-// X, Y values must not produce many distinct metric series. The path
-// label is the chi route pattern, so all such requests collapse to a
-// single series.
-//
-// Without the fix, every distinct (collectionID, itemID) combination
-// produced its own time series — an unbounded cardinality DoS against
-// Prometheus.
-func TestRouter_MetricsLabelsAreBounded(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	// Per-instance registerer so repeated test runs (or other tests
-	// using the same namespace) don't trigger MustRegister duplicate panics.
-	metrics := observability.NewMetricsWith("test_router_cardinality", prometheus.NewRegistry())
-	r := NewRouter(RouterConfig{
-		Handler: inner,
-		Metrics: metrics,
-	})
-
-	// Fire 50 distinct (collectionID, itemID) combinations against the
-	// items-by-id route. Without the fix this generates 50 series;
-	// with the fix it's 1 (the pattern).
-	for i := 0; i < 50; i++ {
-		req := httptest.NewRequest(http.MethodGet,
-			"/collections/coll-"+strings.Repeat("x", i+1)+"/items/item-"+strings.Repeat("y", i+1),
-			nil)
-		rr := httptest.NewRecorder()
-		r.ServeHTTP(rr, req)
-	}
-
-	// The pattern slot should have accumulated all 50 requests.
-	const wantPattern = "/collections/{collectionId}/items/{itemId}"
-	got := testutil.ToFloat64(metrics.RequestsTotal.WithLabelValues(http.MethodGet, wantPattern, "200"))
-	assert.GreaterOrEqual(t, got, float64(50),
-		"pattern label %q only accumulated %v of 50 requests — raw path probably leaked into label",
-		wantPattern, got)
 }
 
 // --- H7 trusted-proxy XFF tests --------------------------------------------

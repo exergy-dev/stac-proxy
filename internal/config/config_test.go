@@ -762,10 +762,6 @@ server:
 logging:
   level: info
   format: json
-metrics:
-  enabled: true
-  path: /metrics
-  port: 9090
 health:
   path: /health
 federation:
@@ -824,10 +820,6 @@ middleware:
 		// Verify middleware
 		require.Len(t, cfg.Middleware, 2)
 		assert.Equal(t, "logging", cfg.Middleware[0].Name)
-
-		// Verify metrics
-		assert.True(t, cfg.Metrics.Enabled, "expected metrics to be enabled")
-		assert.Equal(t, 9090, cfg.Metrics.Port)
 	})
 }
 

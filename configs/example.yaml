@@ -20,11 +20,6 @@ logging:
   level: "info"
   format: "json"
 
-metrics:
-  enabled: true
-  path: "/metrics"
-  port: 9090
-
 health:
   path: "/health"
 

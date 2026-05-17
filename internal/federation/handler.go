@@ -21,7 +21,6 @@ import (
 	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
 	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/observability"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
@@ -410,23 +409,6 @@ func (h *Handler) searchOrigin(ctx context.Context, origin *Origin,
 	// Execute the search
 	start := time.Now()
 	fc, _, err := client.Search(ctx, adaptedReq)
-	if m := observability.Default(); m != nil {
-		m.UpstreamRequestDuration.WithLabelValues(origin.ID).Observe(time.Since(start).Seconds())
-		status := observability.UpstreamStatusOK
-		if err != nil {
-			status = observability.UpstreamStatusError
-			class := observability.ErrClassNetwork
-			switch {
-			case errors.Is(err, context.Canceled):
-				class = observability.ErrClassCanceled
-			case errors.Is(err, context.DeadlineExceeded):
-				class = observability.ErrClassTimeout
-			}
-			m.UpstreamErrors.WithLabelValues(origin.ID, class).Inc()
-		}
-		m.UpstreamRequestsTotal.WithLabelValues(origin.ID, status).Inc()
-		m.FederationOriginsQueried.WithLabelValues(origin.ID, status).Inc()
-	}
 	if err != nil {
 		result.Error = err
 		slog.Error("federation origin search failed",
@@ -1241,24 +1223,7 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 		},
 	}
 
-	start := time.Now()
 	rp.ServeHTTP(cap, outReq)
-	if m := observability.Default(); m != nil {
-		m.UpstreamRequestDuration.WithLabelValues(origin.ID).Observe(time.Since(start).Seconds())
-		if upstreamErr != nil {
-			class := observability.ErrClassNetwork
-			switch {
-			case errors.Is(upstreamErr, context.Canceled):
-				class = observability.ErrClassCanceled
-			case errors.Is(upstreamErr, context.DeadlineExceeded):
-				class = observability.ErrClassTimeout
-			}
-			m.UpstreamErrors.WithLabelValues(origin.ID, class).Inc()
-			m.UpstreamRequestsTotal.WithLabelValues(origin.ID, observability.UpstreamStatusError).Inc()
-		} else {
-			m.UpstreamRequestsTotal.WithLabelValues(origin.ID, fmt.Sprintf("%d", cap.Status())).Inc()
-		}
-	}
 
 	if upstreamErr != nil {
 		return nil, &middleware.InternalError{Message: "upstream request failed: " + upstreamErr.Error(), Cause: upstreamErr}

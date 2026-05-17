@@ -4,10 +4,8 @@ package server
 import (
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
@@ -35,7 +33,6 @@ type Router struct {
 	*chi.Mux
 	handler       http.Handler
 	healthChecker *observability.HealthChecker
-	metrics       *observability.Metrics
 	assetHandler  AssetHandler
 }
 
@@ -46,7 +43,6 @@ type RouterConfig struct {
 	// the request context.
 	Handler       http.Handler
 	HealthChecker *observability.HealthChecker
-	Metrics       *observability.Metrics
 	ProxyBaseURL  string
 	// MaxBodyBytes caps the size of any inbound request body. 0 uses
 	// DefaultMaxBodyBytes; negative disables the cap.
@@ -74,7 +70,6 @@ func NewRouter(cfg RouterConfig) *Router {
 		Mux:           chi.NewRouter(),
 		handler:       cfg.Handler,
 		healthChecker: cfg.HealthChecker,
-		metrics:       cfg.Metrics,
 		assetHandler:  cfg.AssetHandler,
 	}
 
@@ -206,51 +201,15 @@ func (r *Router) handleAsset(w http.ResponseWriter, req *http.Request) {
 	// Delegate to the asset handler so it can stream bytes; we do NOT
 	// route through dispatch() because that path buffers the
 	// response into memory.
-	m := httpsnoop.CaptureMetrics(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		r.assetHandler.ServeAssetHTTP(w, req, originID, ref)
-	}), w, req)
-	if r.metrics != nil {
-		pattern := routePattern(req)
-		r.metrics.RequestDuration.WithLabelValues(req.Method, pattern).Observe(m.Duration.Seconds())
-		if m.Code != 0 {
-			r.metrics.RequestsTotal.WithLabelValues(req.Method, pattern, strconv.Itoa(m.Code)).Inc()
-		}
-	}
+	r.assetHandler.ServeAssetHTTP(w, req, originID, ref)
 }
 
 // dispatch attaches STACInfo to req.Context() so chi-layer middlewares
 // can read the parsed STAC shape, then delegates to the inner handler.
-// Request-level metrics are recorded after the handler returns.
-//
-// Metrics labels use the chi route pattern (e.g. "/collections/{collectionId}/items/{itemId}")
-// rather than the raw request path so cardinality stays bounded by the
-// number of registered routes regardless of how many distinct collection
-// IDs or item IDs the proxy sees.
 func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, rt middleware.RequestType, collection, itemID string) {
 	info := &middleware.STACInfo{RequestType: rt, Collection: collection, ItemID: itemID}
 	ctx := middleware.WithSTACInfo(req.Context(), info)
-	req = req.WithContext(ctx)
-
-	m := httpsnoop.CaptureMetrics(r.handler, w, req)
-	if r.metrics != nil {
-		pattern := routePattern(req)
-		r.metrics.RequestDuration.WithLabelValues(req.Method, pattern).Observe(m.Duration.Seconds())
-		if m.Code != 0 {
-			r.metrics.RequestsTotal.WithLabelValues(req.Method, pattern, strconv.Itoa(m.Code)).Inc()
-		}
-	}
-}
-
-// routePattern returns the chi route pattern for req (e.g. "/collections/{collectionId}/items/{itemId}"),
-// or "unknown" when no chi context is attached. Used to keep Prometheus
-// label cardinality bounded by the number of registered routes.
-func routePattern(req *http.Request) string {
-	if rctx := chi.RouteContext(req.Context()); rctx != nil {
-		if p := rctx.RoutePattern(); p != "" {
-			return p
-		}
-	}
-	return "unknown"
+	r.handler.ServeHTTP(w, req.WithContext(ctx))
 }
 
 // clientIPMiddleware derives the client IP from either the TCP

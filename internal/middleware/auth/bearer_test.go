@@ -62,7 +62,7 @@ func TestNewBearerProvider(t *testing.T) {
 				assert.Equal(t, "test-bearer", p.name, "name")
 				assert.Equal(t, "https://issuer.example.com", p.issuer, "issuer")
 				assert.Equal(t, "test-audience", p.audience, "audience")
-				assert.NotNil(t, p.keyFunc, "expected keyFunc to be set")
+				assert.NotNil(t, p.staticSecret, "expected staticSecret to be set")
 				assert.NotNil(t, p.claimsFunc, "expected claimsFunc to be set")
 			},
 		},
@@ -86,8 +86,8 @@ func TestNewBearerProvider(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *BearerProvider) {
-				assert.Equal(t, "https://example.com/.well-known/jwks.json", p.jwksURL, "jwksURL")
-				assert.NotNil(t, p.keyFunc, "expected keyFunc to be set")
+				assert.NotNil(t, p.jwks, "expected JWKS client to be set")
+				assert.Equal(t, "https://example.com/.well-known/jwks.json", p.jwks.url, "jwks URL")
 			},
 		},
 		{
@@ -107,7 +107,7 @@ func TestNewBearerProvider(t *testing.T) {
 			name:      "error when neither secret nor JWKS URL provided",
 			config:    BearerConfig{},
 			wantErr:   true,
-			errString: "either Secret or JWKSURL must be provided",
+			errString: "bearer: either Secret or JWKSURL must be provided",
 		},
 	}
 
@@ -332,7 +332,7 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 				return req
 			},
 			wantErr:   true,
-			errSubstr: "missing audience claim",
+			errSubstr: "aud claim is required",
 		},
 		{
 			name: "expired token",
@@ -703,7 +703,7 @@ func TestBearerProvider_KeyFunc_HMAC(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			key, err := provider.keyFunc(tt.token)
+			key, err := provider.keyFuncFor(context.Background())(tt.token)
 
 			if tt.wantErr {
 				require.Error(t, err, "expected error")
@@ -735,7 +735,7 @@ func TestBearerProvider_JWKSKeyFunc_RejectsMissingKid(t *testing.T) {
 		"sub": "test",
 	})
 
-	_, err = provider.jwksKeyFunc(token)
+	_, err = provider.keyFuncFor(context.Background())(token)
 	require.Error(t, err, "expected error for missing kid")
 	assert.Contains(t, err.Error(), "kid", "expected 'kid' in error")
 }

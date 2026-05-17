@@ -10,7 +10,7 @@ docker run --rm -p 8080:8080 stac-proxy:dev \
 
 The image:
 - Runs as non-root UID 65532.
-- Exposes 8080 (HTTP API) and 9090 (Prometheus `/metrics`).
+- Exposes 8080 (HTTP API).
 - Self-healthchecks via `stac-proxy --healthcheck` (no curl/wget in the runtime image).
 - Responds to SIGTERM with a 30s graceful drain.
 
@@ -35,7 +35,6 @@ YAML; `${ENV_VAR}` expansion happens at load (`os.ExpandEnv`).
 |---|---|---|
 | `server` | yes | host/port/TLS/timeouts/`max_body_bytes` |
 | `logging` | no | level (debug/info/warn/error), format (json/console) |
-| `metrics` | no | enable Prometheus exposition on a separate port |
 | `health` | no | `/health` settings + upstream probe interval |
 | `mode` | yes | `single` or `federation` |
 | `upstream` | iff `mode: single` | URL, timeout, `supports_filter_extension` |
@@ -85,18 +84,15 @@ server:
     key_file:  /etc/ssl/private/stac-proxy.key
 ```
 
-## Observability scrape
+## Observability
 
-Prometheus example:
+Operational signals are exposed via:
+- structured `log/slog` JSON logs (every request, every upstream call),
+- `/health`, `/health/live`, `/health/ready` endpoints (aggregated origin status).
 
-```yaml
-- job_name: stac-proxy
-  static_configs:
-    - targets: ['stac-proxy:9090']
-  scrape_interval: 15s
-```
-
-See [observability.md](observability.md) for the full metric inventory.
+Metrics exposition was intentionally removed in favour of log-based
+analysis; downstream collectors (Loki, Vector, Datadog logs) can derive
+rate/error/latency series from the structured logs.
 
 ## Sizing & resource limits
 

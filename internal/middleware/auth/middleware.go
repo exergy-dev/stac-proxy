@@ -11,7 +11,6 @@ import (
 	"net/http"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 // Config contains configuration for the auth middleware.
@@ -61,9 +60,6 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				}
 				p, err := provider.Authenticate(ctx, r)
 				if err != nil {
-					if m := observability.Default(); m != nil {
-						m.AuthFailures.WithLabelValues(provider.Name(), "error").Inc()
-					}
 					if claimed {
 						// Fail closed: the request bore this
 						// provider's credential type and it was
@@ -76,24 +72,15 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				}
 				if p != nil {
 					authed = p
-					if m := observability.Default(); m != nil {
-						m.AuthSuccesses.WithLabelValues(provider.Name(), p.Type).Inc()
-					}
 					break
 				}
 			}
 			if authed == nil {
 				if !cfg.AllowAnonymous {
-					if m := observability.Default(); m != nil {
-						m.AuthFailures.WithLabelValues("none", "missing_credentials").Inc()
-					}
 					writeAuthError(w, "authentication required")
 					return
 				}
 				authed = anonPrincipal
-				if m := observability.Default(); m != nil {
-					m.AuthSuccesses.WithLabelValues("anonymous", "anonymous").Inc()
-				}
 			}
 			ctx = context.WithValue(ctx, middleware.PrincipalKey, authed)
 			next.ServeHTTP(w, r.WithContext(ctx))

@@ -62,7 +62,7 @@ Client → Middleware Chain → Router/Handler → Origins
 - `internal/geo/` - Geospatial operations (geometry, GeoJSON, antimeridian-aware bbox, spatial index)
 - `internal/stac/` - STAC types (aliased from `go-stac-client`), parser, conformance helpers, CQL2 evaluator (incl. S_INTERSECTS)
 - `internal/httpx/` - HTTP utilities: bounded response capture, retry transport (retryablehttp), trusted-proxy XFF, hop-by-hop header stripping
-- `internal/observability/` - Prometheus metrics with chi-route-pattern labels, cached `/health` checks
+- `internal/observability/` - cached `/health` checks (alexliesenfeld/health adapter); no metrics exposition
 
 ### Key Interfaces
 

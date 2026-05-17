@@ -30,52 +30,6 @@ import (
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
-// TestNewMetricsServer_ShutdownDrainsListener verifies that the
-// metrics *http.Server returned by newMetricsServer is shutdown-able
-// (Fix H-server-tls-2 — previously the metrics goroutine was orphaned
-// past SIGTERM because the *http.Server was not retained by the
-// caller).
-//
-// We start the server on an ephemeral port, then call Shutdown and
-// assert that ListenAndServe returns http.ErrServerClosed within
-// the deadline. If the caller had not retained the handle, this
-// test could not even be expressed.
-func TestNewMetricsServer_ShutdownDrainsListener(t *testing.T) {
-	t.Parallel()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	metrics := observability.NewMetrics("test_shutdown")
-
-	// Port 0 → kernel picks a free port.
-	srv := newMetricsServer(config.MetricsConfig{
-		Enabled:  true,
-		BindAddr: "127.0.0.1:0",
-	}, metrics, logger)
-
-	// We need to bind explicitly so we know the port — ListenAndServe
-	// would block. Use a separate listener and Serve.
-	ln, err := net.Listen("tcp", srv.Addr)
-	require.NoError(t, err, "listen")
-
-	serveErr := make(chan error, 1)
-	go func() {
-		serveErr <- srv.Serve(ln)
-	}()
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	require.NoError(t, srv.Shutdown(shutdownCtx), "Shutdown")
-
-	select {
-	case err := <-serveErr:
-		if err != nil && err != http.ErrServerClosed {
-			require.Failf(t, "unexpected Serve error", "Serve returned unexpected error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		require.Fail(t, "Serve did not return within 5s of Shutdown")
-	}
-}
-
 // TestAuthProviderWiring_AllConfiguredTypesAreActive verifies that
 // every documented auth provider type is wired through the same
 // switch as production (HIGH H-config-3). Previously oidc/basic/mtls
@@ -336,7 +290,7 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	health := observability.NewHealthChecker()
 
-	handler, err := buildFederationHandler(context.Background(), cfg, logger, health, nil)
+	handler, err := buildFederationHandler(context.Background(), cfg, logger, health)
 	require.NoError(t, err, "buildFederationHandler")
 
 	assert.Equal(t, publicBaseURL, handler.ProxyBaseURL(), "ProxyBaseURL")
@@ -464,7 +418,7 @@ func TestBuildFederationHandler_SingleModeWiresPublicBaseURL(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	health := observability.NewHealthChecker()
-	handler, err := buildFederationHandler(context.Background(), cfg, logger, health, nil)
+	handler, err := buildFederationHandler(context.Background(), cfg, logger, health)
 	require.NoError(t, err, "buildFederationHandler")
 	assert.Equalf(t, publicBaseURL, handler.ProxyBaseURL(), "ProxyBaseURL (single-mode dropped server.public_base_url)")
 }
