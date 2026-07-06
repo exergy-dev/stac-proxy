@@ -49,6 +49,11 @@ lint: ## Run golangci-lint over the whole module
 vet: ## go vet shortcut
 	$(GO) vet $(PKG)
 
+.PHONY: fuzz
+fuzz: ## Run each fuzz target for ~30s
+	$(GO) test -run=^$$ -fuzz=FuzzExpandEnvStrict -fuzztime=30s ./internal/config
+	$(GO) test -run=^$$ -fuzz=FuzzDecodeCursor -fuzztime=30s ./internal/federation
+
 .PHONY: ci
 ci: lint race ## What CI runs
 
