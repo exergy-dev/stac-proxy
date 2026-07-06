@@ -799,6 +799,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 			Enabled:                 originCfg.Enabled,
 			Timeout:                 timeout,
 			Retry:                   originRetryPolicy(originCfg.Retry),
+			CircuitBreaker:          originBreakerPolicy(originCfg.CircuitBreaker),
 			MaxIdleConnsPerHost:     originCfg.MaxIdleConnsPerHost,
 			Collections:             originCfg.Collections,
 			ExcludeCollections:      originCfg.ExcludeCollections,
@@ -902,6 +903,21 @@ func originRetryPolicy(c *config.RetryConfig) *federation.RetryPolicy {
 		InitialBackoff: c.InitialBackoff,
 		MaxBackoff:     c.MaxBackoff,
 		RetryOn:        c.RetryOn,
+	}
+}
+
+// originBreakerPolicy mirrors the YAML circuit_breaker block into the
+// federation type. nil in → nil out, which federation treats as
+// "enabled with defaults" (the breaker is opt-out).
+func originBreakerPolicy(c *config.CircuitBreakerConfig) *federation.BreakerPolicy {
+	if c == nil {
+		return nil
+	}
+	return &federation.BreakerPolicy{
+		Disabled:         c.Enabled != nil && !*c.Enabled,
+		FailureThreshold: c.FailureThreshold,
+		OpenDuration:     c.OpenDuration,
+		MaxOpenDuration:  c.MaxOpenDuration,
 	}
 }
 

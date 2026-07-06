@@ -236,6 +236,18 @@ func (v *Validator) validateFederation(cfg FederationConfig) {
 func (v *Validator) validateOrigin(index int, origin OriginConfig, seenIDs map[string]bool, allowPrivate bool) {
 	prefix := fmt.Sprintf("federation.origins[%d]", index)
 
+	if cb := origin.CircuitBreaker; cb != nil {
+		if cb.FailureThreshold < 0 {
+			v.addError("%s.circuit_breaker.failure_threshold cannot be negative", prefix)
+		}
+		if cb.OpenDuration < 0 || cb.MaxOpenDuration < 0 {
+			v.addError("%s.circuit_breaker durations cannot be negative", prefix)
+		}
+		if cb.OpenDuration > 0 && cb.MaxOpenDuration > 0 && cb.MaxOpenDuration < cb.OpenDuration {
+			v.addError("%s.circuit_breaker.max_open_duration cannot be smaller than open_duration", prefix)
+		}
+	}
+
 	if origin.ID == "" {
 		v.addError("%s.id is required", prefix)
 	} else if seenIDs[origin.ID] {

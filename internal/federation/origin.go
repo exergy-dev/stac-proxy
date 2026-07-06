@@ -93,6 +93,25 @@ func NewOriginClientWithContext(parentCtx context.Context, logger *slog.Logger, 
 		}
 	}
 
+	// Circuit breaker sits OUTERMOST (outside auth and retry): one
+	// user-visible request = one breaker sample regardless of retry
+	// fan-out, and an open circuit fast-fails before the auth layer
+	// spends an OAuth2 token fetch on a dead origin. Consequence: IdP
+	// failures inside authRoundTripper count as origin failures —
+	// acceptable, the origin is effectively unusable either way.
+	// Opt-out per origin via CircuitBreaker.Disabled.
+	if origin.CircuitBreaker == nil || !origin.CircuitBreaker.Disabled {
+		var bcfg httpx.BreakerConfig
+		if cb := origin.CircuitBreaker; cb != nil {
+			bcfg = httpx.BreakerConfig{
+				FailureThreshold: cb.FailureThreshold,
+				OpenBase:         cb.OpenDuration,
+				OpenMax:          cb.MaxOpenDuration,
+			}
+		}
+		rt = httpx.NewBreakerTransport(rt, origin.ID, bcfg, logger)
+	}
+
 	httpClient := &http.Client{
 		Transport: rt,
 		Timeout:   origin.Timeout,

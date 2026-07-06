@@ -46,6 +46,7 @@ type Origin struct {
 	Enabled             bool
 	Timeout             time.Duration
 	Retry               *RetryPolicy
+	CircuitBreaker      *BreakerPolicy
 	MaxIdleConnsPerHost int
 
 	// Authentication for this downstream server
@@ -142,6 +143,17 @@ type RetryPolicy struct {
 	InitialBackoff time.Duration
 	MaxBackoff     time.Duration
 	RetryOn        []int // HTTP status codes to retry
+}
+
+// BreakerPolicy mirrors config.CircuitBreakerConfig for an origin.
+// A nil *BreakerPolicy on Origin means "enabled with defaults" — the
+// breaker is opt-out, not opt-in. Zero-valued fields take the
+// defaults documented on httpx.BreakerConfig.
+type BreakerPolicy struct {
+	Disabled         bool
+	FailureThreshold int
+	OpenDuration     time.Duration
+	MaxOpenDuration  time.Duration
 }
 
 // AuthConfig defines authentication for an upstream origin.

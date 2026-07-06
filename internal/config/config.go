@@ -204,6 +204,11 @@ type OriginConfig struct {
 	Enabled bool          `yaml:"enabled"`
 	Timeout time.Duration `yaml:"timeout"`
 	Retry   *RetryConfig  `yaml:"retry"`
+
+	// CircuitBreaker tunes the per-origin breaker. Enabled by default
+	// with the documented defaults when the block is omitted; set
+	// `enabled: false` to opt out.
+	CircuitBreaker *CircuitBreakerConfig `yaml:"circuit_breaker"`
 	// MaxIdleConnsPerHost caps idle keep-alive connections to this
 	// origin's host. Zero or negative falls back to the Go default
 	// (2). Tune up for high-throughput origins; tune to a small
@@ -295,6 +300,25 @@ type RetryConfig struct {
 	InitialBackoff time.Duration `yaml:"initial_backoff"`
 	MaxBackoff     time.Duration `yaml:"max_backoff"`
 	RetryOn        []int         `yaml:"retry_on"` // HTTP status codes to retry
+}
+
+// CircuitBreakerConfig contains per-origin circuit breaker settings.
+// The breaker fast-fails an origin after FailureThreshold consecutive
+// failures (transport errors, timeouts, 5xx) instead of paying full
+// retries+timeout on every request; a half-open probe re-admits
+// traffic when the origin recovers. See httpx.BreakerConfig for the
+// state-machine details.
+type CircuitBreakerConfig struct {
+	// Enabled defaults to true when the block is present or absent;
+	// explicit false disables the breaker for this origin.
+	Enabled *bool `yaml:"enabled"`
+	// FailureThreshold is the consecutive-failure count that opens
+	// the circuit. Default 5.
+	FailureThreshold int `yaml:"failure_threshold"`
+	// OpenDuration is the first open period; each failed probe
+	// doubles it up to MaxOpenDuration. Defaults 10s / 2m.
+	OpenDuration    time.Duration `yaml:"open_duration"`
+	MaxOpenDuration time.Duration `yaml:"max_open_duration"`
 }
 
 // OriginAuthConfig contains authentication config for an upstream origin.
