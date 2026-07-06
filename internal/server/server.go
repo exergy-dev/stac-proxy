@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/config"
@@ -17,9 +18,13 @@ import (
 // Server represents the HTTP server.
 type Server struct {
 	httpServer *http.Server
-	listener   net.Listener
 	logger     *slog.Logger
 	cfg        *config.ServerConfig
+
+	// mu guards listener, which Start writes once at bind time and
+	// Addr may read concurrently.
+	mu       sync.Mutex
+	listener net.Listener
 }
 
 // Config contains server configuration.
@@ -94,20 +99,22 @@ func New(cfg Config) (*Server, error) {
 func (s *Server) Start() error {
 	addr := s.httpServer.Addr
 
-	var err error
-	s.listener, err = net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
+	s.mu.Lock()
+	s.listener = ln
+	s.mu.Unlock()
 
 	// NOTE: the "Server starting" line is logged by the caller (main.run)
 	// with the tls flag; don't duplicate it here.
 
 	if s.cfg.TLS.Enabled {
-		return s.httpServer.ServeTLS(s.listener, s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+		return s.httpServer.ServeTLS(ln, s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
 	}
 
-	return s.httpServer.Serve(s.listener)
+	return s.httpServer.Serve(ln)
 }
 
 // Shutdown gracefully shuts down the server.
@@ -118,8 +125,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // Addr returns the server's listen address.
 func (s *Server) Addr() string {
-	if s.listener != nil {
-		return s.listener.Addr().String()
+	s.mu.Lock()
+	ln := s.listener
+	s.mu.Unlock()
+	if ln != nil {
+		return ln.Addr().String()
 	}
 	return s.httpServer.Addr
 }
