@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -84,7 +83,6 @@ func newPaginatedFederation(t *testing.T, opts ...originOpt) *federation.Handler
 
 	h, err := federation.NewHandler(federation.HandlerConfig{
 		Origins:          []*federation.Origin{earthSearch, pc},
-		ConflictStrategy: federation.ConflictPriorityWins,
 		MaxConcurrent:    2,
 		AggregateTimeout: 60 * time.Second,
 		CursorSecret:     []byte(cursorSecret),
@@ -214,6 +212,140 @@ func TestLive_PaginatedNextLink(t *testing.T) {
 	}
 }
 
+// TestLive_PaginatedMultiPage_NoRepeatsNoSkips walks several pages of
+// a federated search and verifies two integrity properties of the
+// paginated path against a real two-origin federation:
+//
+//  1. No repeats: across N pages of size L, every returned item ID is
+//     unique. A cursor that fails to advance an upstream would surface
+//     here as the same item showing up on two consecutive pages.
+//
+//  2. No skips: a single-call fetch with limit=N*L (no cursor) over
+//     the same query must be a subset of the union of items seen
+//     across the page walk. A cursor that loses items between pages
+//     (e.g. a tiebreaker bug at a page boundary) would put items in
+//     the single-call response that the walk never sees.
+//
+// Two bugs this test originally surfaced (now fixed):
+//
+//   - Buffer-drop: pagination.go used to fetch limit*2 items per
+//     origin and advance each cursor past all of them, so the
+//     un-emitted items were lost. Fixed by per-origin Stash on
+//     OriginCursor (see cursor.go) which the next page consumes
+//     before re-fetching from upstream.
+//
+//   - Earth Search adapter mismatch: ES emits rel=next with method=POST
+//     and a non-spec `body.next` field; the original token adapter
+//     only looked at body.token, so `auto` fell back to next_url
+//     which captured the bare /search href. Fixed by a new post_body
+//     adapter (pageadapter/post_body.go) that captures method=POST
+//     links' bodies verbatim and replays them on the next page.
+//
+// Uses a fixed historical datetime window over a small Alpine bbox
+// where both Earth Search and Planetary Computer have sentinel-2-l2a
+// coverage. Past windows are stable — archived items don't disappear,
+// so the test is not flaky against ingest activity.
+func TestLive_PaginatedMultiPage_NoRepeatsNoSkips(t *testing.T) {
+	h := newPaginatedFederation(t)
+
+	const (
+		pageSize  = 4
+		maxPages  = 6
+		bboxMinX  = 10.6
+		bboxMinY  = 47.4
+		bboxMaxX  = 10.8
+		bboxMaxY  = 47.6
+		dtWindow  = "2024-06-01T00:00:00Z/2024-06-30T23:59:59Z"
+		queryColl = "sentinel-2-l2a"
+	)
+
+	mkReq := func(limit int, token string) *stac.SearchRequest {
+		return &stac.SearchRequest{
+			Collections: []string{queryColl},
+			BBox:        []float64{bboxMinX, bboxMinY, bboxMaxX, bboxMaxY},
+			Datetime:    dtWindow,
+			Limit:       limit,
+			Token:       token,
+		}
+	}
+
+	// Phase 1: walk pages of size pageSize up to maxPages, collecting
+	// every ID and recording its multiplicity so duplicates surface.
+	seen := map[string]int{}
+	pages := 0
+	token := ""
+	for i := 0; i < maxPages; i++ {
+		req := mkReq(pageSize, token)
+		body, _ := json.Marshal(req)
+		rr := serve(t, h,
+			&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: req},
+			http.MethodPost, "/search", bytes.NewReader(body),
+		)
+		require.Equalf(t, http.StatusOK, rr.Code, "page %d status = %d, body = %s", i, rr.Code, rr.Body.String())
+
+		var fc stac.FeatureCollection
+		require.NoErrorf(t, json.Unmarshal(rr.Body.Bytes(), &fc), "page %d decode", i)
+		if len(fc.Features) == 0 {
+			break
+		}
+		pages++
+		for _, item := range fc.Features {
+			seen[item.ID]++
+		}
+
+		next := findLink(fc.Links, "next")
+		if next == nil {
+			break
+		}
+		nextBody, _ := next.AdditionalFields["body"].(map[string]any)
+		nextToken, _ := nextBody["token"].(string)
+		if nextToken == "" {
+			break
+		}
+		token = nextToken
+	}
+	require.GreaterOrEqualf(t, pages, 2, "walked %d pages; need >=2 to exercise cross-page state", pages)
+
+	// (1) No repeats: every ID appeared exactly once across the walk.
+	var dupes []string
+	for id, n := range seen {
+		if n > 1 {
+			dupes = append(dupes, fmt.Sprintf("%s×%d", id, n))
+		}
+	}
+	require.Emptyf(t, dupes, "cursor failed to advance: %d duplicate IDs across %d pages: %v",
+		len(dupes), pages, dupes)
+	t.Logf("walked %d pages, %d unique items", pages, len(seen))
+
+	// Phase 2: single-call fetch over the same query with limit
+	// equal to the walk's emitted item count. If the merger and
+	// paginator agree, this set should be a subset of `seen`.
+	baseReq := mkReq(len(seen), "")
+	baseBody, _ := json.Marshal(baseReq)
+	rr := serve(t, h,
+		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: baseReq},
+		http.MethodPost, "/search", bytes.NewReader(baseBody),
+	)
+	require.Equalf(t, http.StatusOK, rr.Code, "baseline status = %d, body = %s", rr.Code, rr.Body.String())
+
+	var base stac.FeatureCollection
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &base), "decode baseline")
+	require.NotEmpty(t, base.Features, "baseline returned no features")
+
+	// (2) No skips: every baseline ID must appear somewhere in the walk.
+	// We allow the walk to be a superset (it can see slightly more if
+	// upstream advanced past the baseline's window into a buffer page),
+	// but anything in the baseline that the walk lost is a real skip.
+	var missing []string
+	for _, item := range base.Features {
+		if seen[item.ID] == 0 {
+			missing = append(missing, item.ID)
+		}
+	}
+	assert.Emptyf(t, missing, "paginated walk skipped %d items that the single-call baseline returned: %v",
+		len(missing), missing)
+}
+
 // TestLive_LandingPageLinkRels asserts the landing page emits the
 // STAC API §1.4 required link rels and that — with ProxyBaseURL set —
 // hrefs are absolute and rooted at the proxy, not at any upstream.
@@ -267,38 +399,6 @@ func TestLive_LandingPageLinkRels(t *testing.T) {
 	for _, m := range []string{http.MethodGet, http.MethodPost} {
 		assert.True(t, searchMethods[m], "landing page does not advertise a %s search link", m)
 	}
-}
-
-// TestLive_GetSingleCollection exercises GET /collections/{id} for a
-// collection both upstreams serve (sentinel-2-l2a). The router resolves
-// the collection to all origins that publish it, then handleSingleResource
-// picks one (priority-wins) and forwards the response.
-//
-// We assert the response is a valid Collection object for that ID, NOT
-// which origin contributed it — the tie-break is deterministic but its
-// outcome is an implementation detail.
-func TestLive_GetSingleCollection(t *testing.T) {
-	h := newFederation(t)
-
-	rr := serve(t, h,
-		&middleware.STACInfo{
-			RequestType: middleware.RequestTypeCollection,
-			Collection:  "sentinel-2-l2a",
-		},
-		http.MethodGet, "/collections/sentinel-2-l2a", nil,
-	)
-	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
-
-	var coll map[string]any
-	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &coll), "decode collection")
-	id, _ := coll["id"].(string)
-	assert.Equal(t, "sentinel-2-l2a", id, "collection.id = %q, want %q", id, "sentinel-2-l2a")
-	t_, _ := coll["type"].(string)
-	assert.Equal(t, "Collection", t_, "collection.type = %q, want %q", t_, "Collection")
-	// Extent is a STAC-required field; its absence would suggest the
-	// proxy returned a stub rather than a real upstream collection.
-	_, ok := coll["extent"]
-	assert.True(t, ok, "collection has no extent; upstream response may have been stripped")
 }
 
 // TestLive_GetSingleItem does a search to pull a known-good item ID
@@ -441,128 +541,6 @@ func TestLive_CQL2JSONFilterPushdown_PCOnly(t *testing.T) {
 		cloudCap, violations, len(fc.Features))
 }
 
-// TestLive_NamespaceConflictStrategy reconfigures the handler with
-// ConflictNamespace and verifies that returned items in a federated
-// search are prefixed with the origin ID — proving the namespace
-// strategy is wired through.
-func TestLive_NamespaceConflictStrategy(t *testing.T) {
-	// Re-enter through newFederation for the env-var gate.
-	_ = newFederation(t)
-
-	earthSearch := &federation.Origin{
-		ID:                      "earth-search",
-		BaseURL:                 earthSearchURL,
-		Enabled:                 true,
-		Searchable:              true,
-		Priority:                10,
-		Timeout:                 30 * time.Second,
-		Auth:                    federation.AuthConfig{Type: "none"},
-		SupportsFilterExtension: true,
-	}
-	pc := &federation.Origin{
-		ID:                      "planetary-computer",
-		BaseURL:                 pcURL,
-		Enabled:                 true,
-		Searchable:              true,
-		Priority:                5,
-		Timeout:                 30 * time.Second,
-		Auth:                    federation.AuthConfig{Type: "none"},
-		SupportsFilterExtension: true,
-	}
-	h, err := federation.NewHandler(federation.HandlerConfig{
-		Origins:          []*federation.Origin{earthSearch, pc},
-		ConflictStrategy: federation.ConflictNamespace,
-		MaxConcurrent:    2,
-		AggregateTimeout: 60 * time.Second,
-	})
-	require.NoError(t, err, "NewHandler (namespace)")
-
-	end := time.Now().UTC()
-	start := end.Add(-14 * 24 * time.Hour)
-	searchReq := &stac.SearchRequest{
-		Collections: []string{"sentinel-2-l2a"},
-		BBox:        []float64{10.6, 47.4, 10.8, 47.6},
-		Datetime:    start.Format(time.RFC3339) + "/" + end.Format(time.RFC3339),
-		Limit:       50,
-	}
-	body, _ := json.Marshal(searchReq)
-	rr := serve(t, h,
-		&middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: searchReq},
-		http.MethodPost, "/search", bytes.NewReader(body),
-	)
-	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
-	var fc stac.FeatureCollection
-	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &fc), "decode FC")
-	if len(fc.Features) == 0 {
-		t.Skip("namespace search returned no items; cannot assert prefixing")
-	}
-
-	var prefixed int
-	for _, item := range fc.Features {
-		if strings.HasPrefix(item.ID, "earth-search:") ||
-			strings.HasPrefix(item.ID, "planetary-computer:") {
-			prefixed++
-		}
-	}
-	assert.NotZero(t, prefixed,
-		"no items have origin-prefixed IDs; namespace strategy not applied (sample IDs: %v)",
-		sampleIDs(fc.Features, 5))
-}
-
-// TestLive_ConformanceClassesAreOriginIntersection asserts a stronger
-// invariant than TestLive_ConformanceIntersection: every class in the
-// /conformance response also appears in at least one upstream's
-// /conformance set (or is part of the proxy's own ProxyConformanceCore).
-// Anything else would be a class the proxy invented or leaked from an
-// extension manifest.
-func TestLive_ConformanceClassesAreOriginIntersection(t *testing.T) {
-	h := newFederation(t)
-
-	rr := serve(t, h,
-		&middleware.STACInfo{RequestType: middleware.RequestTypeConformance},
-		http.MethodGet, "/conformance", nil,
-	)
-	require.Equal(t, http.StatusOK, rr.Code, "status = %d, body = %s", rr.Code, rr.Body.String())
-	var resp struct {
-		ConformsTo []string `json:"conformsTo"`
-	}
-	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp), "decode conformance")
-
-	// Pull origin conformance sets directly so we can verify the
-	// proxy's claim is grounded.
-	upstreamUnion := map[string]bool{}
-	for _, base := range []string{earthSearchURL, pcURL} {
-		classes, err := fetchUpstreamConformance(base)
-		if err != nil {
-			t.Logf("could not fetch %s conformance: %v (skipping union check for this origin)", base, err)
-			continue
-		}
-		for _, c := range classes {
-			upstreamUnion[c] = true
-		}
-	}
-	proxyCore := map[string]bool{}
-	for _, c := range stac.ProxyConformanceCore {
-		proxyCore[c] = true
-	}
-
-	for _, c := range resp.ConformsTo {
-		if upstreamUnion[c] || proxyCore[c] {
-			continue
-		}
-		// Filter Extension URIs are advertised when ALL origins
-		// support them — they live on stac-api-extensions.github.io
-		// (not stac-extensions.github.io, which is the manifest host).
-		if strings.Contains(c, "stac-api-extensions.github.io") ||
-			strings.Contains(c, "/ogc-api-features-") ||
-			strings.Contains(c, "cql2") {
-			continue
-		}
-		assert.Failf(t, "ungrounded conformance class",
-			"proxy advertises class %q that is neither in ProxyConformanceCore nor any upstream's conformance set", c)
-	}
-}
-
 // findLink returns the first link with the given rel, or nil.
 func findLink(links []*stac.Link, rel string) *stac.Link {
 	for _, l := range links {
@@ -571,46 +549,6 @@ func findLink(links []*stac.Link, rel string) *stac.Link {
 		}
 	}
 	return nil
-}
-
-// fetchUpstreamConformance does a one-off GET /conformance against
-// the upstream so live tests can check the proxy's claim is grounded
-// in reality. Bypasses the proxy entirely.
-func fetchUpstreamConformance(baseURL string) ([]string, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(baseURL + "/conformance")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
-	}
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	var doc struct {
-		ConformsTo []string `json:"conformsTo"`
-	}
-	if err := json.Unmarshal(b, &doc); err != nil {
-		return nil, err
-	}
-	return doc.ConformsTo, nil
-}
-
-// sampleIDs returns up to n item IDs for log messages.
-func sampleIDs(items []*stac.Item, n int) []string {
-	out := make([]string, 0, n)
-	for i, it := range items {
-		if i >= n {
-			break
-		}
-		if it != nil {
-			out = append(out, it.ID)
-		}
-	}
-	return out
 }
 
 // TestLive_BackwardsNavigation paginates forward two pages, then

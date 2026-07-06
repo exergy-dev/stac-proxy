@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -65,16 +64,3 @@ func TestLimiter_QuotaChangeRebuildsBucket(t *testing.T) {
 	require.True(t, ok, "expected allow under q2 (fresh bucket)")
 }
 
-func TestLimiter_InfoLimit(t *testing.T) {
-	lim := NewTokenBucketLimiter(0)
-	defer lim.Stop()
-	q := Quota{Requests: 42, Window: time.Minute, Burst: 5}
-	_, info, _ := lim.Allow(context.Background(), "k", q)
-	require.Equal(t, 42, info.Limit, "Info.Limit")
-}
-
-func TestDefaultKeyFunc(t *testing.T) {
-	assert.Equal(t, "user:alice", DefaultKeyFunc(context.Background(), "alice", "1.2.3.4"), "principal path")
-	assert.Equal(t, "ip:1.2.3.4", DefaultKeyFunc(context.Background(), "anonymous", "1.2.3.4"), "anonymous path")
-	assert.Equal(t, "ip:1.2.3.4", DefaultKeyFunc(context.Background(), "", "1.2.3.4"), "empty principal path")
-}

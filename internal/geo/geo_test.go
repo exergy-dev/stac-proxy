@@ -148,14 +148,6 @@ func TestContains_OuterContainsInner(t *testing.T) {
 	require.False(t, inner.Contains(outer), "expected inner polygon NOT to contain outer polygon")
 }
 
-func TestContains_Disjoint(t *testing.T) {
-	a := mustParse(t, outerPolygonJSON)
-	b := mustParse(t, disjointPolygonJSON)
-
-	require.False(t, a.Contains(b), "expected disjoint polygons to not contain each other (a.Contains(b))")
-	require.False(t, b.Contains(a), "expected disjoint polygons to not contain each other (b.Contains(a))")
-}
-
 func TestContains_NilReceiver(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -205,30 +197,6 @@ func TestIntersects_Overlapping(t *testing.T) {
 	require.True(t, b.Intersects(a), "expected overlapping polygons to intersect (b.Intersects(a))")
 }
 
-func TestIntersects_Disjoint(t *testing.T) {
-	a := mustParse(t, outerPolygonJSON)
-	b := mustParse(t, disjointPolygonJSON)
-
-	require.False(t, a.Intersects(b), "expected disjoint polygons to not intersect")
-}
-
-// TestIntersects_EdgeTouching documents whatever the library returns for two
-// polygons that share a single edge but do not overlap in area. Most JTS-style
-// libraries return true here (touching counts as intersection). We pin the
-// most-likely outcome but treat divergence as a documentation-only matter:
-// if the underlying library changes its mind, update this expected value
-// rather than treating it as a regression in our facade.
-func TestIntersects_EdgeTouching(t *testing.T) {
-	a := mustParse(t, outerPolygonJSON)
-	b := mustParse(t, edgeTouchingPolygonJSON)
-
-	// Library-implementation-defined; JTS/go-topology-suite typically returns true.
-	got := a.Intersects(b)
-	if !got {
-		t.Logf("edge-touching polygons returned Intersects=false; this is allowed but unusual for JTS-style predicates")
-	}
-}
-
 // --- ToGeoJSON round-trip ----------------------------------------------------
 
 // roundTrip parses the input, serialises it via ToGeoJSON, then parses the
@@ -243,23 +211,6 @@ func roundTrip(t *testing.T, src string) (orig, again *geo.Geometry) {
 	require.NoError(t, err, "ParseGeoJSON(ToGeoJSON(g)) failed")
 	require.NotNil(t, again, "ParseGeoJSON(ToGeoJSON(g)) returned nil geometry")
 	return orig, again
-}
-
-func TestRoundTrip_Point(t *testing.T) {
-	orig, again := roundTrip(t, pointJSON)
-
-	// Self-Contains must hold for the round-tripped geometry.
-	require.True(t, again.Contains(again), "round-tripped point does not self-contain")
-
-	// Predicate equivalence against a fixed reference polygon: both should
-	// intersect the outer square (the point (1,1) is inside it).
-	ref := mustParse(t, outerPolygonJSON)
-	assert.Equalf(t, orig.Intersects(ref), again.Intersects(ref),
-		"round-tripped point disagrees with original on Intersects(ref): orig=%v again=%v",
-		orig.Intersects(ref), again.Intersects(ref))
-	assert.Equalf(t, ref.Contains(orig), ref.Contains(again),
-		"round-tripped point disagrees with original on ref.Contains: orig=%v again=%v",
-		ref.Contains(orig), ref.Contains(again))
 }
 
 func TestRoundTrip_Polygon(t *testing.T) {

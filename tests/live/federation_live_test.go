@@ -71,7 +71,6 @@ func newFederation(t *testing.T, opts ...originOpt) *federation.Handler {
 
 	h, err := federation.NewHandler(federation.HandlerConfig{
 		Origins:          []*federation.Origin{earthSearch, pc},
-		ConflictStrategy: federation.ConflictPriorityWins,
 		MaxConcurrent:    2,
 		AggregateTimeout: 30 * time.Second,
 	})
@@ -242,10 +241,11 @@ func TestLive_CollectionRoutingSkipsIrrelevantOrigins(t *testing.T) {
 			assert.Equal(t, "sentinel-2-l2a", item.Collection, "ES-only feature %s belongs to %q, want sentinel-2-l2a",
 				item.ID, item.Collection)
 		}
-		// Earth Search Sentinel-2 IDs follow the pattern
-		// "S2A_..." or "S2B_..." — a strong signal the response
-		// genuinely came from Earth Search rather than from PC.
-		assert.True(t, strings.HasPrefix(item.ID, "S2A_") || strings.HasPrefix(item.ID, "S2B_"),
+		// Earth Search Sentinel-2 IDs start with "S2<sat>_" where
+		// <sat> is A/B/C (and future satellites). A strong signal the
+		// response genuinely came from Earth Search rather than PC.
+		hasS2Prefix := len(item.ID) > 3 && item.ID[:2] == "S2" && item.ID[3] == '_'
+		assert.True(t, hasS2Prefix,
 			"ES-only feature ID %q does not look like an Earth Search S2 item", item.ID)
 	}
 

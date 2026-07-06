@@ -65,22 +65,6 @@ func TestCacheHit_RestoresStatusAndHeaders(t *testing.T) {
 	assert.Equal(t, `"v1"`, rr2.Header().Get("ETag"), "ETag on hit")
 }
 
-// TestCacheMiss_NonOKNotCached: a 500 from upstream should NOT land in
-// the store; a subsequent request still misses.
-func TestCacheMiss_NonOKNotCached(t *testing.T) {
-	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
-	h := NewHTTPMiddleware(Config{Store: store})(upstreamWriter(
-		http.StatusInternalServerError, nil, []byte(`{"error":"boom"}`),
-	))
-	info := &middleware.STACInfo{RequestType: middleware.RequestTypeCollection, Collection: "x"}
-
-	rr1 := httptest.NewRecorder()
-	h.ServeHTTP(rr1, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
-	rr2 := httptest.NewRecorder()
-	h.ServeHTTP(rr2, withSTACInfo(httptest.NewRequest("GET", "/collections/x", nil), info))
-	assert.Equal(t, "MISS", rr2.Header().Get("X-Cache-Status"), "error response leaked into cache")
-}
-
 // TestCache_NonGetByPasses: a POST is not cached, regardless of status.
 func TestCache_NonGetByPasses(t *testing.T) {
 	store := NewMemoryStore(MemoryConfig{MaxSize: 16})

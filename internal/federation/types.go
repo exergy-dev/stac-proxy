@@ -187,58 +187,6 @@ type AWSSigV4Config struct {
 	SecretKey string
 }
 
-// ConflictStrategy defines how to handle item ID collisions.
-type ConflictStrategy int
-
-const (
-	// ConflictFirstWins - First origin's item wins (based on response time)
-	ConflictFirstWins ConflictStrategy = iota
-	// ConflictPriorityWins - Highest priority origin wins
-	ConflictPriorityWins
-	// ConflictMerge - Merge items with same ID (combine assets, keep latest properties)
-	ConflictMerge
-	// ConflictNamespace - Prefix item IDs with origin ID (no conflicts possible)
-	ConflictNamespace
-	// ConflictRejectDuplicates - Return error if duplicates found
-	ConflictRejectDuplicates
-)
-
-// String returns the string representation of the conflict strategy.
-func (s ConflictStrategy) String() string {
-	switch s {
-	case ConflictFirstWins:
-		return "first_wins"
-	case ConflictPriorityWins:
-		return "priority"
-	case ConflictMerge:
-		return "merge"
-	case ConflictNamespace:
-		return "namespace"
-	case ConflictRejectDuplicates:
-		return "reject_duplicates"
-	default:
-		return "unknown"
-	}
-}
-
-// ParseConflictStrategy parses a string to ConflictStrategy.
-func ParseConflictStrategy(s string) ConflictStrategy {
-	switch s {
-	case "first_wins":
-		return ConflictFirstWins
-	case "priority":
-		return ConflictPriorityWins
-	case "merge":
-		return ConflictMerge
-	case "namespace":
-		return ConflictNamespace
-	case "reject_duplicates":
-		return ConflictRejectDuplicates
-	default:
-		return ConflictPriorityWins
-	}
-}
-
 // SearchStrategy defines how to search across origins.
 type SearchStrategy int
 

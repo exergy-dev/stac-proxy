@@ -110,7 +110,6 @@ func TestIntegration_FederatedPaginationWalk(t *testing.T) {
 			{ID: "a", BaseURL: upA.srv.URL, Enabled: true, Searchable: true, Collections: []string{"shared"}, Timeout: 5 * time.Second, Priority: 1},
 			{ID: "b", BaseURL: upB.srv.URL, Enabled: true, Searchable: true, Collections: []string{"shared"}, Timeout: 5 * time.Second, Priority: 1},
 		},
-		ConflictStrategy: federation.ConflictPriorityWins,
 		MaxConcurrent:    4,
 		AggregateTimeout: 10 * time.Second,
 		DefaultPageSize:  3,

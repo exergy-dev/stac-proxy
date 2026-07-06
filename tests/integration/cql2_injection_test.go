@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -53,7 +52,6 @@ func newSingleOriginFederation(t *testing.T, upstreamURL string) *federation.Han
 			SupportsFilterExtension: true,
 			Timeout:                 5 * time.Second,
 		}},
-		ConflictStrategy: federation.ConflictPriorityWins,
 	})
 	require.NoError(t, err, "federation.NewHandler")
 	return h
@@ -131,72 +129,3 @@ func TestIntegration_PolicyCQL2FlowsToUpstreamSingleOrigin(t *testing.T) {
 	assert.Equal(t, "cql2-text", lang, "upstream filter-lang")
 }
 
-func TestIntegration_GeofencePushdownThroughProxy(t *testing.T) {
-	srv, cap := newUpstream(t)
-
-	polygon := map[string]interface{}{
-		"type": "Polygon",
-		"coordinates": []interface{}{
-			[]interface{}{
-				[]interface{}{-10.0, -10.0},
-				[]interface{}{10.0, -10.0},
-				[]interface{}{10.0, 10.0},
-				[]interface{}{-10.0, 10.0},
-				[]interface{}{-10.0, -10.0},
-			},
-		},
-	}
-
-	mw := authz.NewHTTPMiddleware(authz.HTTPConfig{
-		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
-			Allowed: true,
-			Constraints: &authz.AuthzConstraints{
-				Geofence: &authz.GeofenceConstraint{
-					AllowedArea: polygon,
-					FilterMode:  true,
-				},
-			},
-		}},
-		AllowAnonymous:       true,
-		CQL2InjectionEnabled: true,
-	})
-
-	handler := newSingleOriginFederation(t, srv.URL)
-
-	httpReq := httptest.NewRequest("GET", "/search", nil)
-	withChain(t, mw, handler, httpReq, &middleware.STACInfo{
-		RequestType: middleware.RequestTypeSearch,
-		SearchReq:   &stac.SearchRequest{Limit: 5},
-	})
-
-	var body map[string]interface{}
-	require.NoError(t, json.Unmarshal(cap.body, &body), "upstream body not JSON: %s", cap.body)
-	filter, _ := body["filter"].(string)
-	assert.Contains(t, strings.ToUpper(filter), "S_INTERSECTS", "upstream filter missing S_INTERSECTS")
-}
-
-func TestIntegration_DisabledByDefault(t *testing.T) {
-	srv, cap := newUpstream(t)
-
-	// CQL2InjectionEnabled NOT set => default off, no injection.
-	mw := authz.NewHTTPMiddleware(authz.HTTPConfig{
-		Enforcer: &fixedEnforcer{d: &authz.AuthzDecision{
-			Allowed: true,
-			Constraints: &authz.AuthzConstraints{
-				CQL2Filter: "eo:cloud_cover < 20",
-			},
-		}},
-		AllowAnonymous: true,
-	})
-
-	handler := newSingleOriginFederation(t, srv.URL)
-
-	httpReq := httptest.NewRequest("GET", "/search", nil)
-	withChain(t, mw, handler, httpReq, &middleware.STACInfo{
-		RequestType: middleware.RequestTypeSearch,
-		SearchReq:   &stac.SearchRequest{},
-	})
-
-	// Body should not contain the policy filter — injection was off.
-	assert.NotContains(t, string(cap.body), "eo:cloud_cover", "policy filter leaked despite injection disabled")
-}

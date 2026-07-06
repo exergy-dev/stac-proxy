@@ -1,6 +1,9 @@
 package pageadapter
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // nextURL captures the upstream's `rel: next` href verbatim and asks
 // the paginator to fetch it directly (GET) on the next page. This is
@@ -23,6 +26,15 @@ func (a *nextURL) Capture(r UpstreamResponse) (NextState, error) {
 	link := nextLinkOf(r)
 	if link == nil || link.Href == "" {
 		return NextState{Done: true}, nil
+	}
+	// POST-style links carry their request body in AdditionalFields;
+	// the post_body adapter handles those. Capturing the href alone
+	// here would mean a follow-up GET against the base /search URL
+	// with no parameters — the upstream then returns its unfiltered
+	// default page (caught in TestLive_PaginatedMultiPage). Defer to
+	// post_body whenever method=POST is declared.
+	if method, _ := link.AdditionalFields["method"].(string); strings.EqualFold(method, "POST") {
+		return NextState{Done: !hasNextLink(r)}, nil
 	}
 	if !SameOrigin(link.Href, r.BaseURL) {
 		return NextState{}, fmt.Errorf("next_url: rel=next href %q not rooted at origin %q", link.Href, r.BaseURL)

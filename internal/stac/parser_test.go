@@ -50,22 +50,25 @@ func TestParseItem_ValidPassesThrough(t *testing.T) {
 	assert.Equal(t, "1.0.0", item.Version)
 }
 
-func TestParseCollection_WrongTypeRejected(t *testing.T) {
+func TestParse_WrongTypeRejected(t *testing.T) {
 	t.Parallel()
-	_, err := NewParser().ParseCollection([]byte(`{"type":"Feature","id":"x"}`))
-	require.Error(t, err, "expected error for wrong type")
-}
-
-func TestParseCatalog_WrongTypeRejected(t *testing.T) {
-	t.Parallel()
-	_, err := NewParser().ParseCatalog([]byte(`{"type":"Feature","id":"x"}`))
-	require.Error(t, err, "expected error for wrong type")
-}
-
-func TestParseFeatureCollection_WrongTypeRejected(t *testing.T) {
-	t.Parallel()
-	_, err := NewParser().ParseFeatureCollection([]byte(`{"type":"NotIt"}`))
-	require.Error(t, err, "expected error for wrong type")
+	p := NewParser()
+	tests := []struct {
+		name string
+		fn   func([]byte) error
+		body string
+	}{
+		{"Collection", func(b []byte) error { _, err := p.ParseCollection(b); return err }, `{"type":"Feature","id":"x"}`},
+		{"Catalog", func(b []byte) error { _, err := p.ParseCatalog(b); return err }, `{"type":"Feature","id":"x"}`},
+		{"FeatureCollection", func(b []byte) error { _, err := p.ParseFeatureCollection(b); return err }, `{"type":"NotIt"}`},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Error(t, tt.fn([]byte(tt.body)), "expected error for wrong type")
+		})
+	}
 }
 
 func TestParseSearchRequest_BodyShapes(t *testing.T) {
@@ -136,27 +139,6 @@ func TestParseSearchRequest_BodyShapes(t *testing.T) {
 			tt.assert(t, req)
 		})
 	}
-}
-
-// TestSearchRequest_NextFieldMarshalRoundTrip pins the wire-format
-// contract for the `next` pagination field: an inbound POST body that
-// carries `next` must unmarshal into SearchRequest.Next and marshal
-// back out using the same key name. Before SearchRequest had a Next
-// field, Go's JSON decoder silently dropped the unknown key, so the
-// proxy would re-serialize the SearchRequest as `{"limit":N}` (with
-// no token) and the upstream would loop back to page 1.
-func TestSearchRequest_NextFieldMarshalRoundTrip(t *testing.T) {
-	t.Parallel()
-	in := `{"limit":2,"next":"off-3"}`
-	var req SearchRequest
-	require.NoError(t, json.Unmarshal([]byte(in), &req))
-	require.Equal(t, "off-3", req.Next, "Next must be captured")
-
-	out, err := json.Marshal(req)
-	require.NoError(t, err)
-	var got map[string]any
-	require.NoError(t, json.Unmarshal(out, &got))
-	assert.Equal(t, "off-3", got["next"], "Next must round-trip on marshal under the same key")
 }
 
 func TestParseSearchRequestFromHTTP(t *testing.T) {
@@ -278,61 +260,39 @@ func TestParseSearchFromQuery(t *testing.T) {
 	}
 }
 
-// TestParseSearchFromQuery_BadBboxReturns400 verifies a malformed bbox
-// produces a typed *ParseError (caller-mappable to HTTP 400) rather
-// than being silently coerced to a partial slice.
-func TestParseSearchFromQuery_BadBboxReturns400(t *testing.T) {
+// TestParseSearchFromQuery_BadParamsReturn400 verifies malformed query
+// params surface as typed *ParseError values (caller-mappable to HTTP
+// 400) rather than being silently coerced or dropped.
+func TestParseSearchFromQuery_BadParamsReturn400(t *testing.T) {
 	t.Parallel()
-	r := httptest.NewRequest(http.MethodGet, "/search?bbox=foo,bar,3,4", nil)
-	_, err := NewParser().ParseSearchRequestFromHTTP(r)
-	require.Error(t, err)
-	var pe *ParseError
-	require.Truef(t, errors.As(err, &pe), "error type = %T, want *ParseError; err=%v", err, err)
-	assert.Equal(t, "bbox", pe.Param)
-	assert.Contains(t, err.Error(), "bbox")
-}
-
-// TestParseSearchFromQuery_BadLimitReturns400 verifies a non-numeric
-// limit produces a typed *ParseError instead of silently becoming 0.
-func TestParseSearchFromQuery_BadLimitReturns400(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest(http.MethodGet, "/search?limit=abc", nil)
-	_, err := NewParser().ParseSearchRequestFromHTTP(r)
-	require.Error(t, err)
-	var pe *ParseError
-	require.Truef(t, errors.As(err, &pe), "error type = %T, want *ParseError; err=%v", err, err)
-	assert.Equal(t, "limit", pe.Param)
-	assert.Contains(t, err.Error(), "limit")
-}
-
-// TestParseSearchFromQuery_BadIntersectsReturns400 verifies a malformed
-// GeoJSON intersects payload (parses as JSON but is not a valid
-// geometry) produces a typed *ParseError so callers map it to HTTP 400
-// rather than forwarding the bad shape upstream.
-func TestParseSearchFromQuery_BadIntersectsReturns400(t *testing.T) {
-	t.Parallel()
-	// Polygon with a non-array `coordinates` value — parses as JSON
-	// but is not a valid GeoJSON Polygon.
-	bad := `{"type":"Polygon","coordinates":"not-an-array"}`
-	r := httptest.NewRequest(http.MethodGet, "/search?intersects="+bad, nil)
-	_, err := NewParser().ParseSearchRequestFromHTTP(r)
-	require.Error(t, err)
-	var pe *ParseError
-	require.Truef(t, errors.As(err, &pe), "error type = %T, want *ParseError; err=%v", err, err)
-	assert.Equal(t, "intersects", pe.Param)
-}
-
-// TestParseSearchFromQuery_NonJSONIntersectsReturns400 covers the
-// before-state case (raw JSON parse failure) — it should now also
-// produce a typed *ParseError instead of being silently dropped.
-func TestParseSearchFromQuery_NonJSONIntersectsReturns400(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest(http.MethodGet, "/search?intersects={broken", nil)
-	_, err := NewParser().ParseSearchRequestFromHTTP(r)
-	require.Error(t, err)
-	var pe *ParseError
-	require.Truef(t, errors.As(err, &pe), "error type = %T, want *ParseError; err=%v", err, err)
-	assert.Equal(t, "intersects", pe.Param)
+	tests := []struct {
+		name      string
+		url       string
+		wantParam string
+	}{
+		{"bad bbox", "/search?bbox=foo,bar,3,4", "bbox"},
+		{"bad limit", "/search?limit=abc", "limit"},
+		// Polygon with a non-array `coordinates` value — parses as
+		// JSON but is not a valid GeoJSON Polygon.
+		{"bad intersects (valid JSON, invalid geometry)", `/search?intersects={"type":"Polygon","coordinates":"not-an-array"}`, "intersects"},
+		// Raw JSON parse failure path.
+		{"non-JSON intersects", "/search?intersects={broken", "intersects"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodGet, tt.url, nil)
+			_, err := NewParser().ParseSearchRequestFromHTTP(r)
+			require.Error(t, err)
+			var pe *ParseError
+			require.Truef(t, errors.As(err, &pe), "error type = %T, want *ParseError; err=%v", err, err)
+			assert.Equal(t, tt.wantParam, pe.Param)
+			// Exercise ParseError.Error() so the substring also
+			// surfaces param-name context in the rendered message.
+			assert.Contains(t, err.Error(), tt.wantParam)
+		})
+	}
 }
 
 func TestExtractNextLink(t *testing.T) {

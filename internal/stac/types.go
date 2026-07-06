@@ -92,12 +92,19 @@ type SearchRequest struct {
 
 	// OverrideURL is a federation-private transport field (NOT
 	// serialized upstream). When non-empty, the OriginClient fetches
-	// this URL verbatim (GET) instead of POST-ing the standard /search
-	// with this body. Populated by the paginator from
-	// OriginCursor.NextURL for adapters that capture full next-page
-	// URLs (next_url, link_header, offset). The OriginClient
-	// allowlist-checks the URL against its BaseURL.
+	// this URL verbatim (GET, or POST when OverrideBody is also set)
+	// instead of POST-ing the standard /search with this body.
+	// Populated by the paginator from OriginCursor.NextURL for
+	// adapters that capture full next-page URLs (next_url, post_body,
+	// link_header, offset). The OriginClient allowlist-checks the URL
+	// against its BaseURL.
 	OverrideURL string `json:"-"`
+
+	// OverrideBody is a federation-private transport field (NOT
+	// serialized upstream). When non-empty alongside OverrideURL, the
+	// OriginClient POSTs OverrideURL with this body verbatim
+	// (post_body adapter convention). Empty means GET.
+	OverrideBody []byte `json:"-"`
 
 	// AdapterName is a federation-private transport field (NOT
 	// serialized upstream) carrying the locked pagination adapter

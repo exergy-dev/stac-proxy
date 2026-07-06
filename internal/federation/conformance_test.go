@@ -47,7 +47,6 @@ func TestHandleConformance_IntersectsProxyAndOrigins(t *testing.T) {
 			{ID: "a", BaseURL: srvA.URL, Enabled: true, Timeout: 5 * time.Second, Priority: 10},
 			{ID: "b", BaseURL: srvB.URL, Enabled: true, Timeout: 5 * time.Second, Priority: 1},
 		},
-		ConflictStrategy: ConflictPriorityWins,
 		AggregateTimeout: 5 * time.Second,
 		ConformanceCaps: stac.ConformanceCaps{
 			CQL2InjectionEnabled:    false,

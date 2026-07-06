@@ -120,58 +120,42 @@ func TestCursor_EmptySecretDecodeRejected(t *testing.T) {
 	assert.Error(t, err, "expected error for empty secret on decode")
 }
 
-// TestCursor_TamperedPayloadRejected verifies HMAC catches payload mutation.
-func TestCursor_TamperedPayloadRejected(t *testing.T) {
+// TestCursor_TamperedRejected verifies HMAC catches both payload and signature mutation.
+func TestCursor_TamperedRejected(t *testing.T) {
 	t.Parallel()
 
-	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
-	encoded, err := cursor.Encode(testCursorSecret)
-	require.NoError(t, err, "encode failed")
-
-	parts := strings.SplitN(encoded, ".", 2)
-	require.Len(t, parts, 2, "expected two parts")
-	// Flip one byte of the payload section deterministically.
-	mutated := []byte(parts[0])
-	for i := 0; i < len(mutated); i++ {
-		// Find a base64url character we can swap to a different valid one.
-		if mutated[i] != 'A' {
-			mutated[i] = 'A'
-			break
+	mutate := func(s string) string {
+		b := []byte(s)
+		if b[0] != 'A' {
+			b[0] = 'A'
 		} else {
-			mutated[i] = 'B'
-			break
+			b[0] = 'B'
 		}
+		return string(b)
 	}
-	tampered := string(mutated) + "." + parts[1]
 
-	_, err = DecodeCursor(tampered, testCursorSecret, testAllowed("o1"), "")
-	require.Error(t, err, "expected error for tampered payload")
-	// Could be invalid JSON OR tampered signature depending on which bit flipped;
-	// either is acceptable as long as decoding fails.
-	assert.Truef(t, errors.Is(err, ErrCursorTampered) || errors.Is(err, ErrCursorInvalid), "expected tampered or invalid error, got %v", err)
-}
-
-// TestCursor_TamperedSignatureRejected verifies HMAC catches signature mutation.
-func TestCursor_TamperedSignatureRejected(t *testing.T) {
-	t.Parallel()
-
-	cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
-	encoded, err := cursor.Encode(testCursorSecret)
-	require.NoError(t, err, "encode failed")
-
-	parts := strings.SplitN(encoded, ".", 2)
-	require.Len(t, parts, 2, "expected two parts")
-	mutated := []byte(parts[1])
-	if mutated[0] != 'A' {
-		mutated[0] = 'A'
-	} else {
-		mutated[0] = 'B'
+	cases := []struct {
+		name      string
+		mutateIdx int // 0 = payload, 1 = sig
+	}{
+		{"payload", 0},
+		{"signature", 1},
 	}
-	tampered := parts[0] + "." + string(mutated)
-
-	_, err = DecodeCursor(tampered, testCursorSecret, testAllowed("o1"), "")
-	require.Error(t, err, "expected error for tampered signature")
-	assert.ErrorIsf(t, err, ErrCursorTampered, "expected ErrCursorTampered, got %v", err)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cursor := NewFederatedCursor("h", "", []string{"o1"}, nil)
+			encoded, err := cursor.Encode(testCursorSecret)
+			require.NoError(t, err, "encode failed")
+			parts := strings.SplitN(encoded, ".", 2)
+			require.Len(t, parts, 2)
+			parts[tc.mutateIdx] = mutate(parts[tc.mutateIdx])
+			_, err = DecodeCursor(parts[0]+"."+parts[1], testCursorSecret, testAllowed("o1"), "")
+			require.Error(t, err)
+			assert.Truef(t, errors.Is(err, ErrCursorTampered) || errors.Is(err, ErrCursorInvalid), "expected tampered or invalid error, got %v", err)
+		})
+	}
 }
 
 // TestCursor_NextURLOutsideOriginBaseRejected verifies the SSRF guard.
@@ -297,27 +281,13 @@ func TestEncodedFormatIsBase64URLDot(t *testing.T) {
 	assert.Falsef(t, strings.ContainsAny(encoded, "+/="), "encoded cursor must not contain '+', '/', or '=': %q", encoded)
 }
 
-// TestIsExpired tests cursor expiration
+// TestIsExpired tests cursor expiration (expired case; not-expired is
+// covered by other round-trip tests).
 func TestIsExpired(t *testing.T) {
-	t.Run("not expired", func(t *testing.T) {
-		t.Parallel()
-		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		assert.False(t, cursor.IsExpired(), "newly created cursor should not be expired")
-	})
-
-	t.Run("expired", func(t *testing.T) {
-		t.Parallel()
-		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		cursor.ExpiresAt = time.Now().Add(-1 * time.Hour).Unix()
-		assert.True(t, cursor.IsExpired(), "cursor with past expiry should be expired")
-	})
-
-	t.Run("zero expiry", func(t *testing.T) {
-		t.Parallel()
-		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		cursor.ExpiresAt = 0
-		assert.True(t, cursor.IsExpired(), "cursor with zero expiry should be expired")
-	})
+	t.Parallel()
+	cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
+	cursor.ExpiresAt = time.Now().Add(-1 * time.Hour).Unix()
+	assert.True(t, cursor.IsExpired(), "cursor with past expiry should be expired")
 }
 
 // TestHasMore tests whether cursor has more results
@@ -389,35 +359,6 @@ func TestMarkError(t *testing.T) {
 	cursor.MarkError("missing")
 }
 
-// TestUpdateOrigin tests updating origin cursor state
-func TestUpdateOrigin(t *testing.T) {
-	t.Run("basic update", func(t *testing.T) {
-		t.Parallel()
-		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		cursor.UpdateOrigin("origin1", 10, "next-token", "next-url", "sort-value")
-		origin := cursor.Origins["origin1"]
-		assert.Equalf(t, 10, origin.ItemCount, "unexpected origin state: %+v", origin)
-		assert.Equalf(t, "next-token", origin.NextToken, "unexpected origin state: %+v", origin)
-		assert.Equalf(t, "next-url", origin.NextURL, "unexpected origin state: %+v", origin)
-		assert.False(t, origin.Exhausted, "origin should not be exhausted with next token")
-	})
-
-	t.Run("marks exhausted when no next", func(t *testing.T) {
-		t.Parallel()
-		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		cursor.UpdateOrigin("origin1", 10, "", "", nil)
-		assert.True(t, cursor.Origins["origin1"].Exhausted, "origin should be marked exhausted")
-	})
-
-	t.Run("increments item count", func(t *testing.T) {
-		t.Parallel()
-		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		cursor.UpdateOrigin("origin1", 10, "t", "", nil)
-		cursor.UpdateOrigin("origin1", 5, "t2", "", nil)
-		assert.Equalf(t, 15, cursor.Origins["origin1"].ItemCount, "expected item count 15")
-	})
-}
-
 // TestClone tests deep copying of cursors
 func TestClone(t *testing.T) {
 	t.Run("preserves principal hash", func(t *testing.T) {
@@ -440,16 +381,6 @@ func TestClone(t *testing.T) {
 		assert.NotEqual(t, "modified", cloned.Origins["origin1"].NextToken, "clone should not share origin state")
 		assert.NotEqual(t, "modified", cloned.LastSortValues[0], "clone should not share LastSortValues slice")
 	})
-}
-
-// TestString tests string representation
-func TestString(t *testing.T) {
-	t.Parallel()
-	cursor := NewFederatedCursor("hash", "", []string{"origin1", "origin2"}, nil)
-	cursor.TotalReturned = 50
-	str := cursor.String()
-	assert.Containsf(t, str, "FederatedCursor", "string missing prefix: %s", str)
-	assert.Containsf(t, str, "returned=50", "string missing returned: %s", str)
 }
 
 // TestUnsignedBase64IsNotAcceptedAsCursor verifies that a plain

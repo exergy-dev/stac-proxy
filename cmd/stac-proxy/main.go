@@ -666,29 +666,10 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		)
 	}
 
-	// Create handler. The "priority" string maps to the default
-	// (ConflictPriorityWins); other strings map to their typed
-	// counterparts. validateFederation accepts the same set, so a
-	// validated config never falls through the default — but we
-	// keep PriorityWins as the safe default for forward compat in
-	// case the validator gets relaxed.
-	conflictStrategy := federation.ConflictPriorityWins
-	switch cfg.Federation.ConflictStrategy {
-	case "first_wins":
-		conflictStrategy = federation.ConflictFirstWins
-	case "merge":
-		conflictStrategy = federation.ConflictMerge
-	case "namespace":
-		conflictStrategy = federation.ConflictNamespace
-	case "reject_duplicates":
-		conflictStrategy = federation.ConflictRejectDuplicates
-	}
-
 	caps := computeConformanceCaps(cfg, origins)
 
 	handler, err := federation.NewHandler(federation.HandlerConfig{
 		Origins:          origins,
-		ConflictStrategy: conflictStrategy,
 		MaxConcurrent:    cfg.Federation.MaxConcurrent,
 		AggregateTimeout: cfg.Federation.AggregateTimeout,
 		ProxyBaseURL:     cfg.Server.PublicBaseURL,
@@ -900,12 +881,11 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 	caps := computeConformanceCaps(cfg, []*federation.Origin{origin})
 
 	handler, err := federation.NewHandler(federation.HandlerConfig{
-		Origins:          []*federation.Origin{origin},
-		ConflictStrategy: federation.ConflictPriorityWins,
-		ProxyBaseURL:     cfg.Server.PublicBaseURL,
-		ConformanceCaps:  caps,
-		LifetimeCtx:      ctx,
-		Logger:           logger,
+		Origins:         []*federation.Origin{origin},
+		ProxyBaseURL:    cfg.Server.PublicBaseURL,
+		ConformanceCaps: caps,
+		LifetimeCtx:     ctx,
+		Logger:          logger,
 	})
 	if err != nil {
 		return nil, err

@@ -75,7 +75,6 @@ result := {
 			SupportsFilterExtension: true,
 			Timeout:                 5 * time.Second,
 		}},
-		ConflictStrategy: federation.ConflictPriorityWins,
 	})
 	require.NoError(t, err, "NewHandler")
 

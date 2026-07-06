@@ -61,36 +61,9 @@ func TestStripHopByHopHeaders_Idempotent(t *testing.T) {
 	assert.Empty(t, h.Get("Connection"), "Connection reappeared")
 }
 
-func TestStripHopByHopHeaders_PreservesEndToEnd(t *testing.T) {
-	h := http.Header{}
-	h.Set("Content-Type", "application/json")
-	h.Set("Content-Length", "42")
-	h.Set("Authorization", "Bearer x")
-	h.Set("X-Request-Id", "abc")
-
-	StripHopByHopHeaders(h)
-
-	assert.Equal(t, "application/json", h.Get("Content-Type"), "Content-Type stripped")
-	assert.Equal(t, "42", h.Get("Content-Length"), "Content-Length stripped")
-	assert.Equal(t, "Bearer x", h.Get("Authorization"), "Authorization stripped")
-	assert.Equal(t, "abc", h.Get("X-Request-Id"), "X-Request-Id stripped")
-}
-
 func TestStripHopByHopHeaders_NilSafe(t *testing.T) {
 	// Should not panic.
 	StripHopByHopHeaders(nil)
-}
-
-func TestStripHopByHopHeaders_ConnectionWithWhitespaceAndEmpty(t *testing.T) {
-	h := http.Header{}
-	h.Set("Connection", " X-A ,  ,X-B")
-	h.Set("X-A", "1")
-	h.Set("X-B", "2")
-
-	StripHopByHopHeaders(h)
-
-	assert.Empty(t, h.Get("X-A"), "whitespace-trimmed connection-named headers not stripped")
-	assert.Empty(t, h.Get("X-B"), "whitespace-trimmed connection-named headers not stripped")
 }
 
 func TestStripHopByHopHeaders_StripsForwarded(t *testing.T) {

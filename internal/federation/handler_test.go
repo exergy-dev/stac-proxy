@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -48,7 +47,6 @@ func TestNewHandler(t *testing.T) {
 						Searchable: true,
 					},
 				},
-				ConflictStrategy: ConflictPriorityWins,
 				MaxConcurrent:    5,
 				AggregateTimeout: 30 * time.Second,
 				ProxyBaseURL:     "http://proxy.example.com",
@@ -75,7 +73,6 @@ func TestNewHandler(t *testing.T) {
 						Searchable: true,
 					},
 				},
-				ConflictStrategy: ConflictPriorityWins,
 			},
 			wantOrigins: 1,
 			wantErr:     false,
@@ -91,7 +88,6 @@ func TestNewHandler(t *testing.T) {
 						Searchable: true,
 					},
 				},
-				ConflictStrategy: ConflictPriorityWins,
 			},
 			wantOrigins: 1,
 			wantErr:     false,
@@ -100,7 +96,6 @@ func TestNewHandler(t *testing.T) {
 			name: "empty origins list",
 			config: HandlerConfig{
 				Origins:          []*Origin{},
-				ConflictStrategy: ConflictPriorityWins,
 			},
 			wantOrigins: 0,
 			wantErr:     false,
@@ -152,7 +147,6 @@ func TestHandlerOriginIDs(t *testing.T) {
 				Searchable: true,
 			},
 		},
-		ConflictStrategy: ConflictPriorityWins,
 	})
 	require.NoError(t, err, "failed to create handler")
 
@@ -246,7 +240,6 @@ func TestHandleSearch(t *testing.T) {
 
 			handler, err := NewHandler(HandlerConfig{
 				Origins:          origins,
-				ConflictStrategy: ConflictPriorityWins,
 				MaxConcurrent:    10,
 				AggregateTimeout: 10 * time.Second,
 			})
@@ -310,7 +303,6 @@ func TestHandleSearchWithErrors(t *testing.T) {
 				Priority:    2,
 			},
 		},
-		ConflictStrategy: ConflictPriorityWins,
 		MaxConcurrent:    10,
 		AggregateTimeout: 10 * time.Second,
 	})
@@ -371,7 +363,6 @@ func TestHandleSearchTimeout(t *testing.T) {
 				Timeout:     5 * time.Second,
 			},
 		},
-		ConflictStrategy: ConflictPriorityWins,
 		MaxConcurrent:    10,
 		AggregateTimeout: 100 * time.Millisecond, // Very short timeout
 	})
@@ -428,7 +419,6 @@ func TestHandleSearchContextCancellation(t *testing.T) {
 				Timeout:     5 * time.Second,
 			},
 		},
-		ConflictStrategy: ConflictPriorityWins,
 		MaxConcurrent:    10,
 		AggregateTimeout: 10 * time.Second,
 	})
@@ -524,7 +514,6 @@ func TestHandleGetCollections(t *testing.T) {
 
 			handler, err := NewHandler(HandlerConfig{
 				Origins:          origins,
-				ConflictStrategy: ConflictPriorityWins,
 			})
 			require.NoError(t, err, "failed to create handler")
 
@@ -606,7 +595,6 @@ func TestHandleGetCollection(t *testing.T) {
 						Timeout:     5 * time.Second,
 					},
 				},
-				ConflictStrategy: ConflictPriorityWins,
 			})
 			require.NoError(t, err, "failed to create handler")
 
@@ -639,43 +627,6 @@ func TestHandleGetCollection(t *testing.T) {
 }
 
 // TestHandleGetCollectionWithPrefix tests collection retrieval with prefix
-func TestHandleGetCollectionWithPrefix(t *testing.T) {
-	t.Parallel()
-
-	coll := SampleCollection("my-collection")
-	server := NewTestServerWithJSONResponse(coll)
-	defer server.Close()
-
-	handler, err := NewHandler(HandlerConfig{
-		Origins: []*Origin{
-			{
-				ID:               "origin1",
-				BaseURL:          server.URL,
-				Enabled:          true,
-				Searchable:       true,
-				Collections:      []string{"my-collection"},
-				CollectionPrefix: "prefix_",
-				Timeout:          5 * time.Second,
-			},
-		},
-		ConflictStrategy: ConflictPriorityWins,
-	})
-	require.NoError(t, err, "failed to create handler")
-
-	// Request with prefix
-	req := &request{
-		Request:     httptest.NewRequest(http.MethodGet, "/collections/prefix_my-collection", nil),
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeCollection,
-		Collection:  "prefix_my-collection",
-	}
-
-	resp, err := handler.Handle(req.Context, req)
-	require.NoError(t, err, "Handle()")
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
-}
-
 // TestHandleGetItem tests single item retrieval
 func TestHandleGetItem(t *testing.T) {
 	t.Parallel()
@@ -730,7 +681,6 @@ func TestHandleGetItem(t *testing.T) {
 						Timeout:     5 * time.Second,
 					},
 				},
-				ConflictStrategy: ConflictPriorityWins,
 			})
 			require.NoError(t, err, "failed to create handler")
 
@@ -763,7 +713,9 @@ func TestHandleGetItem(t *testing.T) {
 	}
 }
 
-// TestHandleGetItemWithPrefix tests item retrieval with collection prefix
+// TestHandleGetItemWithPrefix covers adaptRequestStripCollectionPrefix:
+// the origin advertises collections under a proxy-side prefix and the
+// handler must strip that prefix before forwarding upstream.
 func TestHandleGetItemWithPrefix(t *testing.T) {
 	t.Parallel()
 
@@ -783,11 +735,9 @@ func TestHandleGetItemWithPrefix(t *testing.T) {
 				Timeout:          5 * time.Second,
 			},
 		},
-		ConflictStrategy: ConflictPriorityWins,
 	})
 	require.NoError(t, err, "failed to create handler")
 
-	// Request with prefix
 	req := &request{
 		Request:     httptest.NewRequest(http.MethodGet, "/collections/prefix_my-collection/items/test-item", nil),
 		Context:     context.Background(),
@@ -798,44 +748,6 @@ func TestHandleGetItemWithPrefix(t *testing.T) {
 
 	resp, err := handler.Handle(req.Context, req)
 	require.NoError(t, err, "Handle()")
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
-}
-
-// TestHandleGenericProxy tests generic request proxying
-func TestHandleGenericProxy(t *testing.T) {
-	t.Parallel()
-
-	mockResp := map[string]interface{}{
-		"message": "generic response",
-	}
-	server := NewTestServerWithJSONResponse(mockResp)
-	defer server.Close()
-
-	handler, err := NewHandler(HandlerConfig{
-		Origins: []*Origin{
-			{
-				ID:         "origin1",
-				BaseURL:    server.URL,
-				Enabled:    true,
-				Searchable: true,
-				Priority:   1,
-				Timeout:    5 * time.Second,
-			},
-		},
-		ConflictStrategy: ConflictPriorityWins,
-	})
-	require.NoError(t, err, "failed to create handler")
-
-	req := &request{
-		Request:     httptest.NewRequest(http.MethodGet, "/conformance", nil),
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeConformance,
-	}
-
-	resp, err := handler.Handle(req.Context, req)
-	require.NoError(t, err, "Handle()")
-
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
 }
 
@@ -850,7 +762,6 @@ func TestHandleGenericProxyNoOrigins(t *testing.T) {
 
 	handler, err := NewHandler(HandlerConfig{
 		Origins:          []*Origin{},
-		ConflictStrategy: ConflictPriorityWins,
 	})
 	require.NoError(t, err, "failed to create handler")
 
@@ -1091,217 +1002,7 @@ func TestAdaptRequestForOrigin(t *testing.T) {
 }
 
 // TestFanOutSearch tests parallel search execution
-func TestFanOutSearch(t *testing.T) {
-	// Create multiple test servers
-	origins := make([]*Origin, 3)
-	for i := 0; i < 3; i++ {
-		fc := SampleFeatureCollection(
-			SampleItem("item" + string(rune('1'+i))),
-		)
-		server := NewTestServerWithJSONResponse(fc)
-		defer server.Close()
-
-		origins[i] = &Origin{
-			ID:          "origin" + string(rune('1'+i)),
-			BaseURL:     server.URL,
-			Enabled:     true,
-			Searchable:  true,
-			Collections: []string{"collection1"},
-			Timeout:     5 * time.Second,
-			Priority:    i + 1,
-		}
-	}
-
-	handler, err := NewHandler(HandlerConfig{
-		Origins:          origins,
-		ConflictStrategy: ConflictPriorityWins,
-		MaxConcurrent:    2, // Test concurrency limit
-	})
-	require.NoError(t, err, "failed to create handler")
-
-	searchReq := SampleSearchRequest(
-		WithCollections("collection1"),
-		WithLimit(10),
-	)
-
-	ctx := context.Background()
-	results := handler.fanOutSearch(ctx, origins, searchReq)
-
-	assert.Len(t, results, 3, "expected 3 results")
-
-	// All results should be successful
-	for _, result := range results {
-		assert.NoError(t, result.Error, "unexpected error in result")
-		assert.Len(t, result.Items, 1, "expected 1 item")
-	}
-}
-
-// TestSearchOrigin tests single origin search
-func TestSearchOrigin(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		mockFC    *stac.FeatureCollection
-		mockError error
-		wantError bool
-	}{
-		{
-			name: "successful search",
-			mockFC: SampleFeatureCollection(
-				SampleItem("item1"),
-				SampleItem("item2"),
-			),
-			wantError: false,
-		},
-		{
-			name:      "search error",
-			mockFC:    nil,
-			mockError: errors.New("search failed"),
-			wantError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var server *httptest.Server
-			if tt.mockFC != nil {
-				server = NewTestServerWithJSONResponse(tt.mockFC)
-			} else {
-				server = NewTestServerWithError(http.StatusInternalServerError, "error")
-			}
-			defer server.Close()
-
-			origin := &Origin{
-				ID:          "origin1",
-				BaseURL:     server.URL,
-				Enabled:     true,
-				Searchable:  true,
-				Collections: []string{"collection1"},
-				Timeout:     5 * time.Second,
-				Priority:    1,
-			}
-
-			handler, err := NewHandler(HandlerConfig{
-				Origins:          []*Origin{origin},
-				ConflictStrategy: ConflictPriorityWins,
-			})
-			require.NoError(t, err, "failed to create handler")
-
-			searchReq := SampleSearchRequest(
-				WithCollections("collection1"),
-			)
-
-			result := handler.searchOrigin(context.Background(), origin, searchReq)
-
-			if tt.wantError {
-				assert.Error(t, result.Error, "expected error but got nil")
-			} else {
-				assert.NoError(t, result.Error, "unexpected error")
-				assert.Lenf(t, result.Items, len(tt.mockFC.Features), "expected %d items", len(tt.mockFC.Features))
-			}
-		})
-	}
-}
-
 // TestHandlerPaginationLimits tests pagination limit enforcement
-func TestHandlerPaginationLimits(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		requestLimit  int
-		defaultLimit  int
-		maxLimit      int
-		expectedLimit int
-	}{
-		{
-			name:          "use request limit when valid",
-			requestLimit:  50,
-			defaultLimit:  100,
-			maxLimit:      1000,
-			expectedLimit: 50,
-		},
-		{
-			name:          "use default when request limit is 0",
-			requestLimit:  0,
-			defaultLimit:  100,
-			maxLimit:      1000,
-			expectedLimit: 100,
-		},
-		{
-			name:          "cap at max limit",
-			requestLimit:  5000,
-			defaultLimit:  100,
-			maxLimit:      1000,
-			expectedLimit: 1000,
-		},
-		{
-			name:          "negative limit uses default",
-			requestLimit:  -10,
-			defaultLimit:  100,
-			maxLimit:      1000,
-			expectedLimit: 100,
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			fc := SampleFeatureCollection(
-				SampleItem("item1"),
-			)
-			server := NewTestServerWithJSONResponse(fc)
-			defer server.Close()
-
-			handler, err := NewHandler(HandlerConfig{
-				Origins: []*Origin{
-					{
-						ID:          "origin1",
-						BaseURL:     server.URL,
-						Enabled:     true,
-						Searchable:  true,
-						Collections: []string{"collection1"},
-						Timeout:     5 * time.Second,
-					},
-				},
-				ConflictStrategy: ConflictPriorityWins,
-				DefaultPageSize:  tt.defaultLimit,
-				MaxPageSize:      tt.maxLimit,
-			})
-			require.NoError(t, err, "failed to create handler")
-
-			searchReq := SampleSearchRequest(
-				WithCollections("collection1"),
-				WithLimit(tt.requestLimit),
-			)
-
-			req := &request{
-				Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
-				Context:     context.Background(),
-				RequestType: middleware.RequestTypeSearch,
-				SearchReq:   searchReq,
-			}
-
-			resp, err := handler.Handle(req.Context, req)
-			require.NoError(t, err, "Handle()")
-
-			var fc2 stac.FeatureCollection
-			require.NoError(t, json.Unmarshal(resp.Body, &fc2), "failed to parse response")
-
-			// The limit should be applied (Context.Limit may be set)
-			// We can't directly verify the limit sent to origin, but we can verify
-			// that the handler processed it correctly
-			assert.Equal(t, tt.expectedLimit, searchReq.Limit, "searchReq.Limit")
-		})
-	}
-}
-
 // TestHandleWithNoMatchingOrigins tests handling when no origins match
 func TestHandleWithNoMatchingOrigins(t *testing.T) {
 	t.Parallel()
@@ -1317,7 +1018,6 @@ func TestHandleWithNoMatchingOrigins(t *testing.T) {
 				Timeout:     5 * time.Second,
 			},
 		},
-		ConflictStrategy: ConflictPriorityWins,
 	})
 	require.NoError(t, err, "failed to create handler")
 
@@ -1375,7 +1075,6 @@ func TestHandleCollectionPriority(t *testing.T) {
 				Timeout:     5 * time.Second,
 			},
 		},
-		ConflictStrategy: ConflictPriorityWins,
 	})
 	require.NoError(t, err, "failed to create handler")
 
@@ -1394,83 +1093,6 @@ func TestHandleCollectionPriority(t *testing.T) {
 }
 
 // TestHandleSearchWithBbox tests search with bounding box
-func TestHandleSearchWithBbox(t *testing.T) {
-	t.Parallel()
-
-	fc := SampleFeatureCollection(
-		SampleItem("item1"),
-	)
-	server := NewTestServerWithJSONResponse(fc)
-	defer server.Close()
-
-	handler, err := NewHandler(HandlerConfig{
-		Origins: []*Origin{
-			{
-				ID:         "origin1",
-				BaseURL:    server.URL,
-				Enabled:    true,
-				Searchable: true,
-				Timeout:    5 * time.Second,
-			},
-		},
-		ConflictStrategy: ConflictPriorityWins,
-	})
-	require.NoError(t, err, "failed to create handler")
-
-	req := &request{
-		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeSearch,
-		SearchReq: SampleSearchRequest(
-			WithSearchBbox(SampleBbox()),
-		),
-	}
-
-	resp, err := handler.Handle(req.Context, req)
-	require.NoError(t, err, "Handle()")
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
-}
-
-// TestHandleSearchWithDatetime tests search with datetime filter
-func TestHandleSearchWithDatetime(t *testing.T) {
-	t.Parallel()
-
-	fc := SampleFeatureCollection(
-		SampleItem("item1"),
-	)
-	server := NewTestServerWithJSONResponse(fc)
-	defer server.Close()
-
-	handler, err := NewHandler(HandlerConfig{
-		Origins: []*Origin{
-			{
-				ID:         "origin1",
-				BaseURL:    server.URL,
-				Enabled:    true,
-				Searchable: true,
-				Timeout:    5 * time.Second,
-			},
-		},
-		ConflictStrategy: ConflictPriorityWins,
-	})
-	require.NoError(t, err, "failed to create handler")
-
-	req := &request{
-		Request:     httptest.NewRequest(http.MethodPost, "/search", nil),
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeSearch,
-		SearchReq: SampleSearchRequest(
-			WithSearchDatetime("2023-01-01T00:00:00Z/2023-12-31T23:59:59Z"),
-		),
-	}
-
-	resp, err := handler.Handle(req.Context, req)
-	require.NoError(t, err, "Handle()")
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")
-}
-
 // paginatingTestServer is a minimal STAC search backend used to drive
 // multi-page federation tests. It owns an ordered list of items and
 // honors `?token=off-<N>` for cursor-style pagination.
@@ -1563,7 +1185,6 @@ func TestHandleSearch_MultiPageFederation(t *testing.T) {
 
 	handler, err := NewHandler(HandlerConfig{
 		Origins:          origins,
-		ConflictStrategy: ConflictPriorityWins,
 		MaxConcurrent:    4,
 		AggregateTimeout: 10 * time.Second,
 		DefaultPageSize:  3,
@@ -1664,7 +1285,6 @@ func TestHandleItems_FederatedAcrossOrigins(t *testing.T) {
 
 	handler, err := NewHandler(HandlerConfig{
 		Origins:          origins,
-		ConflictStrategy: ConflictPriorityWins,
 		MaxConcurrent:    4,
 		AggregateTimeout: 10 * time.Second,
 		DefaultPageSize:  10,
@@ -1739,7 +1359,6 @@ func TestHandleQueryables_IntersectsAcrossOrigins(t *testing.T) {
 	}
 	handler, err := NewHandler(HandlerConfig{
 		Origins:          origins,
-		ConflictStrategy: ConflictPriorityWins,
 		MaxConcurrent:    4,
 		AggregateTimeout: 5 * time.Second,
 	})

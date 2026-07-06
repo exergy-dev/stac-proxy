@@ -59,12 +59,12 @@ type mockOriginClient struct {
 	searchFunc func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error)
 }
 
-func (m *mockOriginClient) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, string, error) {
+func (m *mockOriginClient) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, []byte, string, error) {
 	if m.searchFunc != nil {
 		items, tok, url, err := m.searchFunc(ctx, req)
-		return items, tok, url, "", err
+		return items, tok, url, nil, "", err
 	}
-	return nil, "", "", "", nil
+	return nil, "", "", nil, "", nil
 }
 
 func (m *mockOriginClient) BaseURL() string { return "https://" + m.id + ".example.com" }
@@ -80,12 +80,12 @@ type mockSearchableOrigin struct {
 	searchFunc func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error)
 }
 
-func (m *mockSearchableOrigin) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, string, error) {
+func (m *mockSearchableOrigin) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, []byte, string, error) {
 	if m.searchFunc != nil {
 		items, tok, url, err := m.searchFunc(ctx, req)
-		return items, tok, url, "", err
+		return items, tok, url, nil, "", err
 	}
-	return nil, "", "", "", nil
+	return nil, "", "", nil, "", nil
 }
 
 func (m *mockSearchableOrigin) BaseURL() string                                                  { return "https://" + m.originID + ".example.com" }
@@ -112,7 +112,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 
 		cfg := PaginatedSearchConfig{
 			Origins:      make(map[string]Searcher),
-			Merger:       NewResultMerger(ConflictFirstWins),
+			Merger:       NewResultMerger(),
 			CursorSecret: paginationTestSecret,
 		}
 
@@ -128,7 +128,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 
 		cfg := PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		}
 		_, err := NewPaginatedSearcher(cfg)
 		assert.Error(t, err, "expected error when CursorSecret is empty")
@@ -138,7 +138,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 		t.Parallel()
 		cfg := PaginatedSearchConfig{
 			Origins:         make(map[string]Searcher),
-			Merger:          NewResultMerger(ConflictPriorityWins),
+			Merger:          NewResultMerger(),
 			DefaultPageSize: 50,
 			MaxPageSize:     500,
 			CursorSecret:    paginationTestSecret,
@@ -156,7 +156,7 @@ func TestNewPaginatedSearcher(t *testing.T) {
 		}
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: origins,
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		assert.Equal(t, "https://origin1.example.com", searcher.originBaseURLs["origin1"], "origin1 base URL")
 		assert.Equal(t, "https://origin2.example.com", searcher.originBaseURLs["origin2"], "origin2 base URL")
@@ -178,7 +178,7 @@ func TestSearch_NoCursor(t *testing.T) {
 
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: map[string]Searcher{"origin1": origin1},
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		result, err := searcher.Search(context.Background(), paginationTestSearchRequest(), "")
 		require.NoError(t, err, "search failed")
@@ -196,7 +196,7 @@ func TestSearch_NoCursor(t *testing.T) {
 		})
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: map[string]Searcher{"origin1": origin1, "origin2": origin2},
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		result, err := searcher.Search(context.Background(), paginationTestSearchRequest(), "")
 		require.NoError(t, err, "search failed")
@@ -207,7 +207,7 @@ func TestSearch_NoCursor(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		result, err := searcher.Search(context.Background(), paginationTestSearchRequest(), "")
 		require.NoError(t, err, "search failed")
@@ -222,7 +222,7 @@ func TestSearch_NoCursor(t *testing.T) {
 		})
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: map[string]Searcher{"origin1": origin1},
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		result, err := searcher.Search(context.Background(), paginationTestSearchRequest(), "")
 		require.NoError(t, err, "search failed")
@@ -255,7 +255,7 @@ func TestSearch_WithCursor(t *testing.T) {
 
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: map[string]Searcher{"origin1": origin1},
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		req := &stac.SearchRequest{Limit: 1}
 
@@ -277,7 +277,7 @@ func TestSearch_WithCursor(t *testing.T) {
 		})
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: map[string]Searcher{"origin1": origin1},
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		req1 := &stac.SearchRequest{Collections: []string{"collection1"}}
 
@@ -297,7 +297,7 @@ func TestSearch_InvalidCursor(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		_, err := searcher.Search(context.Background(), paginationTestSearchRequest(), "invalid-cursor!!!")
 		require.Error(t, err, "expected error for invalid cursor")
@@ -307,7 +307,7 @@ func TestSearch_InvalidCursor(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
@@ -321,101 +321,20 @@ func TestSearch_InvalidCursor(t *testing.T) {
 }
 
 // TestFetchFromOrigins tests parallel origin fetching
-func TestFetchFromOrigins(t *testing.T) {
-	t.Run("handles origin errors", func(t *testing.T) {
-		t.Parallel()
-		origin1 := newMockSearchable("origin1", 1, func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
-			return nil, "", "", errors.New("origin1 error")
-		})
-		origin2 := newMockSearchable("origin2", 2, func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
-			return []*stac.Item{paginationTestItem("item2", time.Now())}, "", "", nil
-		})
-		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
-			Origins: map[string]Searcher{"origin1": origin1, "origin2": origin2},
-			Merger:  NewResultMerger(ConflictFirstWins),
-		})
-		cursor := NewFederatedCursor("hash", "", []string{"origin1", "origin2"}, nil)
-		results := searcher.fetchFromOrigins(context.Background(), paginationTestSearchRequest(), cursor, []string{"origin1", "origin2"}, 10)
-		assert.Len(t, results, 2, "expected 2 results")
-		errorCount := 0
-		for _, r := range results {
-			if r.Error != nil {
-				errorCount++
-			}
-		}
-		assert.Equal(t, 1, errorCount, "expected 1 error result")
-	})
-
-	t.Run("applies cursor tokens", func(t *testing.T) {
-		t.Parallel()
-		var receivedToken string
-		var mu sync.Mutex
-		origin1 := newMockSearchable("origin1", 1, func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
-			mu.Lock()
-			receivedToken = req.Token
-			mu.Unlock()
-			return []*stac.Item{paginationTestItem("item1", time.Now())}, "", "", nil
-		})
-		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
-			Origins: map[string]Searcher{"origin1": origin1},
-			Merger:  NewResultMerger(ConflictFirstWins),
-		})
-		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		cursor.Origins["origin1"].NextToken = "test-token"
-		searcher.fetchFromOrigins(context.Background(), paginationTestSearchRequest(), cursor, []string{"origin1"}, 10)
-		mu.Lock()
-		defer mu.Unlock()
-		assert.Equal(t, "test-token", receivedToken, "received token")
-	})
-
-	t.Run("handles missing origin", func(t *testing.T) {
-		t.Parallel()
-		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
-			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
-		})
-		cursor := NewFederatedCursor("hash", "", []string{"missing-origin"}, nil)
-		results := searcher.fetchFromOrigins(context.Background(), paginationTestSearchRequest(), cursor, []string{"missing-origin"}, 10)
-		require.Len(t, results, 1, "expected one result")
-		assert.NotNil(t, results[0].Error, "expected error for missing origin")
-	})
-
-	t.Run("requests extra items for merge buffer", func(t *testing.T) {
-		t.Parallel()
-		var receivedLimit int
-		var mu sync.Mutex
-		origin1 := newMockSearchable("origin1", 1, func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
-			mu.Lock()
-			receivedLimit = req.Limit
-			mu.Unlock()
-			return []*stac.Item{paginationTestItem("item1", time.Now())}, "", "", nil
-		})
-		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
-			Origins: map[string]Searcher{"origin1": origin1},
-			Merger:  NewResultMerger(ConflictFirstWins),
-		})
-		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		searcher.fetchFromOrigins(context.Background(), paginationTestSearchRequest(), cursor, []string{"origin1"}, 10)
-		mu.Lock()
-		defer mu.Unlock()
-		assert.Equal(t, 20, receivedLimit, "expected limit 20")
-	})
-}
-
 // TestMergeResults tests result merging and deduplication
 func TestMergeResults(t *testing.T) {
 	t.Run("merges items from multiple origins", func(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		cursor := NewFederatedCursor("hash", "", []string{"origin1", "origin2"}, nil)
 		results := []originFetchResult{
 			{OriginID: "origin1", Items: []*stac.Item{paginationTestItem("item1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))}},
 			{OriginID: "origin2", Items: []*stac.Item{paginationTestItem("item2", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))}},
 		}
-		merged := searcher.mergeResults(results, cursor, 10, nil)
+		merged := searcher.mergeResults(results, cursor, 10)
 		assert.Len(t, merged, 2, "expected 2 merged items")
 	})
 
@@ -423,14 +342,14 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		cursor := NewFederatedCursor("hash", "", []string{"origin1", "origin2"}, nil)
 		results := []originFetchResult{
 			{OriginID: "origin1", Items: []*stac.Item{paginationTestItem("item1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))}},
 			{OriginID: "origin2", Items: []*stac.Item{paginationTestItem("item1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))}},
 		}
-		merged := searcher.mergeResults(results, cursor, 10, nil)
+		merged := searcher.mergeResults(results, cursor, 10)
 		assert.Len(t, merged, 1, "expected 1 item after deduplication")
 	})
 
@@ -438,7 +357,7 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		results := []originFetchResult{
@@ -448,7 +367,7 @@ func TestMergeResults(t *testing.T) {
 				paginationTestItem("item3", time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)),
 			}},
 		}
-		merged := searcher.mergeResults(results, cursor, 10, nil)
+		merged := searcher.mergeResults(results, cursor, 10)
 		require.Len(t, merged, 3, "merged length")
 		assert.Equal(t, "item2", merged[0].ID, "merged[0]")
 		assert.Equal(t, "item3", merged[1].ID, "merged[1]")
@@ -459,7 +378,7 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		results := []originFetchResult{
@@ -469,7 +388,7 @@ func TestMergeResults(t *testing.T) {
 				paginationTestItem("item3", time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)),
 			}},
 		}
-		merged := searcher.mergeResults(results, cursor, 2, nil)
+		merged := searcher.mergeResults(results, cursor, 2)
 		assert.Len(t, merged, 2, "expected 2 items (limited)")
 	})
 
@@ -477,13 +396,13 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		results := []originFetchResult{
 			{OriginID: "origin1", Items: []*stac.Item{paginationTestItem("item1", time.Now())}, NextToken: "next-token"},
 		}
-		searcher.mergeResults(results, cursor, 10, nil)
+		searcher.mergeResults(results, cursor, 10)
 		origin := cursor.GetOriginCursor("origin1")
 		assert.Equalf(t, "next-token", origin.NextToken, "unexpected origin state: %+v", origin)
 		assert.Equalf(t, 1, origin.ItemCount, "unexpected origin state: %+v", origin)
@@ -493,11 +412,11 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		results := []originFetchResult{{OriginID: "origin1", Error: errors.New("fetch failed")}}
-		searcher.mergeResults(results, cursor, 10, nil)
+		searcher.mergeResults(results, cursor, 10)
 		assert.True(t, cursor.GetOriginCursor("origin1").Error, "expected origin to be marked with error")
 	})
 
@@ -505,13 +424,13 @@ func TestMergeResults(t *testing.T) {
 		t.Parallel()
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins: make(map[string]Searcher),
-			Merger:  NewResultMerger(ConflictFirstWins),
+			Merger:  NewResultMerger(),
 		})
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
 		results := []originFetchResult{
 			{OriginID: "origin1", Items: []*stac.Item{paginationTestItem("item1", time.Now())}},
 		}
-		searcher.mergeResults(results, cursor, 10, nil)
+		searcher.mergeResults(results, cursor, 10)
 		assert.True(t, cursor.GetOriginCursor("origin1").Exhausted, "expected origin to be marked exhausted")
 	})
 
@@ -539,10 +458,10 @@ func TestMergeResults(t *testing.T) {
 		for i := 0; i < 5; i++ {
 			searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 				Origins: make(map[string]Searcher),
-				Merger:  NewResultMerger(ConflictFirstWins),
+				Merger:  NewResultMerger(),
 			})
 			cursor := NewFederatedCursor("hash", "", []string{"origin1", "origin2"}, nil)
-			merged := searcher.mergeResults(makeResults(), cursor, 10, nil)
+			merged := searcher.mergeResults(makeResults(), cursor, 10)
 			require.Lenf(t, merged, 4, "iter %d: merged length", i)
 			for j, id := range expectedIDs {
 				assert.Equalf(t, id, merged[j].ID, "iter %d: merged[%d].ID", i, j)
@@ -552,135 +471,59 @@ func TestMergeResults(t *testing.T) {
 }
 
 // TestHashSearchRequest tests query hash determinism
+// TestHashSearchRequest covers determinism, sensitivity to filters,
+// invalidation on limit/ID changes, ignored pagination fields, and
+// digest shape — all in one table.
 func TestHashSearchRequest(t *testing.T) {
-	t.Run("same request produces same hash", func(t *testing.T) {
-		t.Parallel()
-		req1 := &stac.SearchRequest{
-			Collections: []string{"col1", "col2"},
-			BBox:        []float64{-10, -10, 10, 10},
-			Datetime:    "2024-01-01T00:00:00Z/2024-12-31T23:59:59Z",
-		}
-		req2 := &stac.SearchRequest{
-			Collections: []string{"col1", "col2"},
-			BBox:        []float64{-10, -10, 10, 10},
-			Datetime:    "2024-01-01T00:00:00Z/2024-12-31T23:59:59Z",
-		}
-		assert.Equal(t, hashSearchRequest(req1), hashSearchRequest(req2), "expected same hash for identical requests")
-	})
-
-	t.Run("collections affect hash", func(t *testing.T) {
-		t.Parallel()
-		assert.NotEqual(t,
-			hashSearchRequest(&stac.SearchRequest{Collections: []string{"a"}}),
-			hashSearchRequest(&stac.SearchRequest{Collections: []string{"b"}}),
-			"expected different hashes")
-	})
-
-	t.Run("order of collections matters", func(t *testing.T) {
-		t.Parallel()
-		req1 := &stac.SearchRequest{Collections: []string{"col1", "col2"}}
-		req2 := &stac.SearchRequest{Collections: []string{"col2", "col1"}}
-		assert.NotEqual(t, hashSearchRequest(req1), hashSearchRequest(req2), "expected different hashes for different collection orders")
-	})
-
-	t.Run("bbox affects hash", func(t *testing.T) {
-		t.Parallel()
-		assert.NotEqual(t,
-			hashSearchRequest(&stac.SearchRequest{BBox: []float64{-10, -10, 10, 10}}),
-			hashSearchRequest(&stac.SearchRequest{BBox: []float64{-20, -20, 20, 20}}),
-			"expected different hashes for different bboxes")
-	})
-
-	t.Run("datetime affects hash", func(t *testing.T) {
-		t.Parallel()
-		assert.NotEqual(t,
-			hashSearchRequest(&stac.SearchRequest{Datetime: "a"}),
-			hashSearchRequest(&stac.SearchRequest{Datetime: "b"}),
-			"expected different hashes for different datetimes")
-	})
-}
-
-// TestHashSearchRequest_LimitChangeInvalidatesCursor verifies that
-// changing Limit changes the hash, so a cursor issued for one page size
-// can't be replayed at a different limit.
-func TestHashSearchRequest_LimitChangeInvalidatesCursor(t *testing.T) {
 	t.Parallel()
-	req1 := &stac.SearchRequest{Collections: []string{"c1"}, Limit: 10}
-	req2 := &stac.SearchRequest{Collections: []string{"c1"}, Limit: 20}
-	assert.NotEqual(t, hashSearchRequest(req1), hashSearchRequest(req2), "limit must affect hash")
-}
 
-// TestHashSearchRequest_IDsChangeInvalidates verifies that changing IDs
-// changes the hash.
-func TestHashSearchRequest_IDsChangeInvalidates(t *testing.T) {
-	t.Parallel()
-	req1 := &stac.SearchRequest{IDs: []string{"a", "b"}}
-	req2 := &stac.SearchRequest{IDs: []string{"a", "c"}}
-	assert.NotEqual(t, hashSearchRequest(req1), hashSearchRequest(req2), "IDs must affect hash")
-}
+	base := &stac.SearchRequest{
+		Collections: []string{"col1", "col2"},
+		BBox:        []float64{-10, -10, 10, 10},
+		Datetime:    "2024-01-01T00:00:00Z/2024-12-31T23:59:59Z",
+		Limit:       10,
+		IDs:         []string{"a", "b"},
+	}
+	mutate := func(fn func(r *stac.SearchRequest)) *stac.SearchRequest {
+		r := *base
+		fn(&r)
+		return &r
+	}
 
-// TestHashSearchRequest_FullDigest verifies the hash is the full 64-char sha256.
-func TestHashSearchRequest_FullDigest(t *testing.T) {
-	t.Parallel()
-	hash := hashSearchRequest(paginationTestSearchRequest())
-	require.Lenf(t, hash, 64, "expected hash length 64, got %d (%q)", len(hash), hash)
-	for _, c := range hash {
+	cases := []struct {
+		name      string
+		req       *stac.SearchRequest
+		wantEqual bool // equal to baseHash
+	}{
+		{"identical", mutate(func(r *stac.SearchRequest) {}), true},
+		{"collections changed", mutate(func(r *stac.SearchRequest) { r.Collections = []string{"x"} }), false},
+		{"collections reordered", mutate(func(r *stac.SearchRequest) { r.Collections = []string{"col2", "col1"} }), false},
+		{"bbox changed", mutate(func(r *stac.SearchRequest) { r.BBox = []float64{-20, -20, 20, 20} }), false},
+		{"datetime changed", mutate(func(r *stac.SearchRequest) { r.Datetime = "different" }), false},
+		{"limit changed", mutate(func(r *stac.SearchRequest) { r.Limit = 20 }), false},
+		{"IDs changed", mutate(func(r *stac.SearchRequest) { r.IDs = []string{"a", "c"} }), false},
+		{"cursor ignored", mutate(func(r *stac.SearchRequest) { r.Cursor = "some-cursor" }), true},
+		{"token ignored", mutate(func(r *stac.SearchRequest) { r.Token = "some-token" }), true},
+	}
+	baseHash := hashSearchRequest(base)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := hashSearchRequest(tc.req)
+			if tc.wantEqual {
+				assert.Equal(t, baseHash, got, "expected hash to match base")
+			} else {
+				assert.NotEqual(t, baseHash, got, "expected hash to differ from base")
+			}
+		})
+	}
+
+	// Digest is 64 lowercase hex chars.
+	require.Lenf(t, baseHash, 64, "expected hash length 64, got %d", len(baseHash))
+	for _, c := range baseHash {
 		assert.Truef(t, (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'), "hash contains non-hex character: %c", c)
 	}
-}
-
-// TestHashSearchRequest_PaginationFieldsIgnored verifies that Cursor and
-// Token do NOT affect the hash — otherwise the cursor would invalidate
-// itself on the next page.
-func TestHashSearchRequest_PaginationFieldsIgnored(t *testing.T) {
-	t.Parallel()
-	base := &stac.SearchRequest{Collections: []string{"c1"}, Datetime: "2024"}
-	withCursor := *base
-	withCursor.Cursor = "some-cursor-value"
-	withToken := *base
-	withToken.Token = "some-token-value"
-
-	h := hashSearchRequest(base)
-	assert.Equal(t, h, hashSearchRequest(&withCursor), "Cursor must not affect hash")
-	assert.Equal(t, h, hashSearchRequest(&withToken), "Token must not affect hash")
-}
-
-// TestCloneSearchRequest tests deep copy of search requests
-func TestCloneSearchRequest(t *testing.T) {
-	t.Run("basic clone", func(t *testing.T) {
-		t.Parallel()
-		original := &stac.SearchRequest{
-			Collections: []string{"col1", "col2"},
-			BBox:        []float64{-10, -10, 10, 10},
-			Limit:       10,
-		}
-		cloned := cloneSearchRequest(original)
-		assert.NotSame(t, original, cloned, "clone should be a different object")
-		assert.Equal(t, original.Limit, cloned.Limit, "Limit not copied")
-		assert.Len(t, cloned.Collections, 2, "Collections not copied")
-		assert.Len(t, cloned.BBox, 4, "BBox not copied")
-	})
-
-	t.Run("no shared slices", func(t *testing.T) {
-		t.Parallel()
-		original := &stac.SearchRequest{Collections: []string{"col1"}, BBox: []float64{1}, IDs: []string{"id1"}}
-		cloned := cloneSearchRequest(original)
-		original.Collections[0] = "x"
-		original.BBox[0] = -999
-		original.IDs[0] = "y"
-		assert.NotEqual(t, "x", cloned.Collections[0], "clone shares Collections slice with original")
-		assert.NotEqual(t, float64(-999), cloned.BBox[0], "clone shares BBox slice with original")
-		assert.NotEqual(t, "y", cloned.IDs[0], "clone shares IDs slice with original")
-	})
-
-	t.Run("handles nil slices", func(t *testing.T) {
-		t.Parallel()
-		original := &stac.SearchRequest{}
-		cloned := cloneSearchRequest(original)
-		assert.Nil(t, cloned.Collections, "nil Collections should remain nil")
-		assert.Nil(t, cloned.BBox, "nil BBox should remain nil")
-		assert.Nil(t, cloned.IDs, "nil IDs should remain nil")
-	})
 }
 
 // TestLimitEnforcement tests that limits are properly enforced
@@ -696,7 +539,7 @@ func TestLimitEnforcement(t *testing.T) {
 		})
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins:     map[string]Searcher{"origin1": origin1},
-			Merger:      NewResultMerger(ConflictFirstWins),
+			Merger:      NewResultMerger(),
 			MaxPageSize: 1000,
 		})
 		result, err := searcher.Search(context.Background(), &stac.SearchRequest{Limit: 25}, "")
@@ -712,7 +555,7 @@ func TestLimitEnforcement(t *testing.T) {
 		})
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins:         map[string]Searcher{"origin1": origin1},
-			Merger:          NewResultMerger(ConflictFirstWins),
+			Merger:          NewResultMerger(),
 			DefaultPageSize: 50,
 		})
 		result, err := searcher.Search(context.Background(), &stac.SearchRequest{}, "")
@@ -727,34 +570,13 @@ func TestLimitEnforcement(t *testing.T) {
 		})
 		searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 			Origins:         map[string]Searcher{"origin1": origin1},
-			Merger:          NewResultMerger(ConflictFirstWins),
+			Merger:          NewResultMerger(),
 			DefaultPageSize: 100,
 			MaxPageSize:     500,
 		})
 		result, err := searcher.Search(context.Background(), &stac.SearchRequest{Limit: 1000}, "")
 		require.NoError(t, err, "search failed")
 		assert.Equal(t, 100, result.Context.Limit, "expected default 100")
-	})
-}
-
-// TestGetDatetime tests datetime extraction for sorting
-func TestGetDatetime(t *testing.T) {
-	t.Run("extracts valid datetime", func(t *testing.T) {
-		t.Parallel()
-		item := &stac.Item{Properties: map[string]any{"datetime": "2024-01-01T00:00:00Z"}}
-		assert.Equal(t, "2024-01-01T00:00:00Z", getDatetime(item))
-	})
-
-	t.Run("extracts string-form datetime", func(t *testing.T) {
-		t.Parallel()
-		item := &stac.Item{Properties: map[string]any{"datetime": "2024-02-02T00:00:00Z"}}
-		assert.Equal(t, "2024-02-02T00:00:00Z", getDatetime(item))
-	})
-
-	t.Run("empty for missing", func(t *testing.T) {
-		t.Parallel()
-		item := &stac.Item{Properties: map[string]any{}}
-		assert.Empty(t, getDatetime(item), "expected empty")
 	})
 }
 
@@ -792,7 +614,7 @@ func TestPaginatedSearcher_ConcurrentSearches_DoNotCrossPollinateDedup(t *testin
 
 	searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 		Origins:     map[string]Searcher{"origin1": origin},
-		Merger:      NewResultMerger(ConflictFirstWins),
+		Merger:      NewResultMerger(),
 		MaxPageSize: 100,
 	})
 
@@ -887,7 +709,7 @@ func TestSearch_CursorV2_PrevFirstChain(t *testing.T) {
 
 	searcher := mustPaginatedSearcher(t, PaginatedSearchConfig{
 		Origins:   map[string]Searcher{"origin1": origin},
-		Merger:    NewResultMerger(ConflictFirstWins),
+		Merger:    NewResultMerger(),
 		PageCache: pc,
 	})
 

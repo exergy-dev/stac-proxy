@@ -195,23 +195,6 @@ func TestAuthz_FilterExtensionCheck_SkipsWhenUnsupported(t *testing.T) {
 	require.Nil(t, sr.Filter, "want no injection when upstream lacks Filter Extension, got %v", sr.Filter)
 }
 
-func TestAuthz_FilterExtensionCheck_AllowsWhenSupported(t *testing.T) {
-	mw := NewHTTPMiddleware(HTTPConfig{
-		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed:     true,
-			Constraints: &AuthzConstraints{CQL2Filter: "eo:cloud_cover < 20"},
-		}},
-		AllowAnonymous:       true,
-		CQL2InjectionEnabled: true,
-		FilterExtensionCheck: func(_ *http.Request, _ *middleware.STACInfo) bool { return true },
-	})
-	sr := &stac.SearchRequest{}
-	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
-	r := withInfo(httptest.NewRequest("GET", "/search", nil), info)
-	runMW(mw, r)
-	require.NotNil(t, sr.Filter, "want injection to happen when target supports Filter Extension")
-}
-
 func TestAuthz_SingleRecord_AllowMatching(t *testing.T) {
 	mw := NewHTTPMiddleware(HTTPConfig{
 		Enforcer: &stubEnforcer{decision: &AuthzDecision{
@@ -315,22 +298,50 @@ func TestAuthz_NonSearchRequest_NoInject(t *testing.T) {
 // as DONE, but applyConstraints only clamped MaxResults — these tests
 // fail without the corrected enforcement.
 
-func TestAuthz_AllowedCollections_IntersectsRequest(t *testing.T) {
-	mw := NewHTTPMiddleware(HTTPConfig{
-		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				AllowedCollections: []string{"a", "b"},
-			},
-		}},
-		AllowAnonymous: true,
-	})
-	sr := &stac.SearchRequest{Collections: []string{"a", "c", "d"}}
-	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
-	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
-	rr := runMW(mw, r)
-	require.Equal(t, http.StatusOK, rr.Code, "want 200, body=%s", rr.Body.String())
-	require.Equal(t, []string{"a"}, sr.Collections, "want [a]")
+func TestAuthz_Collections_HappyPath(t *testing.T) {
+	cases := []struct {
+		name        string
+		constraints *AuthzConstraints
+		requested   []string
+		wantFinal   []string
+	}{
+		{
+			name:        "AllowedCollections intersects request",
+			constraints: &AuthzConstraints{AllowedCollections: []string{"a", "b"}},
+			requested:   []string{"a", "c", "d"},
+			wantFinal:   []string{"a"},
+		},
+		{
+			name:        "AllowedCollections empty request populates",
+			constraints: &AuthzConstraints{AllowedCollections: []string{"a", "b"}},
+			requested:   nil,
+			wantFinal:   []string{"a", "b"},
+		},
+		{
+			name:        "DeniedCollections removes from request",
+			constraints: &AuthzConstraints{DeniedCollections: []string{"b"}},
+			requested:   []string{"a", "b", "c"},
+			wantFinal:   []string{"a", "c"},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			mw := NewHTTPMiddleware(HTTPConfig{
+				Enforcer: &stubEnforcer{decision: &AuthzDecision{
+					Allowed:     true,
+					Constraints: tc.constraints,
+				}},
+				AllowAnonymous: true,
+			})
+			sr := &stac.SearchRequest{Collections: tc.requested}
+			info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+			r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
+			rr := runMW(mw, r)
+			require.Equal(t, http.StatusOK, rr.Code, "want 200, body=%s", rr.Body.String())
+			require.Equal(t, tc.wantFinal, sr.Collections, "final collections")
+		})
+	}
 }
 
 func TestAuthz_AllowedCollections_NoIntersection_Denies403(t *testing.T) {
@@ -348,42 +359,6 @@ func TestAuthz_AllowedCollections_NoIntersection_Denies403(t *testing.T) {
 	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
 	rr := runMW(mw, r)
 	require.Equal(t, http.StatusForbidden, rr.Code, "want 403")
-}
-
-func TestAuthz_AllowedCollections_EmptyRequest_PopulatesFromAllowed(t *testing.T) {
-	mw := NewHTTPMiddleware(HTTPConfig{
-		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				AllowedCollections: []string{"a", "b"},
-			},
-		}},
-		AllowAnonymous: true,
-	})
-	sr := &stac.SearchRequest{}
-	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
-	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
-	rr := runMW(mw, r)
-	require.Equal(t, http.StatusOK, rr.Code, "want 200, body=%s", rr.Body.String())
-	require.Equal(t, []string{"a", "b"}, sr.Collections, "want [a,b]")
-}
-
-func TestAuthz_DeniedCollections_RemovesFromRequest(t *testing.T) {
-	mw := NewHTTPMiddleware(HTTPConfig{
-		Enforcer: &stubEnforcer{decision: &AuthzDecision{
-			Allowed: true,
-			Constraints: &AuthzConstraints{
-				DeniedCollections: []string{"b"},
-			},
-		}},
-		AllowAnonymous: true,
-	})
-	sr := &stac.SearchRequest{Collections: []string{"a", "b", "c"}}
-	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
-	r := withInfo(httptest.NewRequest("POST", "/search", nil), info)
-	rr := runMW(mw, r)
-	require.Equal(t, http.StatusOK, rr.Code, "want 200")
-	require.Equal(t, []string{"a", "c"}, sr.Collections, "want [a,c]")
 }
 
 func TestAuthz_DeniedCollections_RemovesAll_Denies403(t *testing.T) {

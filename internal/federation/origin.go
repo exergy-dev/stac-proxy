@@ -215,6 +215,9 @@ func (c *OriginClient) limitedBody(body io.Reader) *countingReader {
 // which parses RFC 5988 next-page links from the `Link:` header.
 func (c *OriginClient) Search(ctx context.Context, req *stac.SearchRequest) (*stac.FeatureCollection, http.Header, error) {
 	if req != nil && req.OverrideURL != "" {
+		if len(req.OverrideBody) > 0 {
+			return c.searchByPOST(ctx, req.OverrideURL, req.OverrideBody)
+		}
 		return c.searchByURL(ctx, req.OverrideURL)
 	}
 
@@ -266,6 +269,43 @@ func (c *OriginClient) searchByURL(ctx context.Context, fullURL string) (*stac.F
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
 		return nil, nil, fmt.Errorf("search-by-url failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	fc, err := c.decodeFC(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return fc, resp.Header, nil
+}
+
+// searchByPOST issues POST fullURL with body verbatim, allowlist-
+// checked against this client's BaseURL. The (fullURL, body) pair is
+// the (href, body) from an upstream's POST-style rel=next link, as
+// captured by the post_body pagination adapter. The body carries the
+// original search parameters plus the upstream's cursor field, so
+// the proxy doesn't need to rebuild anything — it just replays.
+func (c *OriginClient) searchByPOST(ctx context.Context, fullURL string, body []byte) (*stac.FeatureCollection, http.Header, error) {
+	if !urlRootedAtBase(fullURL, c.baseURL) {
+		return nil, nil, fmt.Errorf("search override URL %q not rooted at origin base %q", fullURL, c.BaseURL())
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Accept", "application/geo+json, application/json")
+	req.Header.Set("Content-Type", "application/json")
+	middleware.ForwardRequestID(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
+		return nil, nil, fmt.Errorf("search-by-post failed with status %d: %s", resp.StatusCode, string(errBody))
 	}
 
 	fc, err := c.decodeFC(resp.Body)

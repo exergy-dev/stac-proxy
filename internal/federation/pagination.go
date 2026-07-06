@@ -31,7 +31,7 @@ import (
 // auto adapter locked its choice on the first response; subsequent
 // pages route to the named adapter via OriginCursor.AdapterName.
 type Searcher interface {
-	Search(ctx context.Context, req *stac.SearchRequest) (items []*stac.Item, nextToken string, nextURL string, adapterName string, err error)
+	Search(ctx context.Context, req *stac.SearchRequest) (items []*stac.Item, nextToken string, nextURL string, nextBody []byte, adapterName string, err error)
 	// BaseURL returns the origin's upstream base URL. Used to enforce
 	// that any cursor-encoded NextURL is rooted at the configured
 	// origin (preventing SSRF via tampered cursors).
@@ -96,13 +96,13 @@ func NewOriginClientSearcher(client *OriginClient, cfg pageadapter.Config) (*Ori
 // (carried via req.AdapterName) names a locked adapter, that one is
 // used in place of the default — this is how `auto` honors its first-
 // response decision on subsequent pages.
-func (o *OriginClientSearcher) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, string, error) {
+func (o *OriginClientSearcher) Search(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, []byte, string, error) {
 	fc, hdr, err := o.Client.Search(ctx, req)
 	if err != nil {
-		return nil, "", "", "", err
+		return nil, "", "", nil, "", err
 	}
 	if fc == nil {
-		return nil, "", "", "", nil
+		return nil, "", "", nil, "", nil
 	}
 	items := append([]*stac.Item(nil), fc.Features...)
 
@@ -117,12 +117,12 @@ func (o *OriginClientSearcher) Search(ctx context.Context, req *stac.SearchReque
 		// but should retire this origin from further pagination so we
 		// don't loop. Logging happens at the paginator (origin marked
 		// errored on subsequent advance attempts).
-		return items, "", "", "", err
+		return items, "", "", nil, "", err
 	}
 	if st.Done {
-		return items, "", "", "", nil
+		return items, "", "", nil, "", nil
 	}
-	return items, st.Token, st.URL, st.AdapterName, nil
+	return items, st.Token, st.URL, st.Body, st.AdapterName, nil
 }
 
 // pickAdapter returns the adapter that should handle this response:
@@ -148,15 +148,11 @@ func (o *OriginClientSearcher) BaseURL() string {
 
 // PaginatedSearcher handles paginated search across multiple origins.
 //
-// PaginatedSearcher is safe for concurrent use: every Search call
-// constructs its own per-call deduplicator (see Search), so concurrent
+// PaginatedSearcher is safe for concurrent use: each Search call builds
+// its own per-page dedup map inside mergeItemsFirstWins, so concurrent
 // callers never observe each other's item IDs. Cross-page deduplication
-// within a single logical search is intentionally NOT preserved across
-// pages — clients re-issuing a cursor get a fresh dedup window per
-// request, which is consistent with the dedup behavior prior to the
-// per-call refactor (the previous shared dedup was reset on every fresh
-// search and races between fresh+continuation pages already meant the
-// across-page dedup was best-effort at best).
+// is intentionally NOT preserved across pages — dedup is scoped to a
+// single rendered page.
 type PaginatedSearcher struct {
 	origins        map[string]Searcher
 	originBaseURLs map[string]string
@@ -321,12 +317,10 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 		cursor = NewFederatedCursor(hashSearchRequest(req), principalHash, originIDs, nil)
 	}
 
-	// Per-call deduplicator. Constructed local to this Search so that
-	// concurrent callers cannot observe one another's item IDs and
-	// accidentally drop results.
-	dedup := NewItemDeduplicator(10000)
-
-	// Fetch from all active origins
+	// Fetch from all active origins. "Active" here means either
+	// upstream has more pages OR a stash is queued — but only
+	// upstream-unexhausted origins should actually be fetched. Stash-
+	// only origins contribute via mergeResults reading their stash.
 	activeOrigins := cursor.ActiveOrigins()
 	if len(activeOrigins) == 0 {
 		return &SearchResult{
@@ -335,11 +329,28 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 		}, nil
 	}
 
+	// Filter to origins that should actually be queried this page:
+	// skip origins whose stash already has >= limit items (their
+	// contribution is bounded anyway, no need to grow the stash) and
+	// skip origins whose upstream is exhausted (no NextToken/URL/Body
+	// to follow — a re-fetch would re-query page 0 and emit duplicates).
+	toFetch := make([]string, 0, len(activeOrigins))
+	for _, id := range activeOrigins {
+		oc := cursor.GetOriginCursor(id)
+		if oc == nil || oc.Exhausted {
+			continue
+		}
+		if len(oc.Stash) >= limit {
+			continue
+		}
+		toFetch = append(toFetch, id)
+	}
+
 	// Fetch pages in parallel
-	results := s.fetchFromOrigins(ctx, req, cursor, activeOrigins, limit)
+	results := s.fetchFromOrigins(ctx, req, cursor, toFetch, limit)
 
 	// Merge and deduplicate results
-	mergedItems := s.mergeResults(results, cursor, limit, dedup)
+	mergedItems := s.mergeResults(results, cursor, limit)
 
 	// Update cursor with new state
 	cursor.TotalReturned += len(mergedItems)
@@ -470,6 +481,7 @@ type originFetchResult struct {
 	Items       []*stac.Item
 	NextToken   string
 	NextURL     string
+	NextBody    []byte
 	AdapterName string // adapter that captured this state (auto's lock decision)
 	Error       error
 }
@@ -502,9 +514,13 @@ func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.Sear
 				return
 			}
 
-			// Build origin-specific request
+			// Build origin-specific request. Upstream limit equals the
+			// page limit — over-fetching is unnecessary now that
+			// un-emitted items go to the per-origin Stash on the
+			// cursor (see mergeResults) rather than being silently
+			// dropped past the cursor advancement boundary.
 			originReq := cloneSearchRequest(req)
-			originReq.Limit = limit * 2 // Fetch extra for merge buffer
+			originReq.Limit = limit
 
 			// Apply cursor state. We pass the full set of pagination
 			// hints; the OriginClient + adapter decide which to use.
@@ -515,19 +531,23 @@ func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.Sear
 				if oc.NextURL != "" {
 					originReq.OverrideURL = oc.NextURL
 				}
+				if len(oc.NextBody) > 0 {
+					originReq.OverrideBody = oc.NextBody
+				}
 				originReq.AdapterName = oc.AdapterName
 			}
 
 			// Execute search via the Searcher interface. The
 			// returned adapterName, if non-empty, is `auto`'s locked
 			// choice — propagated back into the cursor by mergeResults.
-			items, nextToken, nextURL, adapterName, err := origin.Search(ctx, originReq)
+			items, nextToken, nextURL, nextBody, adapterName, err := origin.Search(ctx, originReq)
 
 			results[idx] = originFetchResult{
 				OriginID:    id,
 				Items:       items,
 				NextToken:   nextToken,
 				NextURL:     nextURL,
+				NextBody:    nextBody,
 				AdapterName: adapterName,
 				Error:       err,
 			}
@@ -538,71 +558,126 @@ func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.Sear
 	return results
 }
 
-// mergeResults merges results from all origins with deduplication.
+// mergeResults updates per-origin cursor state from the fetch results
+// and returns the merged page of items.
 //
-// dedup is the per-call deduplicator owned by Search; passing it
-// explicitly (rather than holding it on the receiver) is what makes
-// concurrent Search calls safe — see PaginatedSearcher's doc comment.
-// Tests that call mergeResults directly may pass nil to opt out of
-// deduplication.
-func (s *PaginatedSearcher) mergeResults(results []originFetchResult, cursor *FederatedCursor, limit int, dedup *ItemDeduplicator) []*stac.Item {
-	if dedup == nil {
-		dedup = NewItemDeduplicator(10000)
-	}
-	var allItems []*stac.Item
-
+// Stash semantics: each origin's previously-stashed items (from the
+// last page's merge-sort trim) are prepended to its freshly-fetched
+// items before the merge. After merge+sort+trim, any items beyond
+// the page limit are grouped back into per-origin stashes on the
+// cursor, so the next page consumes them BEFORE re-fetching from
+// upstream. This is what prevents the buffer-drop bug where
+// per-origin cursors advanced past items the merger had not emitted.
+//
+// The actual item merge — dedup by collection+ID, stac_proxy:origin
+// link injection — is delegated to mergeItemsFirstWins so the
+// fan-out and paginated paths share one definition.
+func (s *PaginatedSearcher) mergeResults(results []originFetchResult, cursor *FederatedCursor, limit int) []*stac.Item {
+	// Phase 1: mark errored origins; index fresh fetches by ID so we
+	// can pair them with the existing stash below.
+	freshByOrigin := make(map[string]originFetchResult, len(results))
 	for _, result := range results {
 		if result.Error != nil {
 			cursor.MarkError(result.OriginID)
 			continue
 		}
-
-		// Update cursor state
-		var lastSort interface{}
-		if len(result.Items) > 0 {
-			lastItem := result.Items[len(result.Items)-1]
-			if t, ok := stac.ItemDatetime(lastItem); ok {
-				lastSort = t
-			} else if lastItem.Properties != nil {
-				if dt, ok := lastItem.Properties["datetime"]; ok {
-					lastSort = dt
-				}
-			}
-		}
-		cursor.UpdateOriginState(result.OriginID, OriginUpdate{
-			ItemCount:     len(result.Items),
-			NextToken:     result.NextToken,
-			NextURL:       result.NextURL,
-			AdapterName:   result.AdapterName,
-			LastSortValue: lastSort,
-		})
-
-		// Deduplicate and add items
-		for _, item := range result.Items {
-			if !dedup.IsDuplicate(item.ID) {
-				allItems = append(allItems, item)
-			}
-		}
+		freshByOrigin[result.OriginID] = result
 	}
+
+	// Phase 2: build per-origin combined item lists (stash + fresh).
+	// Iterate every active origin (including stash-only ones that we
+	// didn't fetch this page) so their queued items participate in
+	// the merge.
+	activeOrigins := cursor.ActiveOrigins()
+	sort.Strings(activeOrigins) // deterministic origin order for ties
+	sources := make([]itemSource, 0, len(activeOrigins))
+	for _, originID := range activeOrigins {
+		oc := cursor.GetOriginCursor(originID)
+		if oc == nil {
+			continue
+		}
+		fresh := freshByOrigin[originID].Items
+		combined := make([]*stac.Item, 0, len(oc.Stash)+len(fresh))
+		combined = append(combined, oc.Stash...)
+		combined = append(combined, fresh...)
+		if len(combined) == 0 {
+			continue
+		}
+		sources = append(sources, itemSource{
+			OriginID:  originID,
+			OriginURL: s.originBaseURLs[originID],
+			Items:     combined,
+		})
+	}
+
+	merged := mergeItemsFirstWins(sources)
 
 	// Sort by (datetime desc, id asc). The datetime-asc tiebreaker on
 	// equal datetimes is required for stable cross-page merge across
 	// origins: without it, items at a page boundary can shift order
 	// between pages and clients see duplicates or skips.
-	sort.SliceStable(allItems, func(i, j int) bool {
-		ti, tj := getDatetime(allItems[i]), getDatetime(allItems[j])
+	sort.SliceStable(merged, func(i, j int) bool {
+		ti, tj := getDatetime(merged[i]), getDatetime(merged[j])
 		if ti != tj {
 			return ti > tj
 		}
-		return allItems[i].ID < allItems[j].ID
+		return merged[i].ID < merged[j].ID
 	})
 
-	// Apply limit
-	if len(allItems) > limit {
-		allItems = allItems[:limit]
+	// Phase 3: split into emitted (top `limit`) and remainder.
+	var emitted, remainder []*stac.Item
+	if len(merged) > limit {
+		emitted = merged[:limit]
+		remainder = merged[limit:]
+	} else {
+		emitted = merged
 	}
 
-	return allItems
+	// Phase 4: group remainder by origin using the stac_proxy:origin
+	// link mergeItemsFirstWins injected. These become the next page's
+	// per-origin stashes.
+	newStash := make(map[string][]*stac.Item, len(activeOrigins))
+	for _, item := range remainder {
+		originID := stac.ItemOriginID(item)
+		if originID == "" {
+			continue // shouldn't happen; mergeItemsFirstWins always tags
+		}
+		newStash[originID] = append(newStash[originID], item)
+	}
+
+	// Phase 5: update each origin's cursor state. For fetched origins,
+	// advance the upstream next-pointers; for all active origins,
+	// overwrite the stash with the new remainder slice (possibly nil).
+	for _, originID := range activeOrigins {
+		oc := cursor.GetOriginCursor(originID)
+		if oc == nil {
+			continue
+		}
+		if r, ok := freshByOrigin[originID]; ok {
+			var lastSort interface{}
+			if len(r.Items) > 0 {
+				lastItem := r.Items[len(r.Items)-1]
+				if t, ok := stac.ItemDatetime(lastItem); ok {
+					lastSort = t
+				} else if lastItem.Properties != nil {
+					if dt, ok := lastItem.Properties["datetime"]; ok {
+						lastSort = dt
+					}
+				}
+			}
+			cursor.UpdateOriginState(originID, OriginUpdate{
+				ItemCount:     len(r.Items),
+				NextToken:     r.NextToken,
+				NextURL:       r.NextURL,
+				NextBody:      r.NextBody,
+				AdapterName:   r.AdapterName,
+				LastSortValue: lastSort,
+			})
+		}
+		oc.Stash = newStash[originID]
+	}
+
+	return emitted
 }
 
 // getDatetime extracts datetime from item for sorting.

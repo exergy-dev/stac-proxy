@@ -27,7 +27,6 @@ func newFederationOfOne(t *testing.T, upstreamURL string) *Handler {
 			Priority:   100,
 			Searchable: true,
 		}},
-		ConflictStrategy: ConflictPriorityWins,
 	})
 	require.NoError(t, err, "NewHandler")
 	return h
@@ -144,90 +143,47 @@ func TestHandle_SetsXForwardedHeaders(t *testing.T) {
 
 // --- C4 / H6 regression tests ----------------------------------------------
 
-// TestHandle_StripsAuthorizationHeader (C4): the inbound client's
-// Authorization header must NOT be forwarded to an origin that has
-// no own auth configured and has not opted into ForwardUserIdentity.
-func TestHandle_StripsAuthorizationHeader(t *testing.T) {
-	var seen sync.RWMutex
-	var got string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen.Lock()
-		got = r.Header.Get("Authorization")
-		seen.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
+// TestHandle_StripsSensitiveHeaders (C4): the inbound client's
+// Authorization / Cookie / X-Api-Key headers must NOT be forwarded to
+// an origin that has no own auth configured and has not opted into
+// ForwardUserIdentity.
+func TestHandle_StripsSensitiveHeaders(t *testing.T) {
+	cases := []struct {
+		name, header, value string
+	}{
+		{"Authorization", "Authorization", "Bearer client-user-token"},
+		{"Cookie", "Cookie", "session=abc123"},
+		{"X-Api-Key", "X-Api-Key", "client-supplied-key"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var seen sync.RWMutex
+			var got string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen.Lock()
+				got = r.Header.Get(tc.header)
+				seen.Unlock()
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
 
-	handler := newFederationOfOne(t, upstream.URL)
-	httpReq := httptest.NewRequest("GET", "/", nil)
-	httpReq.Header.Set("Authorization", "Bearer client-user-token")
+			handler := newFederationOfOne(t, upstream.URL)
+			httpReq := httptest.NewRequest("GET", "/", nil)
+			httpReq.Header.Set(tc.header, tc.value)
 
-	_, err := handler.Handle(context.Background(), &request{
-		Request:     httpReq,
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeQueryables,
-	})
-	require.NoError(t, err, "Handle")
+			_, err := handler.Handle(context.Background(), &request{
+				Request:     httpReq,
+				Context:     context.Background(),
+				RequestType: middleware.RequestTypeQueryables,
+			})
+			require.NoError(t, err, "Handle")
 
-	seen.RLock()
-	defer seen.RUnlock()
-	assert.Emptyf(t, got, "Authorization leaked upstream: %q", got)
-}
-
-// TestHandle_StripsCookieHeader (C4).
-func TestHandle_StripsCookieHeader(t *testing.T) {
-	var seen sync.RWMutex
-	var got string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen.Lock()
-		got = r.Header.Get("Cookie")
-		seen.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	handler := newFederationOfOne(t, upstream.URL)
-	httpReq := httptest.NewRequest("GET", "/", nil)
-	httpReq.Header.Set("Cookie", "session=abc123")
-
-	_, err := handler.Handle(context.Background(), &request{
-		Request:     httpReq,
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeQueryables,
-	})
-	require.NoError(t, err, "Handle")
-
-	seen.RLock()
-	defer seen.RUnlock()
-	assert.Emptyf(t, got, "Cookie leaked upstream: %q", got)
-}
-
-// TestHandle_StripsXAPIKeyHeader (C4).
-func TestHandle_StripsXAPIKeyHeader(t *testing.T) {
-	var seen sync.RWMutex
-	var got string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen.Lock()
-		got = r.Header.Get("X-Api-Key")
-		seen.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	handler := newFederationOfOne(t, upstream.URL)
-	httpReq := httptest.NewRequest("GET", "/", nil)
-	httpReq.Header.Set("X-Api-Key", "client-supplied-key")
-
-	_, err := handler.Handle(context.Background(), &request{
-		Request:     httpReq,
-		Context:     context.Background(),
-		RequestType: middleware.RequestTypeQueryables,
-	})
-	require.NoError(t, err, "Handle")
-
-	seen.RLock()
-	defer seen.RUnlock()
-	assert.Emptyf(t, got, "X-Api-Key leaked upstream: %q", got)
+			seen.RLock()
+			defer seen.RUnlock()
+			assert.Emptyf(t, got, "%s leaked upstream: %q", tc.header, got)
+		})
+	}
 }
 
 // TestHandle_ForwardsAuthWhenConfigured (C4 opt-in).
@@ -252,7 +208,6 @@ func TestHandle_ForwardsAuthWhenConfigured(t *testing.T) {
 			Timeout:             5 * time.Second,
 			ForwardUserIdentity: true,
 		}},
-		ConflictStrategy: ConflictPriorityWins,
 	})
 	require.NoError(t, err, "NewHandler")
 
@@ -300,7 +255,6 @@ func TestFanOutSearch_PanicRecovery(t *testing.T) {
 			{ID: "good", BaseURL: good.URL, Enabled: true, Searchable: true, Priority: 5, Timeout: 2 * time.Second},
 			{ID: "bad", BaseURL: good.URL, Enabled: true, Searchable: true, Priority: 10, Timeout: 2 * time.Second},
 		},
-		ConflictStrategy: ConflictPriorityWins,
 		AggregateTimeout: 5 * time.Second,
 	})
 	require.NoError(t, err, "NewHandler")
@@ -371,7 +325,6 @@ func TestReverseProxy_OversizedUpstreamReturns502(t *testing.T) {
 			Searchable:       true,
 			MaxResponseBytes: maxCap,
 		}},
-		ConflictStrategy: ConflictPriorityWins,
 	})
 	require.NoError(t, err, "NewHandler")
 

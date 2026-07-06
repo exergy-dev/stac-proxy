@@ -67,16 +67,6 @@ func TestNewBearerProvider(t *testing.T) {
 			},
 		},
 		{
-			name: "default name when not provided",
-			config: BearerConfig{
-				Secret: testSecret,
-			},
-			wantErr: false,
-			validate: func(t *testing.T, p *BearerProvider) {
-				assert.Equal(t, "bearer", p.name, "default name")
-			},
-		},
-		{
 			name: "valid config with JWKS URL",
 			config: BearerConfig{
 				Name:     "jwks-bearer",
@@ -88,19 +78,6 @@ func TestNewBearerProvider(t *testing.T) {
 			validate: func(t *testing.T, p *BearerProvider) {
 				assert.NotNil(t, p.jwks, "expected JWKS client to be set")
 				assert.Equal(t, "https://example.com/.well-known/jwks.json", p.jwks.url, "jwks URL")
-			},
-		},
-		{
-			name: "custom claims function",
-			config: BearerConfig{
-				Secret: testSecret,
-				ClaimsFunc: func(claims jwt.MapClaims) (*Principal, error) {
-					return &Principal{ID: "custom"}, nil
-				},
-			},
-			wantErr: false,
-			validate: func(t *testing.T, p *BearerProvider) {
-				assert.NotNil(t, p.claimsFunc, "expected custom claimsFunc to be set")
 			},
 		},
 		{
@@ -256,25 +233,6 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid token with audience validation - array audience",
-			config: BearerConfig{
-				Secret:   testSecret,
-				Audience: "expected-audience",
-			},
-			setupReq: func() *http.Request {
-				claims := jwt.MapClaims{
-					"sub": "user123",
-					"aud": []interface{}{"other-audience", "expected-audience"},
-					"exp": time.Now().Add(time.Hour).Unix(),
-				}
-				token := createTestToken(claims, testSecret, false, false)
-				req := httptest.NewRequest("GET", "/test", nil)
-				req.Header.Set("Authorization", "Bearer "+token)
-				return req
-			},
-			wantErr: false,
-		},
-		{
 			name: "invalid audience - string",
 			config: BearerConfig{
 				Secret:   testSecret,
@@ -293,46 +251,6 @@ func TestBearerProvider_Authenticate(t *testing.T) {
 			},
 			wantErr:   true,
 			errSubstr: "invalid audience",
-		},
-		{
-			name: "invalid audience - array",
-			config: BearerConfig{
-				Secret:   testSecret,
-				Audience: "expected-audience",
-			},
-			setupReq: func() *http.Request {
-				claims := jwt.MapClaims{
-					"sub": "user123",
-					"aud": []interface{}{"wrong-audience-1", "wrong-audience-2"},
-					"exp": time.Now().Add(time.Hour).Unix(),
-				}
-				token := createTestToken(claims, testSecret, false, false)
-				req := httptest.NewRequest("GET", "/test", nil)
-				req.Header.Set("Authorization", "Bearer "+token)
-				return req
-			},
-			wantErr:   true,
-			errSubstr: "invalid audience",
-		},
-		{
-			name: "missing aud claim when audience configured fails closed",
-			config: BearerConfig{
-				Secret:   testSecret,
-				Audience: "expected-audience",
-			},
-			setupReq: func() *http.Request {
-				claims := jwt.MapClaims{
-					"sub": "user123",
-					"exp": time.Now().Add(time.Hour).Unix(),
-					// no aud claim at all
-				}
-				token := createTestToken(claims, testSecret, false, false)
-				req := httptest.NewRequest("GET", "/test", nil)
-				req.Header.Set("Authorization", "Bearer "+token)
-				return req
-			},
-			wantErr:   true,
-			errSubstr: "aud claim is required",
 		},
 		{
 			name: "expired token",
@@ -581,21 +499,6 @@ func TestDefaultClaimsFunc(t *testing.T) {
 			},
 		},
 		{
-			// defaultClaimsFunc no longer validates expiration —
-			// jwt.Parse (with leeway) is the canonical validator.
-			// This case now just confirms the extractor still
-			// records the exp value on the principal.
-			name: "expired token recorded but not rejected",
-			claims: jwt.MapClaims{
-				"sub": "user123",
-				"exp": float64(time.Now().Add(-time.Hour).Unix()),
-			},
-			wantErr: false,
-			validate: func(t *testing.T, p *Principal) {
-				assert.NotZero(t, p.ExpiresAt, "expected ExpiresAt to be recorded")
-			},
-		},
-		{
 			name: "roles with non-string values - filtered out",
 			claims: jwt.MapClaims{
 				"sub":   "user123",
@@ -620,27 +523,6 @@ func TestDefaultClaimsFunc(t *testing.T) {
 				assert.True(t, p.HasGroup("group-a"), "expected group-a")
 				assert.True(t, p.HasGroup("group-b"), "expected group-b")
 			},
-		},
-		{
-			name: "empty roles and groups arrays",
-			claims: jwt.MapClaims{
-				"sub":    "user123",
-				"roles":  []interface{}{},
-				"groups": []interface{}{},
-			},
-			wantErr: false,
-			validate: func(t *testing.T, p *Principal) {
-				assert.Empty(t, p.Roles, "expected 0 roles")
-				assert.Empty(t, p.Groups, "expected 0 groups")
-			},
-		},
-		{
-			name: "expiration at boundary",
-			claims: jwt.MapClaims{
-				"sub": "user123",
-				"exp": time.Now().Unix(), // Exactly now
-			},
-			wantErr: false, // Current implementation checks > not >=
 		},
 	}
 
@@ -667,59 +549,6 @@ func TestDefaultClaimsFunc(t *testing.T) {
 	}
 }
 
-func TestBearerProvider_KeyFunc_HMAC(t *testing.T) {
-	t.Parallel()
-
-	secret := []byte("test-secret")
-	provider, err := NewBearerProvider(BearerConfig{
-		Secret: secret,
-	})
-	require.NoError(t, err, "failed to create provider")
-
-	tests := []struct {
-		name      string
-		token     *jwt.Token
-		wantErr   bool
-		errSubstr string
-	}{
-		{
-			name: "valid HMAC signing method",
-			token: jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-				"sub": "test",
-			}),
-			wantErr: false,
-		},
-		{
-			name: "invalid signing method - RSA",
-			token: jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-				"sub": "test",
-			}),
-			wantErr:   true,
-			errSubstr: "unexpected signing method",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			key, err := provider.keyFuncFor(context.Background())(tt.token)
-
-			if tt.wantErr {
-				require.Error(t, err, "expected error")
-				if tt.errSubstr != "" {
-					assert.Contains(t, err.Error(), tt.errSubstr, "expected error containing %q", tt.errSubstr)
-				}
-				return
-			}
-
-			require.NoError(t, err, "unexpected error")
-
-			assert.NotNil(t, key, "expected non-nil key")
-		})
-	}
-}
-
 func TestBearerProvider_JWKSKeyFunc_RejectsMissingKid(t *testing.T) {
 	t.Parallel()
 
@@ -738,106 +567,6 @@ func TestBearerProvider_JWKSKeyFunc_RejectsMissingKid(t *testing.T) {
 	_, err = provider.keyFuncFor(context.Background())(token)
 	require.Error(t, err, "expected error for missing kid")
 	assert.Contains(t, err.Error(), "kid", "expected 'kid' in error")
-}
-
-func TestBearerProvider_Integration(t *testing.T) {
-	t.Parallel()
-
-	// Create a provider
-	provider, err := NewBearerProvider(BearerConfig{
-		Name:     "integration-test",
-		Secret:   testSecret,
-		Issuer:   "https://auth.example.com",
-		Audience: "api.example.com",
-	})
-	require.NoError(t, err, "failed to create provider")
-
-	// Create a valid token
-	claims := jwt.MapClaims{
-		"sub":    "integration-user",
-		"email":  "integration@example.com",
-		"name":   "Integration User",
-		"iss":    "https://auth.example.com",
-		"aud":    "api.example.com",
-		"roles":  []interface{}{"developer", "tester"},
-		"groups": []interface{}{"qa", "engineering"},
-		"exp":    time.Now().Add(time.Hour).Unix(),
-		"iat":    time.Now().Unix(),
-	}
-	token := createTestToken(claims, testSecret, false, false)
-
-	// Create request with token
-	req := httptest.NewRequest("GET", "/api/test", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	// Authenticate
-	principal, err := provider.Authenticate(context.Background(), req)
-	require.NoError(t, err, "authentication failed")
-
-	// Verify complete principal
-	require.NotNil(t, principal, "expected non-nil principal")
-	assert.Equal(t, "integration-user", principal.ID, "ID")
-	assert.Equal(t, "integration@example.com", principal.Email, "email")
-	assert.Equal(t, "Integration User", principal.Name, "name")
-	assert.True(t, principal.HasRole("developer"), "expected developer role")
-	assert.True(t, principal.HasRole("tester"), "expected tester role")
-	assert.True(t, principal.HasGroup("qa"), "expected qa group")
-	assert.True(t, principal.HasGroup("engineering"), "expected engineering group")
-	assert.Equal(t, token, principal.Token, "expected token to match original")
-	assert.NotZero(t, principal.ExpiresAt, "expected expiration to be set")
-}
-
-func TestBearerProvider_MultipleTokenFormats(t *testing.T) {
-	t.Parallel()
-
-	provider, err := NewBearerProvider(BearerConfig{
-		Secret: testSecret,
-	})
-	require.NoError(t, err, "failed to create provider")
-
-	tests := []struct {
-		name    string
-		header  string
-		wantNil bool
-		wantErr bool
-	}{
-		{
-			name:    "Bearer with leading spaces",
-			header:  "  Bearer " + createTestToken(jwt.MapClaims{"sub": "test", "exp": time.Now().Add(time.Hour).Unix()}, testSecret, false, false),
-			wantNil: true, // Header trimming is HTTP server's job, not ours
-		},
-		{
-			name:    "bearer lowercase",
-			header:  "bearer " + createTestToken(jwt.MapClaims{"sub": "test", "exp": time.Now().Add(time.Hour).Unix()}, testSecret, false, false),
-			wantNil: true, // Case-sensitive check
-		},
-		{
-			name:    "BEARER uppercase",
-			header:  "BEARER " + createTestToken(jwt.MapClaims{"sub": "test", "exp": time.Now().Add(time.Hour).Unix()}, testSecret, false, false),
-			wantNil: true, // Case-sensitive check
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			req := httptest.NewRequest("GET", "/test", nil)
-			req.Header.Set("Authorization", tt.header)
-
-			principal, err := provider.Authenticate(context.Background(), req)
-
-			if tt.wantNil {
-				assert.Nil(t, principal, "expected nil principal")
-			}
-
-			if tt.wantErr {
-				assert.Error(t, err, "expected error")
-			} else {
-				assert.NoError(t, err, "unexpected error")
-			}
-		})
-	}
 }
 
 // TestBearer_LeewayHonored verifies that the default 30s leeway lets

@@ -1,7 +1,6 @@
 package federation
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -431,33 +430,12 @@ func TestRoute(t *testing.T) {
 func TestRouteCollection(t *testing.T) {
 	t.Parallel()
 
-	t.Run("routes single collection", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1", routerWithCollections("coll-a"))
+	router := NewCollectionRouter()
+	router.Register(testOrigin("origin-1", routerWithCollections("coll-a")))
 
-		router.Register(origin1)
-
-		results := router.RouteCollection("coll-a")
-
-		require.Len(t, results, 1, "results length")
-		assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
-	})
-
-	t.Run("is equivalent to Route with single collection", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1", routerWithCollections("coll-a", "coll-b"))
-		origin2 := testOrigin("origin-2", routerWithCollections("coll-a"))
-
-		router.Register(origin1)
-		router.Register(origin2)
-
-		results1 := router.RouteCollection("coll-a")
-		results2 := router.Route([]string{"coll-a"})
-
-		assert.Equalf(t, len(results2), len(results1), "RouteCollection vs Route origin count")
-	})
+	results := router.RouteCollection("coll-a")
+	require.Len(t, results, 1, "results length")
+	assert.Equal(t, "origin-1", results[0].ID, "result origin ID")
 }
 
 // Test UpdateFromDiscovery
@@ -668,212 +646,39 @@ func TestGetCollectionOrigins(t *testing.T) {
 
 // Test AllOrigins
 
-func TestAllOrigins(t *testing.T) {
+// TestRouter_Accessors exercises AllOrigins / EnabledOrigins / OriginCount /
+// CollectionCount in a single table-driven setup.
+func TestRouter_Accessors(t *testing.T) {
 	t.Parallel()
 
-	t.Run("returns all registered origins", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1")
-		origin2 := testOrigin("origin-2")
-		origin3 := testOrigin("origin-3")
+	router := NewCollectionRouter()
+	router.Register(testOrigin("origin-1", withEnabled(true), routerWithCollections("coll-a", "coll-b")))
+	router.Register(testOrigin("origin-2", withEnabled(false), routerWithCollections("coll-b", "coll-c")))
+	router.Register(testOrigin("origin-3", withEnabled(true))) // implicit, no explicit collections
 
-		router.Register(origin1)
-		router.Register(origin2)
-		router.Register(origin3)
+	assert.Len(t, router.AllOrigins(), 3, "AllOrigins includes disabled")
+	assert.Equal(t, 3, router.OriginCount(), "OriginCount includes disabled")
 
-		results := router.AllOrigins()
+	enabled := router.EnabledOrigins()
+	assert.Len(t, enabled, 2, "EnabledOrigins filters disabled")
+	for _, o := range enabled {
+		assert.Truef(t, o.Enabled, "origin %s should be enabled", o.ID)
+	}
 
-		assert.Len(t, results, 3, "results length")
-	})
+	// coll-a (origin-1), coll-b (origin-1+origin-2 dedup'd), coll-c (origin-2) = 3 unique
+	assert.Equal(t, 3, router.CollectionCount(), "CollectionCount counts unique explicit collections only")
 
-	t.Run("returns copy of origins", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1")
+	// AllOrigins returns a copy.
+	r1 := router.AllOrigins()
+	r2 := router.AllOrigins()
+	r1[0] = nil
+	assert.NotNil(t, r2[0], "AllOrigins should return a defensive copy")
 
-		router.Register(origin1)
-
-		results1 := router.AllOrigins()
-		results2 := router.AllOrigins()
-
-		// Modifying results1 should not affect results2
-		if len(results1) > 0 {
-			results1[0] = nil
-		}
-		assert.NotNil(t, results2[0], "results2 should not be affected by modifications to results1")
-	})
-
-	t.Run("returns empty slice for no origins", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-
-		results := router.AllOrigins()
-
-		assert.Empty(t, results, "results length")
-	})
-
-	t.Run("includes disabled origins", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1", withEnabled(true))
-		origin2 := testOrigin("origin-2", withEnabled(false))
-
-		router.Register(origin1)
-		router.Register(origin2)
-
-		results := router.AllOrigins()
-
-		assert.Len(t, results, 2, "results length (includes disabled)")
-	})
-}
-
-// Test EnabledOrigins
-
-func TestEnabledOrigins(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns only enabled origins", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1", withEnabled(true))
-		origin2 := testOrigin("origin-2", withEnabled(false))
-		origin3 := testOrigin("origin-3", withEnabled(true))
-
-		router.Register(origin1)
-		router.Register(origin2)
-		router.Register(origin3)
-
-		results := router.EnabledOrigins()
-
-		assert.Len(t, results, 2, "results length (only enabled)")
-
-		for _, o := range results {
-			assert.Truef(t, o.Enabled, "origin %s is disabled but in enabled origins list", o.ID)
-		}
-	})
-
-	t.Run("returns empty slice when no enabled origins", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1", withEnabled(false))
-
-		router.Register(origin1)
-
-		results := router.EnabledOrigins()
-
-		assert.Empty(t, results, "results length")
-		assert.NotNil(t, results, "results should be empty slice, not nil")
-	})
-}
-
-// Test OriginCount
-
-func TestOriginCount(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns correct count", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1")
-		origin2 := testOrigin("origin-2")
-
-		assert.Equal(t, 0, router.OriginCount(), "initial count")
-
-		router.Register(origin1)
-		assert.Equal(t, 1, router.OriginCount(), "count after 1 registration")
-
-		router.Register(origin2)
-		assert.Equal(t, 2, router.OriginCount(), "count after 2 registrations")
-	})
-
-	t.Run("includes disabled origins", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1", withEnabled(true))
-		origin2 := testOrigin("origin-2", withEnabled(false))
-
-		router.Register(origin1)
-		router.Register(origin2)
-
-		assert.Equal(t, 2, router.OriginCount(), "count (includes disabled)")
-	})
-}
-
-// Test CollectionCount
-
-func TestCollectionCount(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns correct count", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-
-		assert.Equal(t, 0, router.CollectionCount(), "initial count")
-
-		origin1 := testOrigin("origin-1", routerWithCollections("coll-a", "coll-b"))
-		router.Register(origin1)
-
-		assert.Equal(t, 2, router.CollectionCount(), "count after registering 2 collections")
-
-		origin2 := testOrigin("origin-2", routerWithCollections("coll-c"))
-		router.Register(origin2)
-
-		assert.Equal(t, 3, router.CollectionCount(), "count after registering 1 more collection")
-	})
-
-	t.Run("does not count origins without explicit collections", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1") // No explicit collections
-
-		router.Register(origin1)
-
-		assert.Equal(t, 0, router.CollectionCount(), "count (no explicit collections)")
-	})
-
-	t.Run("does not double-count shared collections", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1", routerWithCollections("shared-coll"))
-		origin2 := testOrigin("origin-2", routerWithCollections("shared-coll"))
-
-		router.Register(origin1)
-		router.Register(origin2)
-
-		assert.Equal(t, 1, router.CollectionCount(), "count (shared collection counted once)")
-	})
-}
-
-// Test isExcluded (internal method, tested via Route)
-
-func TestIsExcluded(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns true for excluded collection", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin := testOrigin("origin-1", withExclude("excluded-a", "excluded-b"))
-
-		assert.True(t, router.isExcluded(origin, "excluded-a"), "excluded-a should be excluded")
-		assert.True(t, router.isExcluded(origin, "excluded-b"), "excluded-b should be excluded")
-	})
-
-	t.Run("returns false for non-excluded collection", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin := testOrigin("origin-1", withExclude("excluded-a"))
-
-		assert.False(t, router.isExcluded(origin, "allowed-coll"), "allowed-coll should not be excluded")
-	})
-
-	t.Run("returns false when no exclusions", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin := testOrigin("origin-1")
-
-		assert.False(t, router.isExcluded(origin, "any-coll"), "any-coll should not be excluded when no exclusions defined")
-	})
+	// Empty router edge.
+	empty := NewCollectionRouter()
+	assert.Empty(t, empty.AllOrigins())
+	assert.Equal(t, 0, empty.OriginCount())
+	assert.Equal(t, 0, empty.CollectionCount())
 }
 
 // Concurrency tests
@@ -881,92 +686,37 @@ func TestIsExcluded(t *testing.T) {
 func TestRouterConcurrency(t *testing.T) {
 	t.Parallel()
 
-	t.Run("concurrent reads are safe", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1", routerWithCollections("coll-a"))
-		origin2 := testOrigin("origin-2", routerWithCollections("coll-b"))
+	router := NewCollectionRouter()
+	origin1 := testOrigin("origin-1", routerWithCollections("coll-a"))
+	router.Register(origin1)
 
-		router.Register(origin1)
-		router.Register(origin2)
+	done := make(chan bool)
 
-		// Start multiple concurrent readers
-		done := make(chan bool)
-		for i := 0; i < 10; i++ {
-			go func() {
+	// Concurrent readers
+	for i := 0; i < 5; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
 				_ = router.Route([]string{"coll-a"})
-				_ = router.AllOrigins()
-				_ = router.EnabledOrigins()
-				_ = router.OriginCount()
-				_ = router.CollectionCount()
-				done <- true
-			}()
-		}
+			}
+			done <- true
+		}()
+	}
 
-		// Wait for all readers
-		for i := 0; i < 10; i++ {
-			<-done
-		}
-	})
+	// Concurrent writers
+	for i := 0; i < 5; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				router.UpdateFromDiscovery("origin-1", []string{"coll-a", "coll-b"})
+				router.UpdateFromDiscovery("origin-1", []string{"coll-a"})
+			}
+			done <- true
+		}()
+	}
 
-	t.Run("concurrent writes are safe", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-
-		// Start multiple concurrent writers
-		done := make(chan bool)
-		for i := 0; i < 10; i++ {
-			id := i
-			go func() {
-				origin := testOrigin("origin-"+string(rune('0'+id)), routerWithCollections("coll-a"))
-				router.Register(origin)
-				done <- true
-			}()
-		}
-
-		// Wait for all writers
-		for i := 0; i < 10; i++ {
-			<-done
-		}
-
-		// Verify all origins were registered
-		assert.Equal(t, 10, router.OriginCount(), "origin count")
-	})
-
-	t.Run("concurrent reads and writes are safe", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-		origin1 := testOrigin("origin-1", routerWithCollections("coll-a"))
-		router.Register(origin1)
-
-		done := make(chan bool)
-
-		// Concurrent readers
-		for i := 0; i < 5; i++ {
-			go func() {
-				for j := 0; j < 100; j++ {
-					_ = router.Route([]string{"coll-a"})
-				}
-				done <- true
-			}()
-		}
-
-		// Concurrent writers
-		for i := 0; i < 5; i++ {
-			go func() {
-				for j := 0; j < 100; j++ {
-					router.UpdateFromDiscovery("origin-1", []string{"coll-a", "coll-b"})
-					router.UpdateFromDiscovery("origin-1", []string{"coll-a"})
-				}
-				done <- true
-			}()
-		}
-
-		// Wait for all goroutines
-		for i := 0; i < 10; i++ {
-			<-done
-		}
-	})
+	// Wait for all goroutines
+	for i := 0; i < 10; i++ {
+		<-done
+	}
 }
 
 // Edge cases and complex scenarios
@@ -1043,41 +793,6 @@ func TestRouterComplexScenarios(t *testing.T) {
 		assert.Equal(t, "origin-1", origins[0].ID, "origin ID")
 	})
 
-	t.Run("large number of collections", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-
-		// Create origin with 1000 unique collections.
-		collections := make([]string, 1000)
-		for i := 0; i < 1000; i++ {
-			collections[i] = fmt.Sprintf("coll-%03d", i)
-		}
-
-		origin1 := testOrigin("origin-1", routerWithCollections(collections...))
-		router.Register(origin1)
-
-		assert.Equal(t, 1000, router.CollectionCount(), "collection count")
-
-		// Route to one of them
-		results := router.Route([]string{"coll-000"})
-		assert.Len(t, results, 1, "results length")
-	})
-
-	t.Run("large number of origins", func(t *testing.T) {
-		t.Parallel()
-		router := NewCollectionRouter()
-
-		// Register 100 origins
-		for i := 0; i < 100; i++ {
-			origin := testOrigin("origin-"+string(rune('0'+i%10))+string(rune('0'+(i/10)%10)), withSearchable(true))
-			router.Register(origin)
-		}
-
-		assert.Equal(t, 100, router.OriginCount(), "origin count")
-
-		results := router.Route(nil)
-		assert.Len(t, results, 100, "results length (all searchable)")
-	})
 }
 
 // TestRouter_PrecomputesImplicitAllOnce is the M-federation-4

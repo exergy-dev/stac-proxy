@@ -71,8 +71,16 @@ type NextState struct {
 
 	// URL is the verbatim next-page URL. When non-empty the
 	// paginator instructs the OriginClient to fetch this URL with
-	// GET instead of POST-ing the standard /search.
+	// GET instead of POST-ing the standard /search — unless Body is
+	// also non-empty, in which case the paginator POSTs URL with
+	// Body as the request body (the post_body adapter's convention).
 	URL string
+
+	// Body is the verbatim POST body captured from the rel=next
+	// link's `body` field (STAC API spec §5.5.1 — pagination links
+	// can carry method/href/body). When non-empty alongside URL,
+	// signals POST-with-body replay. Empty for GET-style next links.
+	Body []byte
 
 	// Offset is the next page's offset for offset-style adapters.
 	Offset int
@@ -146,6 +154,8 @@ func New(cfg Config) (Adapter, error) {
 		return newToken(cfg), nil
 	case "next_url":
 		return newNextURL(cfg), nil
+	case "post_body":
+		return newPostBody(cfg), nil
 	case "offset":
 		return newOffset(cfg), nil
 	case "link_header":
@@ -158,5 +168,5 @@ func New(cfg Config) (Adapter, error) {
 // KnownAdapters returns the canonical adapter names. Used by config
 // validation.
 func KnownAdapters() []string {
-	return []string{"auto", "token", "next_url", "offset", "link_header"}
+	return []string{"auto", "token", "next_url", "post_body", "offset", "link_header"}
 }

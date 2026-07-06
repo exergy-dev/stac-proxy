@@ -95,3 +95,4 @@ func TestMemoryStore_DeleteAndClear(t *testing.T) {
 	_, ok = store.Get(ctx, "b")
 	require.False(t, ok, "clear left entries behind")
 }
+

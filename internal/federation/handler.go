@@ -58,7 +58,6 @@ type AssetSigner interface {
 // HandlerConfig contains configuration for the federation handler.
 type HandlerConfig struct {
 	Origins          []*Origin
-	ConflictStrategy ConflictStrategy
 	MaxConcurrent    int
 	AggregateTimeout time.Duration
 	ProxyBaseURL     string
@@ -99,7 +98,7 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 	handler := &Handler{
 		origins:          make(map[string]*OriginClient),
 		router:           NewCollectionRouter(),
-		merger:           NewResultMerger(cfg.ConflictStrategy),
+		merger:           NewResultMerger(),
 		maxConcurrent:    cfg.MaxConcurrent,
 		aggregateTimeout: cfg.AggregateTimeout,
 		proxyBaseURL:     cfg.ProxyBaseURL,

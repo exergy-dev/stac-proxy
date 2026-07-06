@@ -84,14 +84,12 @@ func TestSetXForwarded_NoRemoteAddr_DoesNotSetXFF(t *testing.T) {
 	SetXForwarded(out, in)
 
 	require.Empty(t, out.Header.Get("X-Forwarded-For"), "XFF unexpectedly set")
-}
 
-func TestSetXForwarded_RemoteAddrWithoutPort(t *testing.T) {
-	in := httptest.NewRequest(http.MethodGet, "http://example.com/p", nil)
+	// RemoteAddr without a port falls back to the raw value via the
+	// SplitHostPort error path.
 	in.RemoteAddr = "10.0.0.1" // no port
-
-	out, _ := http.NewRequest(http.MethodGet, "http://upstream/p", nil)
-	SetXForwarded(out, in)
-
-	require.Equal(t, "10.0.0.1", out.Header.Get("X-Forwarded-For"), "XFF")
+	out2, _ := http.NewRequest(http.MethodGet, "http://upstream/p", nil)
+	SetXForwarded(out2, in)
+	require.Equal(t, "10.0.0.1", out2.Header.Get("X-Forwarded-For"), "XFF (no port)")
 }
+

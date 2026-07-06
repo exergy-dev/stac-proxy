@@ -17,10 +17,11 @@ type auto struct{ inner []Adapter }
 func newAuto(cfg Config) *auto {
 	return &auto{
 		inner: []Adapter{
-			newToken(cfg),       // most precise — STAC spec compliance
-			newOffset(cfg),      // explicit numeric offset
-			newLinkHeader(cfg),  // RFC 5988 — header signal beats body fallback
-			newNextURL(cfg),     // universal fallback for any rel=next href
+			newPostBody(cfg),   // STAC spec — POST rel=next with verbatim body
+			newToken(cfg),      // GET-style ?token= or body.token extraction
+			newOffset(cfg),     // explicit numeric offset
+			newLinkHeader(cfg), // RFC 5988 — header signal beats body fallback
+			newNextURL(cfg),    // universal fallback for GET-style rel=next href
 		},
 	}
 }

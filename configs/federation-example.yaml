@@ -33,7 +33,6 @@ mode: federation
 federation:
   max_concurrent: 10
   aggregate_timeout: 60s
-  conflict_strategy: priority  # first_wins, priority, merge, namespace
   default_page_size: 100
   max_page_size: 1000
 

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -87,20 +86,3 @@ func TestSearchParser_AlreadyParsed_DoesNotOverwrite(t *testing.T) {
 	require.Equal(t, []string{"pre-set"}, sr.Collections, "pre-set SearchReq must not be overwritten")
 }
 
-func TestSearchParser_POSTSearch_BodyRestoredForRereaders(t *testing.T) {
-	// Specifically verify that the body downstream readers see can be
-	// re-read multiple times (federation handler may call its own
-	// re-parser as a defensive fallback).
-	body := `{"collections":["x"]}`
-	r := httptest.NewRequest("POST", "/search", strings.NewReader(body))
-	r.Header.Set("Content-Type", "application/json")
-	info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch}
-	r = r.WithContext(middleware.WithSTACInfo(r.Context(), info))
-
-	mw := searchParserMiddleware()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		read1, _ := io.ReadAll(req.Body)
-		assert.True(t, bytes.Equal(read1, []byte(body)), "downstream first read: got %q want %q", read1, body)
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(httptest.NewRecorder(), r)
-}

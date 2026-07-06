@@ -192,15 +192,6 @@ func (v *Validator) validateFederation(cfg FederationConfig) {
 		v.validateOrigin(i, origin, seenIDs, cfg.AllowPrivateOrigins)
 	}
 
-	// Validate conflict strategy
-	validConflict := map[string]bool{
-		"first_wins": true, "priority": true, "merge": true,
-		"namespace": true, "reject_duplicates": true,
-	}
-	if cfg.ConflictStrategy != "" && !validConflict[cfg.ConflictStrategy] {
-		v.addError("federation.conflict_strategy must be one of: first_wins, priority, merge, namespace, reject_duplicates")
-	}
-
 	// Federated pagination cursors are HMAC-signed. When the cursor
 	// path is wired (PaginatedSearcher), NewPaginatedSearcher itself
 	// errors out on an empty secret — that's the authoritative gate.

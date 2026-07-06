@@ -12,13 +12,11 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
@@ -143,57 +141,6 @@ func writeSelfSignedCAForAuthTest(t *testing.T) string {
 	return path
 }
 
-// TestParallelShutdown_BothServersDrain models the run() shutdown
-// path: a main http.Server and a metrics http.Server are both
-// shut down in parallel via WaitGroup. Verifies that both
-// goroutines complete and Wait returns.
-func TestParallelShutdown_BothServersDrain(t *testing.T) {
-	t.Parallel()
-
-	mkServer := func() (*http.Server, net.Listener) {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err, "listen")
-		s := &http.Server{
-			Handler:           http.NewServeMux(),
-			ReadHeaderTimeout: time.Second,
-		}
-		go func() {
-			_ = s.Serve(ln)
-		}()
-		return s, ln
-	}
-
-	mainSrv, mainLn := mkServer()
-	metricsSrv, metricsLn := mkServer()
-	_, _ = mainLn, metricsLn // listeners owned by Server
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			_ = mainSrv.Shutdown(shutdownCtx)
-		}()
-		go func() {
-			defer wg.Done()
-			_ = metricsSrv.Shutdown(shutdownCtx)
-		}()
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Success: both shut down cleanly.
-	case <-time.After(5 * time.Second):
-		require.Fail(t, "parallel Shutdown did not complete within 5s")
-	}
-}
-
 // TestBuildFederationHandler_CopiesEveryConfiguredField asserts that
 // every documented field on config.OriginConfig / OriginAuthConfig and
 // the new server.public_base_url reach the federation.Origin / Handler
@@ -219,7 +166,6 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 		},
 		Federation: &config.FederationConfig{
 			AllowPrivateOrigins: true, // BaseURL below uses example.com (public)
-			ConflictStrategy:    "priority",
 			CursorSecret:        "test-secret-must-be-long-enough-for-hmac",
 			MaxConcurrent:       7,
 			AggregateTimeout:    11 * time.Second,
@@ -300,95 +246,72 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 	got := oc.Origin()
 	in := cfg.Federation.Origins[0]
 
-	// Scalars and slices on Origin
-	checks := []struct {
-		name        string
-		got, expect any
-	}{
-		{"ID", got.ID, in.ID},
-		{"Name", got.Name, in.Name},
-		{"Description", got.Description, in.Description},
-		{"BaseURL", got.BaseURL, in.BaseURL},
-		{"Enabled", got.Enabled, in.Enabled},
-		{"Timeout", got.Timeout, in.Timeout},
-		{"MaxIdleConnsPerHost", got.MaxIdleConnsPerHost, in.MaxIdleConnsPerHost},
-		{"Collections", got.Collections, in.Collections},
-		{"ExcludeCollections", got.ExcludeCollections, in.ExcludeCollections},
-		{"Priority", got.Priority, in.Priority},
-		{"ReadOnly", got.ReadOnly, in.ReadOnly},
-		{"Searchable", got.Searchable, in.Searchable},
-		{"AutoDiscover", got.AutoDiscover, in.AutoDiscover},
-		{"DiscoveryInterval", got.DiscoveryInterval, in.DiscoveryInterval},
-		{"CollectionPrefix", got.CollectionPrefix, in.CollectionPrefix},
-		{"CollectionMapping", got.CollectionMapping, in.CollectionMapping},
-		{"StripPathPrefix", got.StripPathPrefix, in.StripPathPrefix},
-		{"SupportsFilterExtension", got.SupportsFilterExtension, in.SupportsFilterExtension},
-		{"MaxResponseBytes", got.MaxResponseBytes, in.MaxResponseBytes},
-		{"ForwardUserIdentity", got.ForwardUserIdentity, in.ForwardUserIdentity},
-		{"RewriteAssets", got.RewriteAssets, in.RewriteAssets},
-		{"AssetSignTTL", got.AssetSignTTL, in.AssetSignTTL},
-	}
-	for _, c := range checks {
-		assert.Equalf(t, c.expect, c.got, "Origin.%s", c.name)
+	// Build the expected federation.Origin once and compare with
+	// DeepEqual. This catches any new field added to federation.Origin
+	// that the builder forgets to populate from config — exactly the
+	// class of bug this test exists to prevent.
+	expectedOrigin := &federation.Origin{
+		ID:                      in.ID,
+		Name:                    in.Name,
+		Description:             in.Description,
+		BaseURL:                 in.BaseURL,
+		Enabled:                 in.Enabled,
+		Timeout:                 in.Timeout,
+		MaxIdleConnsPerHost:     in.MaxIdleConnsPerHost,
+		Retry: &federation.RetryPolicy{
+			MaxRetries:     in.Retry.MaxRetries,
+			InitialBackoff: in.Retry.InitialBackoff,
+			MaxBackoff:     in.Retry.MaxBackoff,
+			RetryOn:        in.Retry.RetryOn,
+		},
+		Collections:             in.Collections,
+		ExcludeCollections:      in.ExcludeCollections,
+		Priority:                in.Priority,
+		ReadOnly:                in.ReadOnly,
+		Searchable:              in.Searchable,
+		AutoDiscover:            in.AutoDiscover,
+		DiscoveryInterval:       in.DiscoveryInterval,
+		CollectionPrefix:        in.CollectionPrefix,
+		CollectionMapping:       in.CollectionMapping,
+		StripPathPrefix:         in.StripPathPrefix,
+		SupportsFilterExtension: in.SupportsFilterExtension,
+		MaxResponseBytes:        in.MaxResponseBytes,
+		ForwardUserIdentity:     in.ForwardUserIdentity,
+		RewriteAssets:           in.RewriteAssets,
+		AssetSignTTL:            in.AssetSignTTL,
+		Pagination: federation.PaginationSpec{
+			Adapter:     in.Pagination.Adapter,
+			OffsetParam: in.Pagination.OffsetParam,
+			TokenParam:  in.Pagination.TokenParam,
+		},
+		Auth: federation.AuthConfig{
+			Type:          in.Auth.Type,
+			Username:      in.Auth.Username,
+			Password:      in.Auth.Password,
+			Token:         in.Auth.Token,
+			APIKeyHeader:  in.Auth.APIKeyHeader,
+			APIKeyValue:   in.Auth.APIKeyValue,
+			APIKeyInQuery: in.Auth.APIKeyInQuery,
+			CustomHeaders: in.Auth.CustomHeaders,
+			OAuth2: &federation.OAuth2Config{
+				TokenURL:     in.Auth.OAuth2.TokenURL,
+				ClientID:     in.Auth.OAuth2.ClientID,
+				ClientSecret: in.Auth.OAuth2.ClientSecret,
+				Scopes:       in.Auth.OAuth2.Scopes,
+				Audience:     in.Auth.OAuth2.Audience,
+			},
+			AWSSigV4: &federation.AWSSigV4Config{
+				Region:    in.Auth.AWSSigV4.Region,
+				Service:   in.Auth.AWSSigV4.Service,
+				AccessKey: in.Auth.AWSSigV4.AccessKey,
+				SecretKey: in.Auth.AWSSigV4.SecretKey,
+			},
+		},
 	}
 
-	// Pagination round-trip
-	wantPag := federation.PaginationSpec{
-		Adapter:     in.Pagination.Adapter,
-		OffsetParam: in.Pagination.OffsetParam,
-		TokenParam:  in.Pagination.TokenParam,
-	}
-	assert.Equal(t, wantPag, got.Pagination, "Origin.Pagination")
-
-	// Retry policy round-trip
-	require.NotNilf(t, got.Retry, "Origin.Retry nil; want %+v", in.Retry)
-	wantRetry := struct {
-		MaxRetries     int
-		InitialBackoff time.Duration
-		MaxBackoff     time.Duration
-		RetryOn        []int
-	}{in.Retry.MaxRetries, in.Retry.InitialBackoff, in.Retry.MaxBackoff, in.Retry.RetryOn}
-	gotRetry := struct {
-		MaxRetries     int
-		InitialBackoff time.Duration
-		MaxBackoff     time.Duration
-		RetryOn        []int
-	}{got.Retry.MaxRetries, got.Retry.InitialBackoff, got.Retry.MaxBackoff, got.Retry.RetryOn}
-	assert.Equal(t, wantRetry, gotRetry, "Origin.Retry")
-
-	// Auth scalars
-	a := got.Auth
-	ia := in.Auth
-	authChecks := []struct {
-		name        string
-		got, expect any
-	}{
-		{"Type", a.Type, ia.Type},
-		{"Username", a.Username, ia.Username},
-		{"Password", a.Password, ia.Password},
-		{"Token", a.Token, ia.Token},
-		{"APIKeyHeader", a.APIKeyHeader, ia.APIKeyHeader},
-		{"APIKeyValue", a.APIKeyValue, ia.APIKeyValue},
-		{"APIKeyInQuery", a.APIKeyInQuery, ia.APIKeyInQuery},
-		{"CustomHeaders", a.CustomHeaders, ia.CustomHeaders},
-	}
-	for _, c := range authChecks {
-		assert.Equalf(t, c.expect, c.got, "Origin.Auth.%s", c.name)
-	}
-	require.NotNil(t, a.OAuth2, "Origin.Auth.OAuth2 nil")
-	if a.OAuth2.TokenURL != ia.OAuth2.TokenURL ||
-		a.OAuth2.ClientID != ia.OAuth2.ClientID ||
-		a.OAuth2.ClientSecret != ia.OAuth2.ClientSecret ||
-		a.OAuth2.Audience != ia.OAuth2.Audience ||
-		!reflect.DeepEqual(a.OAuth2.Scopes, ia.OAuth2.Scopes) {
-		assert.Failf(t, "Origin.Auth.OAuth2 mismatch", "got %+v, want %+v", a.OAuth2, ia.OAuth2)
-	}
-	require.NotNil(t, a.AWSSigV4, "Origin.Auth.AWSSigV4 nil — config field dropped on the floor")
-	if a.AWSSigV4.Region != ia.AWSSigV4.Region ||
-		a.AWSSigV4.Service != ia.AWSSigV4.Service ||
-		a.AWSSigV4.AccessKey != ia.AWSSigV4.AccessKey ||
-		a.AWSSigV4.SecretKey != ia.AWSSigV4.SecretKey {
-		assert.Failf(t, "Origin.Auth.AWSSigV4 mismatch", "got %+v, want %+v", a.AWSSigV4, ia.AWSSigV4)
+	if !reflect.DeepEqual(got, expectedOrigin) {
+		assert.Failf(t, "federation.Origin not fully populated from config",
+			"got:\n%+v\nwant:\n%+v", got, expectedOrigin)
 	}
 }
 

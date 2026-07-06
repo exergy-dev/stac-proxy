@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // Sentinel errors for cursor decoding. Callers can use errors.Is to
@@ -102,6 +104,12 @@ type OriginCursor struct {
 	NextToken string `json:"nt,omitempty"`
 	NextURL   string `json:"nu,omitempty"`
 
+	// NextBody is the verbatim POST body captured from upstream's
+	// rel=next link by the post_body adapter. When set (alongside
+	// NextURL), the next page POSTs NextURL with this body instead of
+	// GETting NextURL or POSTing /search with the proxy-rebuilt body.
+	NextBody []byte `json:"nb,omitempty"`
+
 	// Offset-based pagination
 	Offset int `json:"off,omitempty"`
 
@@ -121,6 +129,15 @@ type OriginCursor struct {
 
 	// Last sort value for merge-sort
 	LastSortValue interface{} `json:"lsv,omitempty"`
+
+	// Stash holds items that were fetched from this origin on a
+	// previous page but not emitted because the merge-sort trim
+	// favored items from another origin with newer datetimes. The
+	// next page consumes Stash first, BEFORE re-fetching from
+	// upstream, so the items aren't lost. Without this, the per-origin
+	// cursor (NextToken/NextURL/NextBody) advances past the
+	// already-fetched items, dropping the un-emitted ones forever.
+	Stash []*stac.Item `json:"st,omitempty"`
 }
 
 // CursorConfig contains cursor configuration.
@@ -270,21 +287,32 @@ func (c *FederatedCursor) IsExpired() bool {
 	return time.Now().Unix() >= c.ExpiresAt
 }
 
-// HasMore returns true if any origin has more results.
+// HasMore returns true if any origin has more results — either
+// un-fetched upstream pages remain, or a stash of previously-fetched
+// items is queued for emit on the next page.
 func (c *FederatedCursor) HasMore() bool {
 	for _, origin := range c.Origins {
-		if !origin.Exhausted && !origin.Error {
+		if origin.Error {
+			continue
+		}
+		if !origin.Exhausted || len(origin.Stash) > 0 {
 			return true
 		}
 	}
 	return false
 }
 
-// ActiveOrigins returns origins that have more results.
+// ActiveOrigins returns origins that have more results — same rule
+// as HasMore. An origin whose upstream is exhausted but whose stash
+// still has items is "active" for the merge phase (mergeResults will
+// consume from its Stash); it just won't be fetched again.
 func (c *FederatedCursor) ActiveOrigins() []string {
 	var active []string
 	for id, origin := range c.Origins {
-		if !origin.Exhausted && !origin.Error {
+		if origin.Error {
+			continue
+		}
+		if !origin.Exhausted || len(origin.Stash) > 0 {
 			active = append(active, id)
 		}
 	}
@@ -298,6 +326,7 @@ func (c *FederatedCursor) MarkExhausted(originID string) {
 		origin.Exhausted = true
 		origin.NextToken = ""
 		origin.NextURL = ""
+		origin.NextBody = nil
 	}
 }
 
@@ -327,6 +356,7 @@ type OriginUpdate struct {
 	ItemCount     int
 	NextToken     string
 	NextURL       string
+	NextBody      []byte
 	Offset        int
 	AdapterName   string // only written when non-empty (auto's lock decision)
 	LastSortValue interface{}
@@ -345,6 +375,7 @@ func (c *FederatedCursor) UpdateOriginState(originID string, u OriginUpdate) {
 	origin.ItemCount += u.ItemCount
 	origin.NextToken = u.NextToken
 	origin.NextURL = u.NextURL
+	origin.NextBody = u.NextBody
 	origin.Offset = u.Offset
 	origin.LastSortValue = u.LastSortValue
 	// AdapterName is sticky: once locked (auto's choice), don't
@@ -354,7 +385,7 @@ func (c *FederatedCursor) UpdateOriginState(originID string, u OriginUpdate) {
 		origin.AdapterName = u.AdapterName
 	}
 
-	if u.NextToken == "" && u.NextURL == "" && u.Offset == 0 {
+	if u.NextToken == "" && u.NextURL == "" && u.Offset == 0 && len(u.NextBody) == 0 {
 		origin.Exhausted = true
 	}
 }
@@ -382,7 +413,7 @@ func (c *FederatedCursor) Clone() *FederatedCursor {
 	}
 
 	for id, origin := range c.Origins {
-		clone.Origins[id] = &OriginCursor{
+		oc := &OriginCursor{
 			ID:            origin.ID,
 			NextToken:     origin.NextToken,
 			NextURL:       origin.NextURL,
@@ -393,6 +424,13 @@ func (c *FederatedCursor) Clone() *FederatedCursor {
 			ItemCount:     origin.ItemCount,
 			LastSortValue: origin.LastSortValue,
 		}
+		if len(origin.NextBody) > 0 {
+			oc.NextBody = append([]byte(nil), origin.NextBody...)
+		}
+		if len(origin.Stash) > 0 {
+			oc.Stash = append([]*stac.Item(nil), origin.Stash...)
+		}
+		clone.Origins[id] = oc
 	}
 
 	if c.LastSortValues != nil {

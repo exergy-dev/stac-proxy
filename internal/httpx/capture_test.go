@@ -9,18 +9,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestResponseCapture_DefaultStatusIs200(t *testing.T) {
-	rc := NewResponseCapture()
-	require.Equal(t, http.StatusOK, rc.Status(), "default Status()")
-}
-
 func TestResponseCapture_WriteHeaderUpdatesStatus(t *testing.T) {
+	// Default Status() before any WriteHeader/Write is 200.
+	require.Equal(t, http.StatusOK, NewResponseCapture().Status(), "default Status()")
+
 	rc := NewResponseCapture()
 	rc.WriteHeader(http.StatusTeapot)
 	require.Equal(t, http.StatusTeapot, rc.Status())
 	// Second WriteHeader is ignored (matches net/http behavior).
 	rc.WriteHeader(http.StatusGone)
 	require.Equal(t, http.StatusTeapot, rc.Status(), "Status() after 2nd WriteHeader")
+
+	// Write after WriteHeader preserves the explicit status and body.
+	_, err := rc.Write([]byte("body"))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusTeapot, rc.Status(), "Status() after Write")
+	require.Equal(t, "body", string(rc.BodyBytes()))
+
+	// HeadersOut() returns the same live map as Header().
+	rc.Header().Set("X-A", "1")
+	require.Equal(t, "1", rc.HeadersOut().Get("X-A"))
 }
 
 func TestResponseCapture_WriteAccumulatesBody(t *testing.T) {
@@ -45,22 +53,15 @@ func TestResponseCapture_HeaderMutable(t *testing.T) {
 	require.Equal(t, []string{"a", "b"}, rc.Header().Values("X-Multi"))
 }
 
-func TestResponseCapture_HeadersOutSameAsHeader(t *testing.T) {
-	rc := NewResponseCapture()
-	h1 := rc.Header()
-	h1.Set("X-A", "1")
-	h2 := rc.HeadersOut()
-	require.Equal(t, "1", h2.Get("X-A"), "HeadersOut() did not return the same map as Header()")
-	// Mutating via HeadersOut() is visible via Header().
-	h2.Set("X-B", "2")
-	require.Equal(t, "2", rc.Header().Get("X-B"), "HeadersOut() mutation not reflected in Header()")
-}
-
-func TestResponseCapture_ImplementsResponseWriter(t *testing.T) {
-	var _ http.ResponseWriter = NewResponseCapture()
-}
+var _ http.ResponseWriter = (ResponseCapture)(nil)
 
 func TestResponseCapture_RejectsOversize(t *testing.T) {
+	// Single write that overshoots: body fills exactly to the cap.
+	rcSingle := NewResponseCaptureWithLimit(10)
+	_, err := rcSingle.Write([]byte("0123456789AB")) // 12 bytes, cap=10
+	require.ErrorIs(t, err, ErrResponseTooLarge)
+	require.Len(t, rcSingle.BodyBytes(), 10, "single-write overshoot body len")
+
 	rc := NewResponseCaptureWithLimit(10)
 
 	// First write: 10 bytes, exactly at the cap — must succeed.
@@ -83,15 +84,6 @@ func TestResponseCapture_RejectsOversize(t *testing.T) {
 	require.Equal(t, 0, n, "third write n")
 }
 
-func TestResponseCapture_RejectsOversizeSingleWrite(t *testing.T) {
-	// A single Write that overshoots must still leave the body
-	// exactly max bytes long.
-	rc := NewResponseCaptureWithLimit(10)
-	_, err := rc.Write([]byte("0123456789AB")) // 12 bytes, cap=10
-	require.ErrorIs(t, err, ErrResponseTooLarge)
-	require.Len(t, rc.BodyBytes(), 10, "body len")
-}
-
 func TestResponseCapture_ZeroIsUnbounded(t *testing.T) {
 	rc := NewResponseCaptureWithLimit(0)
 	chunk := bytes.Repeat([]byte("x"), 1<<20) // 1 MiB
@@ -103,11 +95,3 @@ func TestResponseCapture_ZeroIsUnbounded(t *testing.T) {
 	require.Len(t, rc.BodyBytes(), 10*(1<<20), "body len")
 }
 
-func TestResponseCapture_WriteHeaderThenWrite_StatusPreserved(t *testing.T) {
-	rc := NewResponseCapture()
-	rc.WriteHeader(http.StatusCreated)
-	_, err := rc.Write([]byte("body"))
-	require.NoError(t, err)
-	require.Equal(t, http.StatusCreated, rc.Status())
-	require.Equal(t, "body", string(rc.BodyBytes()))
-}

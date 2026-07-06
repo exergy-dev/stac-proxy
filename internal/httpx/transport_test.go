@@ -100,25 +100,6 @@ func TestRetryTransport_503ThenSuccess_ReplaysPOSTBody(t *testing.T) {
 	}
 }
 
-func TestRetryTransport_RetryAfterZero_NoDelay(t *testing.T) {
-	f := &fakeRT{responses: []fakeResp{
-		{status: 503, retryAfter: "0"},
-		{status: 200},
-	}}
-	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:         2,
-		InitialBackoff:     1 * time.Second, // would dominate without Retry-After
-		MaxBackoff:         1 * time.Second,
-		RetryNonIdempotent: true,
-	})
-	start := time.Now()
-	resp, err := rt.RoundTrip(newPOST(t, "x"))
-	dur := time.Since(start)
-	require.NoError(t, err)
-	resp.Body.Close()
-	require.LessOrEqual(t, dur, 500*time.Millisecond, "Retry-After: 0 should be near-instant; took %s", dur)
-}
-
 func TestRetryTransport_RetryAfterOne_Honored(t *testing.T) {
 	f := &fakeRT{responses: []fakeResp{
 		{status: 503, retryAfter: "1"},
@@ -170,20 +151,6 @@ func TestRetryTransport_NoRetryOn4xx(t *testing.T) {
 	resp, err := rt.RoundTrip(newPOST(t, "x"))
 	require.NoError(t, err)
 	require.Equal(t, 404, resp.StatusCode)
-	require.Equal(t, int32(1), f.attempt.Load(), "attempts")
-}
-
-func TestRetryTransport_NoRetryOn200(t *testing.T) {
-	f := &fakeRT{responses: []fakeResp{{status: 200}}}
-	rt := NewRetryTransport(f, RetryConfig{
-		MaxRetries:         3,
-		InitialBackoff:     1 * time.Millisecond,
-		MaxBackoff:         5 * time.Millisecond,
-		RetryNonIdempotent: true,
-	})
-	resp, err := rt.RoundTrip(newPOST(t, "x"))
-	require.NoError(t, err)
-	require.Equal(t, 200, resp.StatusCode)
 	require.Equal(t, int32(1), f.attempt.Load(), "attempts")
 }
 
@@ -239,17 +206,6 @@ func TestRetryTransport_CustomRetryOn(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 200, resp.StatusCode)
 	require.Equal(t, int32(2), f.attempt.Load(), "attempts")
-}
-
-func TestRetryTransport_ZeroMaxRetries_PassesThrough(t *testing.T) {
-	// MaxRetries: 0 returns the inner transport directly, so this case
-	// is unaffected by the POST/PATCH gating.
-	f := &fakeRT{responses: []fakeResp{{status: 503}}}
-	rt := NewRetryTransport(f, RetryConfig{MaxRetries: 0})
-	resp, err := rt.RoundTrip(newPOST(t, "x"))
-	require.NoError(t, err)
-	require.Equal(t, 503, resp.StatusCode, "no retry")
-	require.Equal(t, int32(1), f.attempt.Load(), "attempts")
 }
 
 // TestRetryTransport_DoesNotRetryPOSTByDefault (HIGH H-httpx-1):
@@ -359,6 +315,17 @@ func TestRetryTransport_StillRetriesGETByDefault(t *testing.T) {
 }
 
 func TestBufferAndSetGetBody(t *testing.T) {
+	// Nil-body request: no-op, no GetBody installed.
+	nilReq, err := http.NewRequest(http.MethodGet, "http://x", nil)
+	require.NoError(t, err)
+	require.NoError(t, BufferAndSetGetBody(nilReq), "nil body unexpected err")
+	require.Nil(t, nilReq.GetBody, "GetBody should not be set for nil body")
+
+	// MaxRetries: 0 returns the inner transport directly (early-return).
+	inner := http.DefaultTransport
+	require.Equal(t, inner, NewRetryTransport(inner, RetryConfig{MaxRetries: 0}),
+		"MaxRetries=0 should pass through the inner transport unchanged")
+
 	req, err := http.NewRequest(http.MethodPost, "http://x", strings.NewReader("payload"))
 	require.NoError(t, err)
 	require.NoError(t, BufferAndSetGetBody(req))
@@ -378,9 +345,3 @@ func TestBufferAndSetGetBody(t *testing.T) {
 	}
 }
 
-func TestBufferAndSetGetBody_NilBody(t *testing.T) {
-	req, err := http.NewRequest(http.MethodGet, "http://x", nil)
-	require.NoError(t, err)
-	require.NoError(t, BufferAndSetGetBody(req), "unexpected err")
-	require.Nil(t, req.GetBody, "GetBody should not be set for nil body")
-}

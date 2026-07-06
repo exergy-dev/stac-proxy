@@ -92,48 +92,80 @@ func TestFilterByGeofence_MalformedFeatureCollectionFailsClosed(t *testing.T) {
 	}
 }
 
-func TestEvaluateCondition_TimeRange(t *testing.T) {
+func TestEvaluateCondition(t *testing.T) {
+	cases := []struct {
+		name  string
+		cond  Condition
+		input *AuthzInput
+		want  bool
+	}{
+		{
+			name: "time_range pass",
+			cond: Condition{Type: "time_range", Config: map[string]interface{}{
+				"start": "2000-01-01T00:00:00Z",
+				"end":   "2999-12-31T23:59:59Z",
+			}},
+			input: &AuthzInput{},
+			want:  true,
+		},
+		{
+			name: "time_range fail (future window)",
+			cond: Condition{Type: "time_range", Config: map[string]interface{}{
+				"start": "2999-01-01T00:00:00Z",
+			}},
+			input: &AuthzInput{},
+			want:  false,
+		},
+		{
+			name: "ip_range pass",
+			cond: Condition{Type: "ip_range", Config: map[string]interface{}{
+				"cidrs": []interface{}{"10.0.0.0/8"},
+			}},
+			input: &AuthzInput{Request: &RequestInfo{ClientIP: "10.0.0.42:12345"}},
+			want:  true,
+		},
+		{
+			name: "ip_range fail",
+			cond: Condition{Type: "ip_range", Config: map[string]interface{}{
+				"cidrs": []interface{}{"192.168.0.0/16"},
+			}},
+			input: &AuthzInput{Request: &RequestInfo{ClientIP: "10.0.0.42:12345"}},
+			want:  false,
+		},
+		{
+			name: "attribute pass",
+			cond: Condition{Type: "attribute", Config: map[string]interface{}{
+				"key": "dept", "value": "research",
+			}},
+			input: &AuthzInput{Principal: &PrincipalInfo{
+				Attributes: map[string]interface{}{"dept": "research"},
+			}},
+			want: true,
+		},
+		{
+			name: "attribute fail",
+			cond: Condition{Type: "attribute", Config: map[string]interface{}{
+				"key": "dept", "value": "ops",
+			}},
+			input: &AuthzInput{Principal: &PrincipalInfo{
+				Attributes: map[string]interface{}{"dept": "research"},
+			}},
+			want: false,
+		},
+		{
+			name:  "unknown type fails closed",
+			cond:  Condition{Type: "made_up", Config: map[string]interface{}{}},
+			input: &AuthzInput{},
+			want:  false,
+		},
+	}
 	e := &PolicyEnforcer{}
-	in := &AuthzInput{}
-	// Always-inside: past start, future end.
-	cond := Condition{Type: "time_range", Config: map[string]interface{}{
-		"start": "2000-01-01T00:00:00Z",
-		"end":   "2999-12-31T23:59:59Z",
-	}}
-	require.True(t, e.evaluateCondition(cond, in), "want pass for in-range window")
-	cond.Config = map[string]interface{}{"start": "2999-01-01T00:00:00Z"}
-	require.False(t, e.evaluateCondition(cond, in), "want fail for future-only window")
-}
-
-func TestEvaluateCondition_IPRange(t *testing.T) {
-	e := &PolicyEnforcer{}
-	in := &AuthzInput{Request: &RequestInfo{ClientIP: "10.0.0.42:12345"}}
-	cond := Condition{Type: "ip_range", Config: map[string]interface{}{
-		"cidrs": []interface{}{"10.0.0.0/8"},
-	}}
-	require.True(t, e.evaluateCondition(cond, in), "want pass for matching CIDR")
-	cond.Config = map[string]interface{}{"cidrs": []interface{}{"192.168.0.0/16"}}
-	require.False(t, e.evaluateCondition(cond, in), "want fail for non-matching CIDR")
-}
-
-func TestEvaluateCondition_Attribute(t *testing.T) {
-	e := &PolicyEnforcer{}
-	in := &AuthzInput{Principal: &PrincipalInfo{
-		Attributes: map[string]interface{}{"dept": "research"},
-	}}
-	cond := Condition{Type: "attribute", Config: map[string]interface{}{
-		"key": "dept", "value": "research",
-	}}
-	require.True(t, e.evaluateCondition(cond, in), "want pass for matching attribute")
-	cond.Config = map[string]interface{}{"key": "dept", "value": "ops"}
-	require.False(t, e.evaluateCondition(cond, in), "want fail for wrong attribute value")
-}
-
-func TestEvaluateCondition_UnknownTypeFailsClosed(t *testing.T) {
-	e := &PolicyEnforcer{}
-	in := &AuthzInput{}
-	cond := Condition{Type: "made_up", Config: map[string]interface{}{}}
-	require.False(t, e.evaluateCondition(cond, in), "unknown condition type must fail closed")
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, e.evaluateCondition(tc.cond, tc.input))
+		})
+	}
 }
 
 // TestAuthz_GeofencePostFilter ensures the middleware pipeline runs the

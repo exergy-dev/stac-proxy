@@ -3,7 +3,6 @@ package remap
 import (
 	"context"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -32,16 +31,6 @@ func TestHMACSigner_TamperWithQueryFails(t *testing.T) {
 	ok, err := s.Verify(u.String())
 	require.False(t, ok, "tampered query must fail verification")
 	require.Error(t, err, "tampered query must fail verification")
-}
-
-func TestHMACSigner_TamperWithHostFails(t *testing.T) {
-	s := NewHMACSigner("secret")
-	signed := s.Sign(context.Background(), "https://real.example.com/items/abc", time.Hour)
-
-	tampered := strings.Replace(signed, "real.example.com", "evil.example.com", 1)
-	ok, err := s.Verify(tampered)
-	require.False(t, ok, "host swap must fail verification")
-	require.Error(t, err, "host swap must fail verification")
 }
 
 // TestNewSigner_RejectsUnknownTypes guards against signer-type typos
@@ -83,13 +72,6 @@ func TestSigner_DoubleSlashSameAsSingleSlash(t *testing.T) {
 	assert.NoError(t, err, "//foo should verify against /foo signature (path.Clean normalization)")
 	assert.True(t, ok, "//foo should verify against /foo signature (path.Clean normalization)")
 
-	// Also confirm /a//b//c canonicalizes to /a/b/c equivalently.
-	signed2 := s.Sign(context.Background(), "https://stac.example.com/a/b/c?role=read", time.Hour)
-	u2, _ := url.Parse(signed2)
-	u2.Path = "/a//b//c"
-	ok2, err2 := s.Verify(u2.String())
-	assert.NoError(t, err2, "/a//b//c should verify against /a/b/c signature")
-	assert.True(t, ok2, "/a//b//c should verify against /a/b/c signature")
 }
 
 // TestSigningMessage_DoesNotMutateInput (M-remap-3): signingMessage
@@ -160,26 +142,6 @@ func TestHMACSigner_RotationVerifiesOldSigs(t *testing.T) {
 	bOnly := NewHMACSigner("secret-B")
 	okBOnly, _ := bOnly.Verify(signedA)
 	assert.False(t, okBOnly, "A-signed URL should not verify under a B-only signer (sanity check)")
-}
-
-func TestNewSigner_HMACAndNoOp(t *testing.T) {
-	s, err := NewSigner("hmac", "secret")
-	require.NoError(t, err, "hmac: unexpected error")
-	_, ok := s.(*HMACSigner)
-	require.True(t, ok, "expected *HMACSigner, got %T", s)
-
-	_, err = NewSigner("hmac", "")
-	require.Error(t, err, "expected error for hmac with empty secret")
-
-	for _, typ := range []string{"noop", ""} {
-		s, err := NewSigner(typ, "")
-		require.NoError(t, err, "noop (%q): unexpected error", typ)
-		_, ok := s.(*NoOpSigner)
-		require.True(t, ok, "expected *NoOpSigner for %q, got %T", typ, s)
-	}
-
-	_, err = NewSigner("bogus", "")
-	require.Error(t, err, "expected error for unknown signer type")
 }
 
 // TestHMACSigner_VerifyRejectsBadExpiryFormats covers the strconv

@@ -102,7 +102,6 @@ type FederationConfig struct {
 	Origins          []OriginConfig `yaml:"origins"`
 	MaxConcurrent    int            `yaml:"max_concurrent"`
 	AggregateTimeout time.Duration  `yaml:"aggregate_timeout"`
-	ConflictStrategy string         `yaml:"conflict_strategy"` // first_wins, priority, merge, namespace
 	DefaultPageSize  int            `yaml:"default_page_size"`
 	MaxPageSize      int            `yaml:"max_page_size"`
 
@@ -506,9 +505,6 @@ func (c *Config) setDefaults() {
 		}
 		if c.Federation.AggregateTimeout == 0 {
 			c.Federation.AggregateTimeout = 60 * time.Second
-		}
-		if c.Federation.ConflictStrategy == "" {
-			c.Federation.ConflictStrategy = "priority"
 		}
 		if c.Federation.DefaultPageSize == 0 {
 			c.Federation.DefaultPageSize = 100

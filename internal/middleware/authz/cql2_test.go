@@ -50,110 +50,70 @@ func TestGeofenceToCQL2_Nil(t *testing.T) {
 	require.Nil(t, got, "want nil/nil for empty constraint")
 }
 
-func TestGeofenceToCQL2_DeniedAreaOnly(t *testing.T) {
-	g := &GeofenceConstraint{
-		DeniedArea: map[string]interface{}{
-			"type": "Polygon",
-			"coordinates": []interface{}{
-				[]interface{}{
-					[]interface{}{0.0, 0.0},
-					[]interface{}{1.0, 0.0},
-					[]interface{}{1.0, 1.0},
-					[]interface{}{0.0, 1.0},
-					[]interface{}{0.0, 0.0},
-				},
+func TestGeofenceToCQL2_AreaShapes(t *testing.T) {
+	smallPoly := map[string]interface{}{
+		"type": "Polygon",
+		"coordinates": []interface{}{
+			[]interface{}{
+				[]interface{}{0.0, 0.0},
+				[]interface{}{1.0, 0.0},
+				[]interface{}{1.0, 1.0},
+				[]interface{}{0.0, 1.0},
+				[]interface{}{0.0, 0.0},
 			},
 		},
 	}
-	got, err := geofenceToCQL2(g)
-	require.NoError(t, err, "unexpected error")
-	require.NotNil(t, got, "expected non-nil expression for denied area")
-	s := strings.ToUpper(encText(t, got))
-	require.Contains(t, s, "S_INTERSECTS", "want S_INTERSECTS in NOT predicate, got %q", s)
-	require.Contains(t, s, "NOT", "want NOT wrapper around denied-area intersect, got %q", s)
-}
-
-func TestGeofenceToCQL2_AllowedAndDenied(t *testing.T) {
-	g := &GeofenceConstraint{
-		AllowedArea: map[string]interface{}{
-			"type": "Polygon",
-			"coordinates": []interface{}{
-				[]interface{}{
-					[]interface{}{-10.0, -10.0},
-					[]interface{}{10.0, -10.0},
-					[]interface{}{10.0, 10.0},
-					[]interface{}{-10.0, 10.0},
-					[]interface{}{-10.0, -10.0},
-				},
-			},
-		},
-		DeniedArea: map[string]interface{}{
-			"type": "Polygon",
-			"coordinates": []interface{}{
-				[]interface{}{
-					[]interface{}{0.0, 0.0},
-					[]interface{}{1.0, 0.0},
-					[]interface{}{1.0, 1.0},
-					[]interface{}{0.0, 1.0},
-					[]interface{}{0.0, 0.0},
-				},
+	largePoly := map[string]interface{}{
+		"type": "Polygon",
+		"coordinates": []interface{}{
+			[]interface{}{
+				[]interface{}{-10.0, -10.0},
+				[]interface{}{10.0, -10.0},
+				[]interface{}{10.0, 10.0},
+				[]interface{}{-10.0, 10.0},
+				[]interface{}{-10.0, -10.0},
 			},
 		},
 	}
-	got, err := geofenceToCQL2(g)
-	require.NoError(t, err, "unexpected error")
-	require.NotNil(t, got, "expected non-nil expression for allowed + denied")
-	s := strings.ToUpper(encText(t, got))
-	require.Contains(t, s, "AND", "want AND between allowed and denied, got %q", s)
-	require.Contains(t, s, "NOT", "want NOT for denied, got %q", s)
-}
-
-func TestGeofenceToCQL2_Polygon(t *testing.T) {
-	g := &GeofenceConstraint{
-		AllowedArea: map[string]interface{}{
-			"type": "Polygon",
-			"coordinates": []interface{}{
-				[]interface{}{
-					[]interface{}{0.0, 0.0},
-					[]interface{}{10.0, 0.0},
-					[]interface{}{10.0, 10.0},
-					[]interface{}{0.0, 10.0},
-					[]interface{}{0.0, 0.0},
-				},
-			},
+	cases := []struct {
+		name      string
+		g         *GeofenceConstraint
+		wantSubs  []string
+		wantProps []string
+	}{
+		{
+			name:     "denied area only",
+			g:        &GeofenceConstraint{DeniedArea: smallPoly},
+			wantSubs: []string{"S_INTERSECTS", "NOT"},
+		},
+		{
+			name:     "allowed and denied",
+			g:        &GeofenceConstraint{AllowedArea: largePoly, DeniedArea: smallPoly},
+			wantSubs: []string{"AND", "NOT"},
+		},
+		{
+			name:      "allowed polygon",
+			g:         &GeofenceConstraint{AllowedArea: smallPoly},
+			wantSubs:  []string{"S_INTERSECTS"},
+			wantProps: []string{"geometry"},
 		},
 	}
-	got, err := geofenceToCQL2(g)
-	require.NoError(t, err, "unexpected error")
-	require.NotNil(t, got, "want non-nil expression for polygon allowed area")
-	s := encText(t, got)
-	require.Contains(t, strings.ToUpper(s), "S_INTERSECTS", "want S_INTERSECTS in encoded form, got %q", s)
-	require.Contains(t, s, "geometry", "want property reference to geometry, got %q", s)
-}
-
-func TestMaybePushDownGeofence_Polygon(t *testing.T) {
-	c := &AuthzConstraints{
-		Geofence: &GeofenceConstraint{
-			AllowedArea: map[string]interface{}{
-				"type": "Polygon",
-				"coordinates": []interface{}{
-					[]interface{}{
-						[]interface{}{0.0, 0.0},
-						[]interface{}{10.0, 0.0},
-						[]interface{}{10.0, 10.0},
-						[]interface{}{0.0, 10.0},
-						[]interface{}{0.0, 0.0},
-					},
-				},
-			},
-		},
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := geofenceToCQL2(tc.g)
+			require.NoError(t, err, "unexpected error")
+			require.NotNil(t, got, "expected non-nil expression")
+			s := encText(t, got)
+			up := strings.ToUpper(s)
+			for _, sub := range tc.wantSubs {
+				require.Contains(t, up, sub, "want %q in %q", sub, s)
+			}
+			for _, p := range tc.wantProps {
+				require.Contains(t, s, p, "want property %q in %q", p, s)
+			}
+		})
 	}
-	out, applied, err := maybePushDownGeofence(c, true)
-	require.NoError(t, err, "unexpected error")
-	require.True(t, applied, "expected push-down to be applied")
-	require.True(t, out.GeofencePushedDown, "expected GeofencePushedDown=true on returned constraint")
-	require.Contains(t, strings.ToUpper(out.CQL2Filter), "S_INTERSECTS", "want S_INTERSECTS in CQL2Filter, got %q", out.CQL2Filter)
-	require.False(t, c.GeofencePushedDown, "input constraint must not be mutated")
 }
 
 func TestMaybePushDownGeofence_CombinesWithExistingPolicyFilter(t *testing.T) {

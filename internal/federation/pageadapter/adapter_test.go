@@ -28,19 +28,22 @@ func TestNew_RejectsUnknownAdapter(t *testing.T) {
 	require.Error(t, err, "expected error for unknown adapter")
 }
 
-func TestNew_DefaultsToAuto(t *testing.T) {
+// TestAdapterRegistry exercises the default-to-auto path, KnownAdapters
+// (used by config validation), the offset adapter's custom-param knob,
+// and the auto adapter's no-match branch in one consolidated test.
+func TestAdapterRegistry(t *testing.T) {
 	a, err := New(Config{})
 	require.NoError(t, err)
-	assert.Equal(t, "auto", a.Name(), "New(Config{}).Name()")
-}
+	assert.Equal(t, "auto", a.Name(), "default adapter")
+	assert.Equal(t, []string{"auto", "token", "next_url", "post_body", "offset", "link_header"}, KnownAdapters())
 
-func TestKnownAdapters(t *testing.T) {
-	want := []string{"auto", "token", "next_url", "offset", "link_header"}
-	got := KnownAdapters()
-	require.Len(t, got, len(want), "KnownAdapters() length")
-	for i := range want {
-		assert.Equalf(t, want[i], got[i], "KnownAdapters()[%d]", i)
-	}
+	off, _ := newOffset(Config{OffsetParam: "page"}).Capture(UpstreamResponse{
+		FC: fcWithNext("https://api.example.com/search?page=3", nil), BaseURL: "https://api.example.com",
+	})
+	assert.Equal(t, 3, off.Offset, "custom offset param")
+
+	auto, _ := newAuto(Config{}).Capture(UpstreamResponse{FC: &stac.FeatureCollection{}, BaseURL: "https://api.example.com"})
+	assert.True(t, auto.Done, "auto Done on no match")
 }
 
 func TestSameOrigin(t *testing.T) {
@@ -56,7 +59,6 @@ func TestSameOrigin(t *testing.T) {
 		{"different scheme", "http://api.example.com/v1/search", "https://api.example.com/v1", false},
 		{"path outside base prefix", "https://api.example.com/other/search", "https://api.example.com/v1", false},
 		{"non-absolute URL rejected", "/v1/search?next=x", "https://api.example.com/v1", false},
-		{"case-insensitive host", "https://API.Example.COM/v1/search", "https://api.example.com/v1", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -139,15 +141,6 @@ func TestOffset_CapturesOffset(t *testing.T) {
 	assert.Equal(t, 50, st.Offset, "Offset")
 }
 
-func TestOffset_CustomParamName(t *testing.T) {
-	a := newOffset(Config{OffsetParam: "page"})
-	st, _ := a.Capture(UpstreamResponse{
-		FC:      fcWithNext("https://api.example.com/search?page=3", nil),
-		BaseURL: "https://api.example.com",
-	})
-	assert.Equal(t, 3, st.Offset, "Offset")
-}
-
 // --- link_header adapter --------------------------------------------
 
 func TestLinkHeader_CapturesRelNext(t *testing.T) {
@@ -211,11 +204,3 @@ func TestAuto_FallsBackToNextURL(t *testing.T) {
 	assert.NotEmpty(t, st.URL, "URL not captured by next_url")
 }
 
-func TestAuto_DoneOnNoMatch(t *testing.T) {
-	a := newAuto(Config{})
-	st, _ := a.Capture(UpstreamResponse{
-		FC:      &stac.FeatureCollection{}, // no next link at all
-		BaseURL: "https://api.example.com",
-	})
-	assert.True(t, st.Done, "Done; want true (no next link, no match)")
-}

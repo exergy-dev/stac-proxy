@@ -3,24 +3,59 @@ package federation
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
 
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // ResultMerger merges search results from multiple origins.
-type ResultMerger struct {
-	strategy     ConflictStrategy
-	deduplicator *ItemDeduplicator
-}
+type ResultMerger struct{}
 
 // NewResultMerger creates a new result merger.
-func NewResultMerger(strategy ConflictStrategy) *ResultMerger {
-	return &ResultMerger{
-		strategy:     strategy,
-		deduplicator: NewItemDeduplicator(10000),
+func NewResultMerger() *ResultMerger {
+	return &ResultMerger{}
+}
+
+// itemSource is the input shape consumed by mergeItemsFirstWins: a
+// single origin's items along with the metadata needed to attach the
+// stac_proxy:origin link.
+type itemSource struct {
+	OriginID  string
+	OriginURL string
+	Items     []*stac.Item
+}
+
+// mergeItemsFirstWins dedups items across origin results and injects a
+// stac_proxy:origin link onto each kept item.
+//
+// First-wins by caller-provided iteration order: callers are
+// responsible for sorting sources before calling (the fan-out path
+// sorts by (priority asc, originID asc); the paginated path passes
+// results in fetch order). Dedup key is collection + ":" + ID, so the
+// same item ID under different collections is preserved.
+//
+// No sort and no limit are applied here — those are caller concerns.
+func mergeItemsFirstWins(sources []itemSource) []*stac.Item {
+	seen := make(map[string]struct{})
+	out := make([]*stac.Item, 0)
+
+	for _, src := range sources {
+		for _, item := range src.Items {
+			if item == nil {
+				continue
+			}
+			key := item.Collection + ":" + item.ID
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+
+			tagged := *item // shallow copy so we don't mutate caller's item
+			stac.AddItemOriginLink(&tagged, src.OriginID, src.OriginURL)
+			out = append(out, &tagged)
+		}
 	}
+	return out
 }
 
 // MergeSearchResults merges results from multiple origins into a single response.
@@ -40,54 +75,23 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 		return results[i].OriginID < results[j].OriginID
 	})
 
-	// Track items by ID for conflict resolution. itemsByID gives us
-	// O(1) duplicate detection within a merge call — we don't need the
-	// bloom-based deduplicator here, which is reserved for cross-page
-	// dedup in paginated search.
-	itemsByID := make(map[string]*itemWithOrigin)
-	var keyOrder []string // insertion order so results are deterministic
+	sources := make([]itemSource, 0, len(results))
 	var totalMatched int
-
 	for _, result := range results {
 		if result.Error != nil {
 			continue // Skip failed origins
 		}
-
 		if result.Context != nil {
 			totalMatched += result.Context.Matched
 		}
-
-		for _, item := range result.Items {
-			if item == nil {
-				continue
-			}
-			key := m.itemKey(result.OriginID, item)
-
-			if existing, exists := itemsByID[key]; exists {
-				// Handle conflict and persist the merged result.
-				merged, err := m.resolveConflict(existing, item, result.OriginID)
-				if err != nil {
-					return nil, err
-				}
-				existing.item = merged
-			} else {
-				// New item
-				transformed := m.transformItem(item, result.OriginID, result.OriginURL)
-				itemsByID[key] = &itemWithOrigin{
-					item:     transformed,
-					originID: result.OriginID,
-					priority: result.Priority,
-				}
-				keyOrder = append(keyOrder, key)
-			}
-		}
+		sources = append(sources, itemSource{
+			OriginID:  result.OriginID,
+			OriginURL: result.OriginURL,
+			Items:     result.Items,
+		})
 	}
 
-	// Materialise items from the canonical map so merges are observed.
-	items := make([]*stac.Item, 0, len(keyOrder))
-	for _, k := range keyOrder {
-		items = append(items, itemsByID[k].item)
-	}
+	items := mergeItemsFirstWins(sources)
 	if req.Limit > 0 && len(items) > req.Limit {
 		items = items[:req.Limit]
 	}
@@ -109,92 +113,6 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 	}
 
 	return fc, nil
-}
-
-// itemKey generates a unique key for an item.
-func (m *ResultMerger) itemKey(originID string, item *stac.Item) string {
-	if m.strategy == ConflictNamespace {
-		return originID + ":" + item.ID
-	}
-	// Use collection + item ID as key (items across collections can have same ID)
-	return item.Collection + ":" + item.ID
-}
-
-// resolveConflict handles duplicate items from different origins.
-//
-// The strategy enum has five values for config compat, but the actual
-// resolver only branches three ways: Merge (combine assets), RejectDuplicates
-// (error out), and "keep existing" (FirstWins / PriorityWins / Namespace).
-// The semantic distinction between the three "keep existing" strategies
-// lives upstream of this function: PriorityWins relies on a priority
-// pre-sort, FirstWins is a race that depends on arrival order, and
-// Namespace prefixes keys so duplicates never reach here in the first place.
-func (m *ResultMerger) resolveConflict(existing *itemWithOrigin,
-	incoming *stac.Item, incomingOrigin string) (*stac.Item, error) {
-
-	switch m.strategy {
-	case ConflictMerge:
-		return m.mergeItems(existing.item, incoming, incomingOrigin), nil
-	case ConflictRejectDuplicates:
-		return nil, fmt.Errorf("duplicate item ID %s from origins %s and %s",
-			incoming.ID, existing.originID, incomingOrigin)
-	default:
-		// ConflictFirstWins, ConflictPriorityWins, ConflictNamespace.
-		return existing.item, nil
-	}
-}
-
-// mergeItems combines two items with the same ID.
-func (m *ResultMerger) mergeItems(existing, incoming *stac.Item, incomingOrigin string) *stac.Item {
-	merged := *existing
-
-	// Merge assets from both items
-	if merged.Assets == nil {
-		merged.Assets = make(map[string]*stac.Asset)
-	}
-	for key, asset := range incoming.Assets {
-		// Prefix asset keys with origin to avoid overwrites
-		mergedKey := key
-		if _, exists := merged.Assets[key]; exists {
-			mergedKey = incomingOrigin + ":" + key
-		}
-		merged.Assets[mergedKey] = asset
-	}
-
-	// Keep the most recent properties (by datetime).
-	if incT, ok := stac.ItemDatetime(incoming); ok {
-		if existT, ok := stac.ItemDatetime(existing); ok {
-			if incT.After(existT) {
-				merged.Properties = incoming.Properties
-			}
-		}
-	}
-
-	// Merge links. Defensively copy existing.Links so the append cannot
-	// mutate the source slice's backing array if it has spare capacity.
-	combined := make([]*stac.Link, 0, len(existing.Links)+len(incoming.Links))
-	combined = append(combined, existing.Links...)
-	combined = append(combined, incoming.Links...)
-	merged.Links = combined
-
-	return &merged
-}
-
-// transformItem adds origin metadata to an item via a stac_proxy:origin
-// link (rel="stac_proxy:origin", href=originURL, title=originID).
-// Using a link rather than a property keeps the marker in the
-// standard navigational surface (links[]) so generic STAC tooling
-// surfaces it the same way it surfaces self/parent/root links.
-func (m *ResultMerger) transformItem(item *stac.Item, originID, originURL string) *stac.Item {
-	out := *item // shallow copy so we don't mutate caller's item
-	stac.AddItemOriginLink(&out, originID, originURL)
-
-	// Namespace item ID if configured
-	if m.strategy == ConflictNamespace {
-		out.ID = originID + ":" + out.ID
-	}
-
-	return &out
 }
 
 // DeduplicateCollections removes duplicate collections by ID and
@@ -248,13 +166,6 @@ func (m *ResultMerger) MergeCollections(results []*OriginCollectionsResult) []*s
 	}
 
 	return m.DeduplicateCollections(allCollections)
-}
-
-// itemWithOrigin tracks an item with its origin metadata.
-type itemWithOrigin struct {
-	item     *stac.Item
-	originID string
-	priority int
 }
 
 // MergeStats returns statistics about a merge operation.

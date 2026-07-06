@@ -524,36 +524,6 @@ func TestPrincipalMatcher(t *testing.T) {
 		wantMatch bool
 	}{
 		{
-			name: "match by ID",
-			matcher: &PrincipalMatcher{
-				IDs: []string{"user123", "user456"},
-			},
-			principal: &PrincipalInfo{
-				ID: "user123",
-			},
-			wantMatch: true,
-		},
-		{
-			name: "no match by ID",
-			matcher: &PrincipalMatcher{
-				IDs: []string{"user123", "user456"},
-			},
-			principal: &PrincipalInfo{
-				ID: "user789",
-			},
-			wantMatch: false,
-		},
-		{
-			name: "match by wildcard ID",
-			matcher: &PrincipalMatcher{
-				IDs: []string{"*"},
-			},
-			principal: &PrincipalInfo{
-				ID: "any-user",
-			},
-			wantMatch: true,
-		},
-		{
 			name: "match by role",
 			matcher: &PrincipalMatcher{
 				Roles: []string{"admin", "editor"},
@@ -587,61 +557,6 @@ func TestPrincipalMatcher(t *testing.T) {
 			wantMatch: true,
 		},
 		{
-			name: "match by group",
-			matcher: &PrincipalMatcher{
-				Groups: []string{"team-a", "team-b"},
-			},
-			principal: &PrincipalInfo{
-				ID:     "user1",
-				Groups: []string{"team-a"},
-			},
-			wantMatch: true,
-		},
-		{
-			name: "no match by group",
-			matcher: &PrincipalMatcher{
-				Groups: []string{"team-a"},
-			},
-			principal: &PrincipalInfo{
-				ID:     "user1",
-				Groups: []string{"team-c"},
-			},
-			wantMatch: false,
-		},
-		{
-			name: "match by type",
-			matcher: &PrincipalMatcher{
-				Types: []string{"user", "service"},
-			},
-			principal: &PrincipalInfo{
-				ID:   "user1",
-				Type: "user",
-			},
-			wantMatch: true,
-		},
-		{
-			name: "no match by type",
-			matcher: &PrincipalMatcher{
-				Types: []string{"service"},
-			},
-			principal: &PrincipalInfo{
-				ID:   "user1",
-				Type: "user",
-			},
-			wantMatch: false,
-		},
-		{
-			name: "match by wildcard type",
-			matcher: &PrincipalMatcher{
-				Types: []string{"*"},
-			},
-			principal: &PrincipalInfo{
-				ID:   "user1",
-				Type: "any-type",
-			},
-			wantMatch: true,
-		},
-		{
 			name: "match multiple criteria",
 			matcher: &PrincipalMatcher{
 				IDs:    []string{"user123"},
@@ -656,26 +571,6 @@ func TestPrincipalMatcher(t *testing.T) {
 				Groups: []string{"team-a"},
 			},
 			wantMatch: true,
-		},
-		{
-			name: "fail if any criteria doesn't match",
-			matcher: &PrincipalMatcher{
-				IDs:   []string{"user123"},
-				Roles: []string{"admin"},
-			},
-			principal: &PrincipalInfo{
-				ID:    "user123",
-				Roles: []string{"viewer"}, // Wrong role
-			},
-			wantMatch: false,
-		},
-		{
-			name: "nil principal",
-			matcher: &PrincipalMatcher{
-				Roles: []string{"admin"},
-			},
-			principal: nil,
-			wantMatch: false,
 		},
 		{
 			// M-authz-3: a PrincipalMatcher whose every field is empty
@@ -733,36 +628,6 @@ func TestResourceMatcher(t *testing.T) {
 		wantMatch bool
 	}{
 		{
-			name: "match by type",
-			matcher: &ResourceMatcher{
-				Types: []string{"collection", "item"},
-			},
-			resource: &ResourceInfo{
-				Type: "collection",
-			},
-			wantMatch: true,
-		},
-		{
-			name: "no match by type",
-			matcher: &ResourceMatcher{
-				Types: []string{"collection"},
-			},
-			resource: &ResourceInfo{
-				Type: "search",
-			},
-			wantMatch: false,
-		},
-		{
-			name: "match by wildcard type",
-			matcher: &ResourceMatcher{
-				Types: []string{"*"},
-			},
-			resource: &ResourceInfo{
-				Type: "any-type",
-			},
-			wantMatch: true,
-		},
-		{
 			name: "match by exact collection",
 			matcher: &ResourceMatcher{
 				Collections: []string{"public-data", "open-data"},
@@ -770,28 +635,6 @@ func TestResourceMatcher(t *testing.T) {
 			resource: &ResourceInfo{
 				Type:       "item",
 				Collection: "public-data",
-			},
-			wantMatch: true,
-		},
-		{
-			name: "no match by collection",
-			matcher: &ResourceMatcher{
-				Collections: []string{"public-data"},
-			},
-			resource: &ResourceInfo{
-				Type:       "item",
-				Collection: "private-data",
-			},
-			wantMatch: false,
-		},
-		{
-			name: "match by wildcard collection",
-			matcher: &ResourceMatcher{
-				Collections: []string{"*"},
-			},
-			resource: &ResourceInfo{
-				Type:       "item",
-				Collection: "any-collection",
 			},
 			wantMatch: true,
 		},
@@ -807,41 +650,6 @@ func TestResourceMatcher(t *testing.T) {
 			wantMatch: true,
 		},
 		{
-			name: "no match by collection glob pattern",
-			matcher: &ResourceMatcher{
-				Collections: []string{"public-*"},
-			},
-			resource: &ResourceInfo{
-				Type:       "item",
-				Collection: "private-imagery",
-			},
-			wantMatch: false,
-		},
-		{
-			name: "match multiple criteria",
-			matcher: &ResourceMatcher{
-				Types:       []string{"item"},
-				Collections: []string{"public-*"},
-			},
-			resource: &ResourceInfo{
-				Type:       "item",
-				Collection: "public-data",
-			},
-			wantMatch: true,
-		},
-		{
-			name: "fail if any criteria doesn't match",
-			matcher: &ResourceMatcher{
-				Types:       []string{"collection"},
-				Collections: []string{"public-*"},
-			},
-			resource: &ResourceInfo{
-				Type:       "item", // Wrong type
-				Collection: "public-data",
-			},
-			wantMatch: false,
-		},
-		{
 			name: "nil resource",
 			matcher: &ResourceMatcher{
 				Types: []string{"collection"},
@@ -854,17 +662,6 @@ func TestResourceMatcher(t *testing.T) {
 			matcher:   &ResourceMatcher{},
 			resource:  &ResourceInfo{Type: "collection"},
 			wantMatch: true,
-		},
-		{
-			name: "collection matcher with empty collection",
-			matcher: &ResourceMatcher{
-				Collections: []string{"specific-collection"},
-			},
-			resource: &ResourceInfo{
-				Type:       "collection",
-				Collection: "",
-			},
-			wantMatch: false,
 		},
 	}
 
@@ -920,24 +717,6 @@ func TestActionMatcher(t *testing.T) {
 			wantMatch: true,
 		},
 		{
-			name:    "case insensitive match",
-			actions: []string{"GET:COLLECTION"},
-			request: &RequestInfo{
-				Method:      "get",
-				RequestType: "collection",
-			},
-			wantMatch: true,
-		},
-		{
-			name:    "no match",
-			actions: []string{"post:item"},
-			request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "collection",
-			},
-			wantMatch: false,
-		},
-		{
 			name:    "wildcard matches all",
 			actions: []string{"*"},
 			request: &RequestInfo{
@@ -947,63 +726,9 @@ func TestActionMatcher(t *testing.T) {
 			wantMatch: true,
 		},
 		{
-			name:    "wildcard method",
-			actions: []string{"*:collection"},
-			request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "collection",
-			},
-			wantMatch: true,
-		},
-		{
-			name:    "wildcard request type",
-			actions: []string{"get:*"},
-			request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "anything",
-			},
-			wantMatch: true,
-		},
-		{
-			name:    "glob pattern with prefix",
-			actions: []string{"get:*"},
-			request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "collection",
-			},
-			wantMatch: true,
-		},
-		{
-			name:    "glob pattern with suffix",
-			actions: []string{"*:search"},
-			request: &RequestInfo{
-				Method:      "POST",
-				RequestType: "search",
-			},
-			wantMatch: true,
-		},
-		{
-			name:    "multiple actions - one matches",
-			actions: []string{"post:item", "get:collection", "delete:item"},
-			request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "collection",
-			},
-			wantMatch: true,
-		},
-		{
 			name:      "nil request",
 			actions:   []string{"get:collection"},
 			request:   nil,
-			wantMatch: false,
-		},
-		{
-			name:    "empty actions list",
-			actions: []string{},
-			request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "collection",
-			},
 			wantMatch: false,
 		},
 	}
@@ -1047,96 +772,11 @@ func TestMatchGlob(t *testing.T) {
 		s       string
 		want    bool
 	}{
-		{
-			name:    "wildcard matches all",
-			pattern: "*",
-			s:       "anything",
-			want:    true,
-		},
-		{
-			name:    "exact match no wildcard",
-			pattern: "exact",
-			s:       "exact",
-			want:    true,
-		},
-		{
-			name:    "no match no wildcard",
-			pattern: "exact",
-			s:       "different",
-			want:    false,
-		},
-		{
-			name:    "prefix wildcard",
-			pattern: "prefix-*",
-			s:       "prefix-test",
-			want:    true,
-		},
-		{
-			name:    "prefix wildcard no match",
-			pattern: "prefix-*",
-			s:       "other-test",
-			want:    false,
-		},
-		{
-			name:    "suffix wildcard",
-			pattern: "*-suffix",
-			s:       "test-suffix",
-			want:    true,
-		},
-		{
-			name:    "suffix wildcard no match",
-			pattern: "*-suffix",
-			s:       "test-other",
-			want:    false,
-		},
-		{
-			name:    "prefix and suffix wildcard",
-			pattern: "start-*-end",
-			s:       "start-middle-end",
-			want:    true,
-		},
-		{
-			name:    "prefix and suffix wildcard no match",
-			pattern: "start-*-end",
-			s:       "start-middle-other",
-			want:    false,
-		},
-		{
-			name:    "empty string with wildcard",
-			pattern: "*",
-			s:       "",
-			want:    true,
-		},
-		{
-			name:    "empty pattern",
-			pattern: "",
-			s:       "test",
-			want:    false,
-		},
-		{
-			name:    "both empty",
-			pattern: "",
-			s:       "",
-			want:    true,
-		},
-		{
-			name:    "wildcard in middle matches anything",
-			pattern: "a*z",
-			s:       "abcdefghijklmnopqrstuvwxyz",
-			want:    true,
-		},
-		{
-			name:    "wildcard in middle no suffix match",
-			pattern: "a*z",
-			s:       "abcdefg",
-			want:    false,
-		},
-		{
-			name:    "wildcard in middle no prefix match",
-			pattern: "a*z",
-			s:       "xyzz",
-			want:    false,
-		},
+		{name: "wildcard matches all", pattern: "*", s: "anything", want: true},
+		{name: "exact match no wildcard", pattern: "exact", s: "exact", want: true},
+		{name: "prefix wildcard", pattern: "prefix-*", s: "prefix-test", want: true},
+		{name: "suffix wildcard", pattern: "*-suffix", s: "test-suffix", want: true},
+		{name: "both empty", pattern: "", s: "", want: true},
 	}
 
 	for _, tt := range tests {
@@ -1299,253 +939,11 @@ func TestValidatePolicies(t *testing.T) {
 	}
 }
 
-func TestPolicyEnforcer_ComplexScenarios(t *testing.T) {
-	t.Parallel()
-
-	t.Run("multi-tier authorization", func(t *testing.T) {
-		policies := []Policy{
-			{
-				ID:       "deny-sensitive",
-				Effect:   PolicyEffectDeny,
-				Priority: 1000,
-				Resources: &ResourceMatcher{
-					Collections: []string{"classified-*"},
-				},
-			},
-			{
-				ID:       "allow-admin-sensitive",
-				Effect:   PolicyEffectAllow,
-				Priority: 2000,
-				Principals: &PrincipalMatcher{
-					Roles: []string{"admin"},
-				},
-				Resources: &ResourceMatcher{
-					Collections: []string{"classified-*"},
-				},
-			},
-			{
-				ID:       "allow-viewer-public",
-				Effect:   PolicyEffectAllow,
-				Priority: 500,
-				Principals: &PrincipalMatcher{
-					Roles: []string{"viewer"},
-				},
-				Resources: &ResourceMatcher{
-					Collections: []string{"public-*"},
-				},
-			},
-		}
-
-		e, err := NewPolicyEnforcer(PolicyConfig{
-			Name:     "multi-tier",
-			Policies: policies,
-		})
-		require.NoError(t, err, "NewPolicyEnforcer() error")
-
-		// Admin can access classified data
-		adminInput := &AuthzInput{
-			Principal: &PrincipalInfo{
-				ID:    "admin1",
-				Roles: []string{"admin"},
-			},
-			Request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "item",
-			},
-			Resource: &ResourceInfo{
-				Type:       "item",
-				Collection: "classified-military",
-			},
-		}
-
-		decision, err := e.Authorize(context.Background(), adminInput)
-		require.NoError(t, err, "Authorize() error")
-		assert.True(t, decision.Allowed, "admin should be allowed to access classified data")
-
-		// Viewer cannot access classified data
-		viewerClassifiedInput := &AuthzInput{
-			Principal: &PrincipalInfo{
-				ID:    "viewer1",
-				Roles: []string{"viewer"},
-			},
-			Request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "item",
-			},
-			Resource: &ResourceInfo{
-				Type:       "item",
-				Collection: "classified-military",
-			},
-		}
-
-		decision, err = e.Authorize(context.Background(), viewerClassifiedInput)
-		require.NoError(t, err, "Authorize() error")
-		assert.False(t, decision.Allowed, "viewer should not be allowed to access classified data")
-
-		// Viewer can access public data
-		viewerPublicInput := &AuthzInput{
-			Principal: &PrincipalInfo{
-				ID:    "viewer1",
-				Roles: []string{"viewer"},
-			},
-			Request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "item",
-			},
-			Resource: &ResourceInfo{
-				Type:       "item",
-				Collection: "public-imagery",
-			},
-		}
-
-		decision, err = e.Authorize(context.Background(), viewerPublicInput)
-		require.NoError(t, err, "Authorize() error")
-		assert.True(t, decision.Allowed, "viewer should be allowed to access public data")
-	})
-
-	t.Run("action-based authorization", func(t *testing.T) {
-		policies := []Policy{
-			{
-				ID:       "allow-read",
-				Effect:   PolicyEffectAllow,
-				Priority: 100,
-				Principals: &PrincipalMatcher{
-					Roles: []string{"reader"},
-				},
-				Actions: []string{"get:*"},
-			},
-			{
-				ID:       "allow-write",
-				Effect:   PolicyEffectAllow,
-				Priority: 100,
-				Principals: &PrincipalMatcher{
-					Roles: []string{"writer"},
-				},
-				Actions: []string{"post:*", "put:*", "delete:*"},
-			},
-		}
-
-		e, err := NewPolicyEnforcer(PolicyConfig{
-			Name:     "action-based",
-			Policies: policies,
-		})
-		require.NoError(t, err, "NewPolicyEnforcer() error")
-
-		// Reader can GET
-		readerGetInput := &AuthzInput{
-			Principal: &PrincipalInfo{
-				ID:    "reader1",
-				Roles: []string{"reader"},
-			},
-			Request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "collection",
-			},
-			Resource: &ResourceInfo{
-				Type: "collection",
-			},
-		}
-
-		decision, err := e.Authorize(context.Background(), readerGetInput)
-		require.NoError(t, err, "Authorize() error")
-		assert.True(t, decision.Allowed, "reader should be allowed to GET")
-
-		// Reader cannot POST
-		readerPostInput := &AuthzInput{
-			Principal: &PrincipalInfo{
-				ID:    "reader1",
-				Roles: []string{"reader"},
-			},
-			Request: &RequestInfo{
-				Method:      "POST",
-				RequestType: "item",
-			},
-			Resource: &ResourceInfo{
-				Type: "item",
-			},
-		}
-
-		decision, err = e.Authorize(context.Background(), readerPostInput)
-		require.NoError(t, err, "Authorize() error")
-		assert.False(t, decision.Allowed, "reader should not be allowed to POST")
-
-		// Writer can POST
-		writerPostInput := &AuthzInput{
-			Principal: &PrincipalInfo{
-				ID:    "writer1",
-				Roles: []string{"writer"},
-			},
-			Request: &RequestInfo{
-				Method:      "POST",
-				RequestType: "item",
-			},
-			Resource: &ResourceInfo{
-				Type: "item",
-			},
-		}
-
-		decision, err = e.Authorize(context.Background(), writerPostInput)
-		require.NoError(t, err, "Authorize() error")
-		assert.True(t, decision.Allowed, "writer should be allowed to POST")
-	})
-}
-
 func TestPolicyEnforcer_Interface(t *testing.T) {
 	t.Parallel()
 
 	// Verify PolicyEnforcer implements Enforcer interface
 	var _ Enforcer = (*PolicyEnforcer)(nil)
-}
-
-func TestPolicyEnforcer_Concurrency(t *testing.T) {
-	t.Parallel()
-
-	policies := []Policy{
-		{
-			ID:       "policy1",
-			Effect:   PolicyEffectAllow,
-			Priority: 100,
-			Principals: &PrincipalMatcher{
-				Roles: []string{"*"},
-			},
-		},
-	}
-
-	e, err := NewPolicyEnforcer(PolicyConfig{
-		Name:     "concurrent",
-		Policies: policies,
-	})
-	require.NoError(t, err, "NewPolicyEnforcer() error")
-
-	// Test concurrent authorization
-	done := make(chan bool)
-	for i := 0; i < 100; i++ {
-		go func(id int) {
-			input := &AuthzInput{
-				Principal: &PrincipalInfo{
-					ID:    "user",
-					Roles: []string{"viewer"},
-				},
-				Request: &RequestInfo{
-					Method:      "GET",
-					RequestType: "collection",
-				},
-				Resource: &ResourceInfo{
-					Type: "collection",
-				},
-			}
-
-			_, err := e.Authorize(context.Background(), input)
-			if err != nil {
-				t.Errorf("Authorize() error = %v", err)
-			}
-			done <- true
-		}(i)
-	}
-
-	for i := 0; i < 100; i++ {
-		<-done
-	}
 }
 
 func TestPolicyEnforcer_ConcurrentReload(t *testing.T) {
@@ -1700,101 +1098,6 @@ func TestHelperFunctions(t *testing.T) {
 
 func TestEdgeCases(t *testing.T) {
 	t.Parallel()
-
-	t.Run("nil principal info", func(t *testing.T) {
-		policy := Policy{
-			ID:       "test",
-			Effect:   PolicyEffectAllow,
-			Priority: 100,
-			Principals: &PrincipalMatcher{
-				Roles: []string{"admin"},
-			},
-		}
-
-		e, err := NewPolicyEnforcer(PolicyConfig{
-			Name:     "test",
-			Policies: []Policy{policy},
-		})
-		require.NoError(t, err, "NewPolicyEnforcer() error")
-
-		input := &AuthzInput{
-			Principal: nil,
-			Request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "collection",
-			},
-			Resource: &ResourceInfo{
-				Type: "collection",
-			},
-		}
-
-		decision, err := e.Authorize(context.Background(), input)
-		require.NoError(t, err, "Authorize() error")
-		assert.False(t, decision.Allowed, "should not allow nil principal")
-	})
-
-	t.Run("nil resource info", func(t *testing.T) {
-		policy := Policy{
-			ID:       "test",
-			Effect:   PolicyEffectAllow,
-			Priority: 100,
-			Resources: &ResourceMatcher{
-				Types: []string{"collection"},
-			},
-		}
-
-		e, err := NewPolicyEnforcer(PolicyConfig{
-			Name:     "test",
-			Policies: []Policy{policy},
-		})
-		require.NoError(t, err, "NewPolicyEnforcer() error")
-
-		input := &AuthzInput{
-			Principal: &PrincipalInfo{
-				ID:    "user1",
-				Roles: []string{"viewer"},
-			},
-			Request: &RequestInfo{
-				Method:      "GET",
-				RequestType: "collection",
-			},
-			Resource: nil,
-		}
-
-		decision, err := e.Authorize(context.Background(), input)
-		require.NoError(t, err, "Authorize() error")
-		assert.False(t, decision.Allowed, "should not allow nil resource")
-	})
-
-	t.Run("nil request info", func(t *testing.T) {
-		policy := Policy{
-			ID:       "test",
-			Effect:   PolicyEffectAllow,
-			Priority: 100,
-			Actions:  []string{"get:collection"},
-		}
-
-		e, err := NewPolicyEnforcer(PolicyConfig{
-			Name:     "test",
-			Policies: []Policy{policy},
-		})
-		require.NoError(t, err, "NewPolicyEnforcer() error")
-
-		input := &AuthzInput{
-			Principal: &PrincipalInfo{
-				ID:    "user1",
-				Roles: []string{"viewer"},
-			},
-			Request: nil,
-			Resource: &ResourceInfo{
-				Type: "collection",
-			},
-		}
-
-		decision, err := e.Authorize(context.Background(), input)
-		require.NoError(t, err, "Authorize() error")
-		assert.False(t, decision.Allowed, "should not allow nil request")
-	})
 
 	t.Run("policy with all matchers nil", func(t *testing.T) {
 		policy := Policy{

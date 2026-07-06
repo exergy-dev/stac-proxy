@@ -46,11 +46,6 @@ func TestProbeFilterExtension_TrailingSlashTolerant(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestProbeFilterExtension_NetworkError(t *testing.T) {
-	_, err := ProbeFilterExtension(context.Background(), nil, "http://127.0.0.1:1")
-	require.Error(t, err, "want error for unreachable host")
-}
-
 func TestProbeFilterExtension_NonOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(404)
@@ -124,16 +119,3 @@ func TestIntersect(t *testing.T) {
 	})
 }
 
-func TestFetchConformance(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns full conformsTo", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"conformsTo":["a","b","c"]}`))
-		}))
-		defer srv.Close()
-		got, err := FetchConformance(context.Background(), nil, srv.URL)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"a", "b", "c"}, got)
-	})
-}

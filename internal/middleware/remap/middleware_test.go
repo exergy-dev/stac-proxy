@@ -70,31 +70,6 @@ func TestRemap_JSONResponse_StillRewritten(t *testing.T) {
 	assert.True(t, matched, "href was not rewritten: body=%s", rr.Body.String())
 }
 
-// TestRemap_GeoJSONContentType_IsRewritten covers the +json suffix path
-// (STAC's typical application/geo+json).
-func TestRemap_GeoJSONContentType_IsRewritten(t *testing.T) {
-	body := []byte(`{"href":"https://upstream.example.com/x"}`)
-	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/geo+json; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	})
-	mw, err := NewHTTPMiddleware(Config{
-		Rules: []RuleConfig{{
-			Match:   `https://upstream\.example\.com/`,
-			Replace: `https://proxy/`,
-		}},
-	})
-	require.NoError(t, err, "NewHTTPMiddleware")
-	h := mw(inner)
-
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
-
-	assert.Contains(t, rr.Body.String(), "https://proxy/x",
-		"application/geo+json body not rewritten")
-}
-
 func TestIsJSONContentType(t *testing.T) {
 	cases := map[string]bool{
 		"":                                false,

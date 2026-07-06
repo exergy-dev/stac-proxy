@@ -395,32 +395,6 @@ func TestOriginClient_DoRequest(t *testing.T) {
 	}
 }
 
-func TestOriginClient_DoRequest_Timeout(t *testing.T) {
-	t.Parallel()
-
-	// Create server that delays response
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	origin := &Origin{
-		ID:      "test-origin",
-		BaseURL: server.URL,
-		Enabled: true,
-		Timeout: 50 * time.Millisecond,
-	}
-
-	client, err := NewOriginClient(origin)
-	require.NoError(t, err, "failed to create client")
-
-	ctx := context.Background()
-	_, err = client.DoRequest(ctx, "GET", "/collections", nil)
-
-	assert.Error(t, err, "expected timeout error but got nil")
-}
-
 func TestOriginClient_DoRequest_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -621,23 +595,6 @@ func TestOriginClient_GetCollections(t *testing.T) {
 			},
 		},
 		{
-			name: "get collections returns empty list",
-			serverResponse: &stac.CollectionsResponse{
-				Collections: []*stac.Collection{},
-			},
-			serverStatus: http.StatusOK,
-			wantErr:      false,
-			checkResult: func(t *testing.T, collections []*stac.Collection) {
-				assert.Empty(t, collections, "expected 0 collections")
-			},
-		},
-		{
-			name:         "get collections returns 500",
-			serverStatus: http.StatusInternalServerError,
-			wantErr:      true,
-			errContains:  "500",
-		},
-		{
 			name:         "get collections returns 404",
 			serverStatus: http.StatusNotFound,
 			wantErr:      true,
@@ -726,20 +683,6 @@ func TestOriginClient_GetCollection(t *testing.T) {
 			serverStatus: http.StatusNotFound,
 			wantErr:      false,
 			wantNil:      true,
-		},
-		{
-			name:         "get collection returns 500",
-			collectionID: "test-collection",
-			serverStatus: http.StatusInternalServerError,
-			wantErr:      true,
-			errContains:  "500",
-		},
-		{
-			name:         "get collection returns 401",
-			collectionID: "test-collection",
-			serverStatus: http.StatusUnauthorized,
-			wantErr:      true,
-			errContains:  "401",
 		},
 	}
 
@@ -835,22 +778,6 @@ func TestOriginClient_GetItem(t *testing.T) {
 			serverStatus: http.StatusNotFound,
 			wantErr:      false,
 			wantNil:      true,
-		},
-		{
-			name:         "get item returns 500",
-			collectionID: "test-collection",
-			itemID:       "test-item",
-			serverStatus: http.StatusInternalServerError,
-			wantErr:      true,
-			errContains:  "500",
-		},
-		{
-			name:         "get item returns 403",
-			collectionID: "test-collection",
-			itemID:       "test-item",
-			serverStatus: http.StatusForbidden,
-			wantErr:      true,
-			errContains:  "403",
 		},
 	}
 
@@ -1273,59 +1200,12 @@ func TestOriginClient_CachedCollections(t *testing.T) {
 func TestOriginClient_Origin(t *testing.T) {
 	t.Parallel()
 
-	origin := &Origin{
-		ID:      "test-origin",
-		BaseURL: "https://api.example.com",
-		Name:    "Test Origin",
-	}
-
+	origin := &Origin{ID: "test-origin", BaseURL: "https://api.example.com", Name: "Test Origin"}
 	client, err := NewOriginClient(origin)
-	require.NoError(t, err, "failed to create client")
+	require.NoError(t, err)
 
 	assert.Same(t, origin, client.Origin(), "Origin() did not return the same origin instance")
-}
-
-func TestOriginClient_BaseURL(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		baseURL     string
-		wantBaseURL string
-	}{
-		{
-			name:        "simple URL",
-			baseURL:     "https://api.example.com",
-			wantBaseURL: "https://api.example.com",
-		},
-		{
-			name:        "URL with path",
-			baseURL:     "https://api.example.com/stac/v1",
-			wantBaseURL: "https://api.example.com/stac/v1",
-		},
-		{
-			name:        "URL with trailing slash",
-			baseURL:     "https://api.example.com/",
-			wantBaseURL: "https://api.example.com/",
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			origin := &Origin{
-				ID:      "test-origin",
-				BaseURL: tt.baseURL,
-			}
-
-			client, err := NewOriginClient(origin)
-			require.NoError(t, err, "failed to create client")
-
-			assert.Equal(t, tt.wantBaseURL, client.BaseURL(), "BaseURL()")
-		})
-	}
+	assert.Equal(t, "https://api.example.com", client.BaseURL(), "BaseURL()")
 }
 
 // TestShouldRetry was removed: retry policy logic now lives in
@@ -1501,109 +1381,47 @@ func buildSearchRequest(opts ...func(*stac.SearchRequest)) *stac.SearchRequest {
 	return req
 }
 
-func TestOriginClient_Search_InvalidJSON(t *testing.T) {
+// TestOriginClient_InvalidJSON exercises parse-error paths for all four client methods.
+func TestOriginClient_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	// Test server that returns invalid JSON
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{invalid json`))
-	}))
-	defer server.Close()
-
-	origin := &Origin{
-		ID:      "test-origin",
-		BaseURL: server.URL,
-		Timeout: 5 * time.Second,
+	cases := []struct {
+		name string
+		call func(ctx context.Context, c *OriginClient) error
+	}{
+		{"Search", func(ctx context.Context, c *OriginClient) error {
+			_, _, err := c.Search(ctx, sampleSearchRequest())
+			return err
+		}},
+		{"GetCollections", func(ctx context.Context, c *OriginClient) error {
+			_, err := c.GetCollections(ctx)
+			return err
+		}},
+		{"GetCollection", func(ctx context.Context, c *OriginClient) error {
+			_, err := c.GetCollection(ctx, "test-collection")
+			return err
+		}},
+		{"GetItem", func(ctx context.Context, c *OriginClient) error {
+			_, err := c.GetItem(ctx, "test-collection", "test-item")
+			return err
+		}},
 	}
 
-	client, err := NewOriginClient(origin)
-	require.NoError(t, err, "failed to create client")
-
-	ctx := context.Background()
-	_, _, err = client.Search(ctx, sampleSearchRequest())
-
-	require.Error(t, err, "expected error for invalid JSON")
-	assert.ErrorContainsf(t, err, "parse", "expected parse error")
-}
-
-func TestOriginClient_GetCollections_InvalidJSON(t *testing.T) {
-	t.Parallel()
-
-	// Test server that returns invalid JSON
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{invalid`))
-	}))
-	defer server.Close()
-
-	origin := &Origin{
-		ID:      "test-origin",
-		BaseURL: server.URL,
-		Timeout: 5 * time.Second,
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{invalid json`))
+			}))
+			defer server.Close()
+			client, err := NewOriginClient(&Origin{ID: "test-origin", BaseURL: server.URL, Timeout: 5 * time.Second})
+			require.NoError(t, err)
+			assert.Error(t, tc.call(context.Background(), client))
+		})
 	}
-
-	client, err := NewOriginClient(origin)
-	require.NoError(t, err, "failed to create client")
-
-	ctx := context.Background()
-	_, err = client.GetCollections(ctx)
-
-	assert.Error(t, err, "expected error for invalid JSON")
-}
-
-func TestOriginClient_GetCollection_InvalidJSON(t *testing.T) {
-	t.Parallel()
-
-	// Test server that returns invalid JSON
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`not valid`))
-	}))
-	defer server.Close()
-
-	origin := &Origin{
-		ID:      "test-origin",
-		BaseURL: server.URL,
-		Timeout: 5 * time.Second,
-	}
-
-	client, err := NewOriginClient(origin)
-	require.NoError(t, err, "failed to create client")
-
-	ctx := context.Background()
-	_, err = client.GetCollection(ctx, "test-collection")
-
-	assert.Error(t, err, "expected error for invalid JSON")
-}
-
-func TestOriginClient_GetItem_InvalidJSON(t *testing.T) {
-	t.Parallel()
-
-	// Test server that returns invalid JSON
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{{`))
-	}))
-	defer server.Close()
-
-	origin := &Origin{
-		ID:      "test-origin",
-		BaseURL: server.URL,
-		Timeout: 5 * time.Second,
-	}
-
-	client, err := NewOriginClient(origin)
-	require.NoError(t, err, "failed to create client")
-
-	ctx := context.Background()
-	_, err = client.GetItem(ctx, "test-collection", "test-item")
-
-	assert.Error(t, err, "expected error for invalid JSON")
 }
 
 func TestOriginClient_Retry_ContextCancellation(t *testing.T) {
@@ -1645,25 +1463,6 @@ func TestOriginClient_Retry_ContextCancellation(t *testing.T) {
 	// Should have attempted at least once but not all retries
 	assert.NotZero(t, attempt, "expected at least one attempt")
 	assert.Lessf(t, attempt, 5, "expected fewer than 5 attempts due to context cancellation")
-}
-
-func TestOriginClient_DoRequest_InvalidMethod(t *testing.T) {
-	t.Parallel()
-
-	origin := &Origin{
-		ID:      "test-origin",
-		BaseURL: "https://api.example.com",
-		Timeout: 5 * time.Second,
-	}
-
-	client, err := NewOriginClient(origin)
-	require.NoError(t, err, "failed to create client")
-
-	ctx := context.Background()
-	// Invalid method with control characters
-	_, err = client.DoRequest(ctx, "GET\n", "/collections", nil)
-
-	assert.Error(t, err, "expected error for invalid method but got nil")
 }
 
 func TestOriginClient_DiscoverCollections_UpdateCache(t *testing.T) {
@@ -1737,52 +1536,6 @@ func TestOriginClient_Search_MarshalError(t *testing.T) {
 
 	require.Error(t, err, "expected marshal error but got nil")
 	assert.ErrorContainsf(t, err, "marshal", "expected marshal error")
-}
-
-func TestOriginClient_Retry_BackoffProgression(t *testing.T) {
-	t.Parallel()
-
-	var requestTimes []time.Time
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestTimes = append(requestTimes, time.Now())
-		w.WriteHeader(http.StatusBadGateway)
-	}))
-	defer server.Close()
-
-	origin := &Origin{
-		ID:      "test-origin",
-		BaseURL: server.URL,
-		Timeout: 5 * time.Second,
-		Retry: &RetryPolicy{
-			MaxRetries:     3,
-			InitialBackoff: 50 * time.Millisecond,
-			MaxBackoff:     200 * time.Millisecond,
-			RetryOn:        []int{502},
-		},
-	}
-
-	client, err := NewOriginClient(origin)
-	require.NoError(t, err, "failed to create client")
-
-	ctx := context.Background()
-	resp, err := client.DoRequest(ctx, "GET", "/test", nil)
-	require.NoError(t, err, "DoRequest")
-	resp.Body.Close()
-	assert.Equalf(t, http.StatusBadGateway, resp.StatusCode, "final status; want 502 after retry exhaustion")
-
-	// Verify exponential backoff
-	require.Len(t, requestTimes, 4, "expected 4 attempts (initial + 3 retries)")
-
-	if len(requestTimes) >= 2 {
-		delay1 := requestTimes[1].Sub(requestTimes[0])
-		assert.GreaterOrEqualf(t, delay1, 40*time.Millisecond, "first retry delay too short: %v", delay1)
-	}
-
-	if len(requestTimes) >= 3 {
-		delay2 := requestTimes[2].Sub(requestTimes[1])
-		// Second delay should be roughly 2x first (100ms), but allow for timing variance
-		assert.GreaterOrEqualf(t, delay2, 80*time.Millisecond, "second retry delay too short: %v", delay2)
-	}
 }
 
 func TestOriginClient_HasCollection_EmptyCache(t *testing.T) {

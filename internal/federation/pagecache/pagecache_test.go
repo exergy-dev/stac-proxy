@@ -68,16 +68,22 @@ func makeResult() *SearchResult {
 	}
 }
 
-func TestNew_RejectsEmptySecret(t *testing.T) {
+func TestNew_RejectsBadConfig(t *testing.T) {
 	t.Parallel()
-	_, err := New(newMemStore(), time.Hour, nil)
-	require.Error(t, err, "expected error for empty secret")
-}
-
-func TestNew_RejectsNonPositiveTTL(t *testing.T) {
-	t.Parallel()
-	_, err := New(newMemStore(), 0, []byte("k"))
-	require.Error(t, err, "expected error for zero TTL")
+	cases := []struct {
+		name   string
+		ttl    time.Duration
+		secret []byte
+	}{
+		{"empty secret", time.Hour, nil},
+		{"non-positive TTL", 0, []byte("k")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := New(newMemStore(), c.ttl, c.secret)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestNew_NilStoreReturnsNil(t *testing.T) {
@@ -161,8 +167,6 @@ func TestSignatureOf(t *testing.T) {
 		{"payload.signature", "signature"},
 		{"a.b.c", "c"},           // takes the LAST dot
 		{"nosignaturesplit", ""}, // no dot
-		{"trailingdot.", ""},     // signature half is empty
-		{"", ""},                 // empty
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {

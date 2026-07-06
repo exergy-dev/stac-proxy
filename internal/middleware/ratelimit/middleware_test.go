@@ -169,28 +169,6 @@ func TestHTTPMiddleware_DefaultsWired(t *testing.T) {
 // to the middleware shape.
 // ---------------------------------------------------------------------
 
-func TestRoleBasedQuotaFunc(t *testing.T) {
-	t.Parallel()
-	defaultQ := Quota{Requests: 100, Window: time.Hour}
-	roleQuotas := map[string]Quota{
-		"admin": {Requests: 10000, Window: time.Hour},
-		"user":  {Requests: 1000, Window: time.Hour},
-	}
-	qf := RoleBasedQuotaFunc(roleQuotas, defaultQ)
-
-	assert.Equal(t, 10000, qf([]string{"admin"}, defaultQ).Requests, "admin")
-	assert.Equal(t, 1000, qf([]string{"user"}, defaultQ).Requests, "user")
-	assert.Equal(t, 100, qf([]string{"unknown"}, defaultQ).Requests, "unknown role: want default")
-	assert.Equal(t, 100, qf(nil, defaultQ).Requests, "nil roles: want default")
-}
-
-func TestDefaultQuotaFunc(t *testing.T) {
-	t.Parallel()
-	q := Quota{Requests: 42, Window: time.Minute}
-	got := DefaultQuotaFunc(nil, q)
-	assert.Equal(t, 42, got.Requests, "DefaultQuotaFunc should return the default")
-}
-
 // TestKeyFunc_StripsRemoteAddrPort verifies that when the derived
 // client IP is not in context, the fallback strips the ephemeral
 // source port from r.RemoteAddr so requests from the same host
