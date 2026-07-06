@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/go-retryablehttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -345,3 +346,55 @@ func TestBufferAndSetGetBody(t *testing.T) {
 	}
 }
 
+
+func TestJitteredBackoff_RangeAndGrowth(t *testing.T) {
+	t.Parallel()
+	minWait, maxWait := 100*time.Millisecond, 10*time.Second
+
+	for attempt := 0; attempt < 4; attempt++ {
+		base := retryablehttp.DefaultBackoff(minWait, maxWait, attempt, nil)
+		for i := 0; i < 200; i++ {
+			d := jitteredBackoff(minWait, maxWait, attempt, nil)
+			if d < base/2 || d > base {
+				t.Fatalf("attempt %d: jittered delay %v outside [%v, %v]", attempt, d, base/2, base)
+			}
+		}
+	}
+
+	// Jitter actually varies (full-jitter, not a constant offset).
+	seen := map[time.Duration]bool{}
+	for i := 0; i < 50; i++ {
+		seen[jitteredBackoff(minWait, maxWait, 3, nil)] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("expected varying jittered delays, got a constant %v", seen)
+	}
+}
+
+func TestJitteredBackoff_RetryAfterHonoredExactly(t *testing.T) {
+	t.Parallel()
+	minWait, maxWait := 100*time.Millisecond, 30*time.Second
+
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		resp := &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Retry-After": []string{"7"}},
+		}
+		for i := 0; i < 20; i++ {
+			d := jitteredBackoff(minWait, maxWait, 0, resp)
+			if d != 7*time.Second {
+				t.Fatalf("status %d: Retry-After must be honored exactly, got %v", status, d)
+			}
+		}
+	}
+
+	// 429/503 WITHOUT Retry-After still jitters.
+	resp := &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{}}
+	base := retryablehttp.DefaultBackoff(minWait, maxWait, 1, resp)
+	for i := 0; i < 50; i++ {
+		d := jitteredBackoff(minWait, maxWait, 1, resp)
+		if d < base/2 || d > base {
+			t.Fatalf("503 without Retry-After: delay %v outside [%v, %v]", d, base/2, base)
+		}
+	}
+}

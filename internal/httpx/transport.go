@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
@@ -68,6 +69,7 @@ func NewRetryTransport(inner http.RoundTripper, cfg RetryConfig) http.RoundTripp
 	rc.RetryWaitMax = cfg.MaxBackoff
 	rc.Logger = nil
 	rc.CheckRetry = checkRetryFunc(cfg.RetryOn)
+	rc.Backoff = jitteredBackoff
 	rc.ErrorHandler = retryablehttp.PassthroughErrorHandler
 
 	retryRT := &retryablehttp.RoundTripper{Client: rc}
@@ -96,6 +98,30 @@ func (t *methodGatedTransport) RoundTrip(req *http.Request) (*http.Response, err
 	default:
 		return t.retry.RoundTrip(req)
 	}
+}
+
+// jitteredBackoff wraps retryablehttp.DefaultBackoff with full jitter
+// on the upper half: sleep in [d/2, d] instead of exactly d. Without
+// it, every replica (and every in-flight request) that failed against
+// a recovering origin retries on the same exponential schedule and
+// arrives in synchronized waves — the thundering herd the backoff is
+// supposed to prevent.
+//
+// When the upstream answered 429/503 with a Retry-After header,
+// DefaultBackoff returns that server-requested delay and it is honored
+// exactly — jittering an explicit contract would violate it.
+func jitteredBackoff(minWait, maxWait time.Duration, attemptNum int, resp *http.Response) time.Duration {
+	d := retryablehttp.DefaultBackoff(minWait, maxWait, attemptNum, resp)
+	if d <= 0 {
+		return d
+	}
+	if resp != nil && (resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode == http.StatusServiceUnavailable) &&
+		resp.Header.Get("Retry-After") != "" {
+		return d
+	}
+	half := d / 2
+	return half + rand.N(half+1)
 }
 
 // checkRetryFunc returns a retryablehttp.CheckRetry that retries on
