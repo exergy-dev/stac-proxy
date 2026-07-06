@@ -293,21 +293,37 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 }
 
 // NewFromConfig constructs a chi-style cache middleware from a raw
-// YAML config block (the shape carried by config.MiddlewareConfig.Config).
-// Only the in-memory store is supported.
+// YAML config block (the shape carried by config.MiddlewareConfig.Config),
+// building an in-memory store. For an externally constructed store
+// (e.g. Redis), use NewFromConfigWithStore.
 func NewFromConfig(cfg map[string]interface{}) (func(http.Handler) http.Handler, error) {
-	storeType := "memory"
-	if v, ok := cfg["store"].(string); ok {
-		storeType = v
+	return NewFromConfigWithStore(cfg, nil)
+}
+
+// NewFromConfigWithStore is NewFromConfig with store construction
+// hoisted to the caller. When store is nil the `store` key selects the
+// backend: "memory" (default) is built here from `max_size`; "redis"
+// requires a non-nil store because the shared client lives in main —
+// selecting it without one is a wiring bug surfaced as an error.
+func NewFromConfigWithStore(cfg map[string]interface{}, store Store) (func(http.Handler) http.Handler, error) {
+	if store == nil {
+		storeType := "memory"
+		if v, ok := cfg["store"].(string); ok && v != "" {
+			storeType = v
+		}
+		switch storeType {
+		case "memory":
+			maxSize := 10000
+			if v, ok := cfg["max_size"].(int); ok {
+				maxSize = v
+			}
+			store = NewMemoryStore(MemoryConfig{MaxSize: maxSize})
+		case "redis":
+			return nil, fmt.Errorf("cache store %q selected but no store was provided (missing top-level redis config?)", storeType)
+		default:
+			return nil, fmt.Errorf("unknown cache store type %q; valid stores: memory, redis", storeType)
+		}
 	}
-	if storeType != "memory" {
-		return nil, fmt.Errorf("unknown cache store type %q; only \"memory\" is supported", storeType)
-	}
-	maxSize := 10000
-	if v, ok := cfg["max_size"].(int); ok {
-		maxSize = v
-	}
-	store := NewMemoryStore(MemoryConfig{MaxSize: maxSize})
 	return NewHTTPMiddleware(Config{Store: store}), nil
 }
 

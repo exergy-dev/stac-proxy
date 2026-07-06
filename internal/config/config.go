@@ -21,6 +21,45 @@ type Config struct {
 	Federation *FederationConfig  `yaml:"federation"`
 	Health     HealthConfig       `yaml:"health"`
 	Authz      *AuthzConfig       `yaml:"authz"`
+
+	// Redis is the shared connection used by every component that
+	// selects `store: redis` (response cache, federation page cache,
+	// rate limiter). Required when any component does; ignored (with a
+	// warning) when none do. One client is built at boot and shared.
+	Redis *RedisConfig `yaml:"redis"`
+}
+
+// RedisConfig contains the shared Redis connection settings.
+type RedisConfig struct {
+	Addr     string `yaml:"addr"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
+
+	// KeyPrefix namespaces every key this proxy writes (default
+	// "stacproxy:"). Deployments sharing one Redis between multiple
+	// proxy fleets should give each fleet its own prefix.
+	KeyPrefix string `yaml:"key_prefix"`
+
+	PoolSize     int           `yaml:"pool_size"`
+	MinIdleConns int           `yaml:"min_idle_conns"`
+	DialTimeout  time.Duration `yaml:"dial_timeout"`
+	// Read/WriteTimeout default to 250ms — deliberately tight. Every
+	// consumer fails open, so these bound the latency a degraded Redis
+	// can add to a request.
+	ReadTimeout  time.Duration `yaml:"read_timeout"`
+	WriteTimeout time.Duration `yaml:"write_timeout"`
+
+	TLS RedisTLSConfig `yaml:"tls"`
+}
+
+// RedisTLSConfig contains TLS settings for the Redis connection.
+type RedisTLSConfig struct {
+	Enabled            bool   `yaml:"enabled"`
+	CAFile             string `yaml:"ca_file"`
+	CertFile           string `yaml:"cert_file"`
+	KeyFile            string `yaml:"key_file"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
 }
 
 // ServerConfig contains HTTP server settings.
@@ -352,15 +391,6 @@ type OPAConfig struct {
 	Timeout        time.Duration `yaml:"timeout"`
 	CacheDecisions bool          `yaml:"cache_decisions"`
 	CacheTTL       time.Duration `yaml:"cache_ttl"`
-}
-
-// CacheConfig contains caching settings.
-type CacheConfig struct {
-	Store         string        `yaml:"store"` // memory
-	CollectionTTL time.Duration `yaml:"collection_ttl"`
-	ItemTTL       time.Duration `yaml:"item_ttl"`
-	SearchTTL     time.Duration `yaml:"search_ttl"`
-	MaxSize       int           `yaml:"max_size"` // For memory cache
 }
 
 // RateLimitConfig contains rate limiting settings.

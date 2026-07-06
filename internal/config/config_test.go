@@ -797,7 +797,7 @@ func TestValidationWarnings(t *testing.T) {
 		require.NoError(t, NewValidator().Validate(cfg))
 	})
 
-	t.Run("cache store redis rejected at validation", func(t *testing.T) {
+	t.Run("cache store redis without redis block rejected", func(t *testing.T) {
 		t.Parallel()
 		cfg := &Config{
 			Mode:   "single",
@@ -811,8 +811,74 @@ func TestValidationWarnings(t *testing.T) {
 		}
 		cfg.setDefaults()
 		err := NewValidator().Validate(cfg)
-		require.Error(t, err, "expected error for cache.store=redis")
-		assert.True(t, containsValidationError(err, "store \"redis\" is not supported"), "unexpected error: %v", err)
+		require.Error(t, err, "expected error for cache.store=redis without redis block")
+		assert.True(t, containsValidationError(err, "requires the top-level redis block"), "unexpected error: %v", err)
+	})
+
+	t.Run("cache store redis with redis block accepted", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "cache", Config: map[string]interface{}{
+					"store": "redis",
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+			Redis:    &RedisConfig{Addr: "redis:6379"},
+		}
+		cfg.setDefaults()
+		require.NoError(t, NewValidator().Validate(cfg))
+	})
+
+	t.Run("cache store bogus rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "cache", Config: map[string]interface{}{
+					"store": "memcached",
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		require.Error(t, err, "expected error for cache.store=memcached")
+		assert.True(t, containsValidationError(err, "is not supported"), "unexpected error: %v", err)
+	})
+
+	t.Run("redis block requires addr", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:     "single",
+			Server:   ServerConfig{Port: 8080},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+			Redis:    &RedisConfig{},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		require.Error(t, err, "expected error for redis block without addr")
+		assert.True(t, containsValidationError(err, "redis.addr is required"), "unexpected error: %v", err)
+	})
+
+	t.Run("redis tls cert without key rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:     "single",
+			Server:   ServerConfig{Port: 8080},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+			Redis: &RedisConfig{
+				Addr: "redis:6379",
+				TLS:  RedisTLSConfig{Enabled: true, CertFile: "/etc/tls/cert.pem"},
+			},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		require.Error(t, err, "expected error for cert_file without key_file")
+		assert.True(t, containsValidationError(err, "must be set together"), "unexpected error: %v", err)
 	})
 
 	t.Run("cache store memory accepted", func(t *testing.T) {

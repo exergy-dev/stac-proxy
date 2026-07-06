@@ -27,6 +27,9 @@ import (
 	"github.com/yourorg/stac-proxy/internal/observability"
 	"github.com/yourorg/stac-proxy/internal/server"
 	"github.com/yourorg/stac-proxy/internal/stac"
+	redisstore "github.com/yourorg/stac-proxy/internal/store/redis"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // Build-time identity. Overridden via -ldflags "-X main.version=...
@@ -122,6 +125,21 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// constructed on first request to /health.
 	healthChecker := observability.NewHealthChecker()
 
+	// Shared Redis client — built only when some component selects
+	// `store: redis`. main owns the client lifecycle; the per-store
+	// wrappers' Close() are no-ops.
+	redisClient, err := buildRedisClient(ctx, cfg, logger)
+	if err != nil {
+		return fmt.Errorf("failed to build redis client: %w", err)
+	}
+	if redisClient != nil {
+		defer func() {
+			if err := redisClient.Close(); err != nil {
+				logger.Warn("redis client close error", "error", err)
+			}
+		}()
+	}
+
 	// Build the federation handler. Single-origin mode is modeled as a
 	// federation-of-1 — the single-origin code path collapses into
 	// reverseProxyOnce against the synthetic "primary" origin.
@@ -168,7 +186,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	} else if azMW != nil {
 		httpMiddlewares = append(httpMiddlewares, azMW)
 	}
-	if cMW, err := buildCacheHTTPMiddleware(cfg); err != nil {
+	if cMW, err := buildCacheHTTPMiddleware(cfg, redisClient, logger); err != nil {
 		return fmt.Errorf("failed to build cache middleware: %w", err)
 	} else if cMW != nil {
 		httpMiddlewares = append(httpMiddlewares, cMW)
@@ -499,8 +517,11 @@ func getBoolConfig(m map[string]interface{}, key string) bool {
 
 // buildCacheHTTPMiddleware builds the chi-style cache middleware from
 // the `cache` block of the middleware config list. Returns (nil, nil)
-// when no block is configured.
-func buildCacheHTTPMiddleware(cfg *config.Config) (func(http.Handler) http.Handler, error) {
+// when no block is configured. When the block selects `store: redis`,
+// the store is built on the shared client (validation guarantees the
+// client exists; the double-check here turns a wiring regression into
+// a boot error instead of a nil deref).
+func buildCacheHTTPMiddleware(cfg *config.Config, rdb redis.UniversalClient, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
 	var rawCfg map[string]interface{}
 	for _, mw := range cfg.Middleware {
 		if mw.Name == "cache" {
@@ -511,7 +532,86 @@ func buildCacheHTTPMiddleware(cfg *config.Config) (func(http.Handler) http.Handl
 	if rawCfg == nil {
 		return nil, nil
 	}
-	return cache.NewFromConfig(rawCfg)
+	var store cache.Store
+	if s, _ := rawCfg["store"].(string); s == "redis" {
+		if rdb == nil {
+			return nil, fmt.Errorf("cache store is redis but no redis client was built")
+		}
+		store = redisstore.NewKV(rdb, redisKeyPrefix(cfg)+"rc:", logger)
+	}
+	return cache.NewFromConfigWithStore(rawCfg, store)
+}
+
+// redisKeyPrefix returns the operator key prefix (default "stacproxy:").
+func redisKeyPrefix(cfg *config.Config) string {
+	if cfg.Redis != nil && cfg.Redis.KeyPrefix != "" {
+		return cfg.Redis.KeyPrefix
+	}
+	return "stacproxy:"
+}
+
+// buildRedisClient constructs the shared Redis client when any
+// component selects `store: redis`. A present-but-unused redis block
+// is skipped (config validation already warns). Reachability is probed
+// once for the boot log — failure is a warning, not an error: every
+// consumer fails open, and a proxy booting during a Redis outage must
+// still serve.
+//
+// Deliberately NOT registered with the readiness checker: the health
+// library aggregates all checks into one up/down, so a Redis check
+// would have load balancers pull replicas during a Redis outage —
+// turning a soft degradation (cold cache, per-replica rate limiting)
+// into a hard one. Redis state is surfaced via throttled warn logs
+// from the stores instead.
+func buildRedisClient(ctx context.Context, cfg *config.Config, logger *slog.Logger) (redis.UniversalClient, error) {
+	if cfg.Redis == nil || !configSelectsRedis(cfg) {
+		return nil, nil
+	}
+	client, err := redisstore.New(redisstore.Config{
+		Addr:         cfg.Redis.Addr,
+		Username:     cfg.Redis.Username,
+		Password:     cfg.Redis.Password,
+		DB:           cfg.Redis.DB,
+		PoolSize:     cfg.Redis.PoolSize,
+		MinIdleConns: cfg.Redis.MinIdleConns,
+		DialTimeout:  cfg.Redis.DialTimeout,
+		ReadTimeout:  cfg.Redis.ReadTimeout,
+		WriteTimeout: cfg.Redis.WriteTimeout,
+		TLS: redisstore.TLSConfig{
+			Enabled:            cfg.Redis.TLS.Enabled,
+			CAFile:             cfg.Redis.TLS.CAFile,
+			CertFile:           cfg.Redis.TLS.CertFile,
+			KeyFile:            cfg.Redis.TLS.KeyFile,
+			InsecureSkipVerify: cfg.Redis.TLS.InsecureSkipVerify,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := client.Ping(pingCtx).Err(); err != nil {
+		logger.Warn("redis unreachable at boot; consumers will fail open until it recovers",
+			"addr", cfg.Redis.Addr, "error", err)
+	} else {
+		logger.Info("Redis connected", "addr", cfg.Redis.Addr)
+	}
+	return client, nil
+}
+
+// configSelectsRedis reports whether any component opted into the
+// shared Redis backend.
+func configSelectsRedis(cfg *config.Config) bool {
+	for _, mw := range cfg.Middleware {
+		if mw.Name != "cache" && mw.Name != "rate_limit" {
+			continue
+		}
+		if s, _ := mw.Config["store"].(string); s == "redis" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCorsHTTPMiddleware builds the chi-style CORS middleware from the

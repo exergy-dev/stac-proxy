@@ -52,7 +52,11 @@ func (v *Validator) Validate(cfg *Config) error {
 	}
 
 	// Validate middleware
-	v.validateMiddleware(cfg.Middleware)
+	v.validateMiddleware(cfg)
+
+	// Validate the shared Redis block (and its cross-references from
+	// components that select `store: redis`).
+	v.validateRedis(cfg)
 
 	// Return combined errors
 	if len(v.errors) > 0 {
@@ -363,13 +367,13 @@ func (v *Validator) validateOriginAuth(prefix string, auth *OriginAuthConfig) {
 	}
 }
 
-func (v *Validator) validateMiddleware(configs []MiddlewareConfig) {
+func (v *Validator) validateMiddleware(cfg *Config) {
 	validMiddleware := map[string]bool{
 		"logging": true, "auth": true, "authz": true, "cache": true,
 		"rate_limit": true, "url_remap": true, "cors": true,
 	}
 
-	for i, mw := range configs {
+	for i, mw := range cfg.Middleware {
 		if !validMiddleware[mw.Name] {
 			// Promoted from warning to error: a typo'd middleware name
 			// silently no-ops, which historically meant authz/ratelimit
@@ -382,9 +386,62 @@ func (v *Validator) validateMiddleware(configs []MiddlewareConfig) {
 		case "cors":
 			v.validateCorsMiddleware(i, mw.Config)
 		case "cache":
-			v.validateCacheMiddleware(i, mw.Config)
+			v.validateCacheMiddleware(i, mw.Config, cfg)
 		}
 	}
+}
+
+// storeSelection reads the `store` key of a middleware config block.
+// Returns "" when absent (meaning the component default, memory).
+func storeSelection(cfg map[string]interface{}) string {
+	if cfg == nil {
+		return ""
+	}
+	s, _ := cfg["store"].(string)
+	return s
+}
+
+// validateRedis checks the shared `redis:` block and warns when it is
+// configured but no component selects `store: redis` (dead config is a
+// likely operator mistake — they meant to flip a component over).
+// Component-side "store: redis without a redis block" errors live with
+// each component's validator so messages carry the middleware index.
+func (v *Validator) validateRedis(cfg *Config) {
+	if cfg.Redis == nil {
+		return
+	}
+	r := cfg.Redis
+	if strings.TrimSpace(r.Addr) == "" {
+		v.addError("redis.addr is required when the redis block is present")
+	}
+	if r.DB < 0 {
+		v.addError("redis.db must be >= 0")
+	}
+	if r.PoolSize < 0 || r.MinIdleConns < 0 {
+		v.addError("redis pool_size and min_idle_conns must be >= 0")
+	}
+	if r.DialTimeout < 0 || r.ReadTimeout < 0 || r.WriteTimeout < 0 {
+		v.addError("redis timeouts must be >= 0")
+	}
+	if r.TLS.Enabled && (r.TLS.CertFile == "") != (r.TLS.KeyFile == "") {
+		v.addError("redis.tls cert_file and key_file must be set together")
+	}
+	if !anyRedisConsumer(cfg) {
+		v.addWarning("redis block is configured but no component selects store: redis — the connection will not be used")
+	}
+}
+
+// anyRedisConsumer reports whether any component's store selector is
+// set to "redis".
+func anyRedisConsumer(cfg *Config) bool {
+	for _, mw := range cfg.Middleware {
+		if mw.Name == "cache" || mw.Name == "rate_limit" {
+			if storeSelection(mw.Config) == "redis" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // validateCorsMiddleware enforces CORS-specific rules that would
@@ -431,19 +488,20 @@ func (v *Validator) validateCorsMiddleware(idx int, cfg map[string]interface{}) 
 }
 
 // validateCacheMiddleware rejects unsupported cache stores at config
-// load time. Without this, a config with `store: redis` parses fine and
-// the proxy boots, then errors on the first request — a much worse
-// failure mode than a clean startup error.
-func (v *Validator) validateCacheMiddleware(idx int, cfg map[string]interface{}) {
-	if cfg == nil {
-		return
-	}
-	store, ok := cfg["store"].(string)
-	if !ok || store == "" {
-		return
-	}
-	if store != "memory" {
-		v.addError("middleware[%d] cache: store %q is not supported; only \"memory\" is available", idx, store)
+// load time. Without this, a config with a bogus `store:` parses fine
+// and the proxy boots, then errors on the first request — a much worse
+// failure mode than a clean startup error. `store: redis` additionally
+// requires the top-level `redis:` block.
+func (v *Validator) validateCacheMiddleware(idx int, mwCfg map[string]interface{}, cfg *Config) {
+	store := storeSelection(mwCfg)
+	switch store {
+	case "", "memory":
+	case "redis":
+		if cfg.Redis == nil {
+			v.addError("middleware[%d] cache: store \"redis\" requires the top-level redis block", idx)
+		}
+	default:
+		v.addError("middleware[%d] cache: store %q is not supported; valid stores: memory, redis", idx, store)
 	}
 }
 

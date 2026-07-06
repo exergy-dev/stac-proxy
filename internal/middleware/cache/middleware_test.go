@@ -358,3 +358,20 @@ func TestNewFromConfig_AcceptsMemory(t *testing.T) {
 	require.NoError(t, err, "NewFromConfig(memory)")
 	require.NotNil(t, mw, "middleware is nil")
 }
+
+func TestNewFromConfigWithStore_RedisRequiresInjectedStore(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewFromConfigWithStore(map[string]interface{}{"store": "redis"}, nil)
+	require.Error(t, err, "store: redis with nil store must be a wiring error")
+	assert.ErrorContains(t, err, "no store was provided")
+}
+
+func TestNewFromConfigWithStore_UsesInjectedStore(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore(MemoryConfig{MaxSize: 10})
+	mw, err := NewFromConfigWithStore(map[string]interface{}{"store": "redis"}, store)
+	require.NoError(t, err, "injected store must satisfy store: redis")
+	require.NotNil(t, mw)
+}
