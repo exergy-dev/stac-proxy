@@ -13,7 +13,7 @@ make race            # with race detector
 make lint            # golangci-lint (install: https://golangci-lint.run)
 ```
 
-Go 1.22+ required; CI runs 1.22.x and 1.23.x.
+Go 1.25+ required; CI runs 1.25.x and stable.
 
 ## Pull requests
 

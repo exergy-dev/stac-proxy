@@ -696,7 +696,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 			client = oc.HTTPClient()
 		}
 		baseURL := o.BaseURL
-		health.AddCheck(observability.NewOriginCheckWithClient(o.ID, baseURL, client))
+		health.AddCheck(observability.NewOriginCheck(o.ID, baseURL, client))
 	}
 
 	return handler, nil
@@ -897,7 +897,7 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 	if oc := handler.OriginClient(origin.ID); oc != nil {
 		hc = oc.HTTPClient()
 	}
-	health.AddCheck(observability.NewOriginCheckWithClient("upstream", cfg.Upstream.URL, hc))
+	health.AddCheck(observability.NewOriginCheck("upstream", cfg.Upstream.URL, hc))
 
 	return handler, nil
 }

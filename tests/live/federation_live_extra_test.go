@@ -74,7 +74,7 @@ func newPaginatedFederation(t *testing.T, opts ...originOpt) *federation.Handler
 		opt(earthSearch, pc)
 	}
 
-	pc_cache, err := pagecache.New(
+	pcCache, err := pagecache.New(
 		cache.NewMemoryStore(cache.MemoryConfig{MaxSize: 256}),
 		time.Hour,
 		[]byte(cursorSecret),
@@ -87,7 +87,7 @@ func newPaginatedFederation(t *testing.T, opts ...originOpt) *federation.Handler
 		AggregateTimeout: 60 * time.Second,
 		CursorSecret:     []byte(cursorSecret),
 		ProxyBaseURL:     proxyPublicBase,
-		PageCache:        pc_cache,
+		PageCache:        pcCache,
 	})
 	require.NoError(t, err, "NewHandler (paginated)")
 	return h
