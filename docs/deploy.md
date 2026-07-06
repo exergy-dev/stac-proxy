@@ -43,13 +43,16 @@ curl -fsS http://localhost:8080/health          # via HAProxy
 docker compose -f deployments/docker/docker-compose.multi.yaml down
 ```
 
-**Why stickiness.** Every replica keeps its hot state in-memory and
-per-replica: the response cache, the rate-limit token buckets, and the
-federation page cache. There is no Redis. HAProxy uses `balance source`
-with consistent hashing to pin each client to one replica, so that
-per-replica state behaves correctly — a client's cache hits, rate-limit
-counters, and page-cache-backed `rel: prev`/`rel: first` navigation all
-stay on the instance that holds them.
+**Why stickiness.** With the default `store: memory`, every replica
+keeps its hot state in-memory and per-replica: the response cache, the
+rate-limit token buckets, and the federation page cache. HAProxy uses
+`balance source` with consistent hashing to pin each client to one
+replica, so that per-replica state behaves correctly — a client's cache
+hits, rate-limit counters, and page-cache-backed `rel: prev`/`rel:
+first` navigation all stay on the instance that holds them.
+
+> Prefer stateless replicas? Configure the shared Redis backend (next
+> section) and the stickiness requirement disappears entirely.
 
 **Quota semantics.** Because a client sticks to one replica, its
 per-client rate-limit quota is preserved exactly. The aggregate cluster
@@ -90,6 +93,70 @@ Publishing a replica's port bypasses the edge and re-opens
 trusts XFF unconditionally). HAProxy owning that header — deleting the
 inbound value and setting it from the real source — is the whole point
 of the trust boundary.
+
+## Stateless replicas (shared Redis)
+
+Since 1.0 the three stateful components can move their state into a
+shared Redis, making replicas interchangeable behind **any** load
+balancer — no sticky routing, no consistent hashing, no per-replica
+quota semantics:
+
+```yaml
+redis:
+  addr: "${REDIS_ADDR:-redis:6379}"
+  password: "${REDIS_PASSWORD}"          # env expansion; never inline
+  key_prefix: "stacproxy:"
+  # tls: { enabled: true, ca_file: /etc/ssl/redis-ca.pem }
+
+middleware:
+  - name: cache
+    config:
+      store: redis                        # shared response cache
+  - name: rate_limit
+    config:
+      store: redis                        # GLOBAL token buckets
+      failure_mode: open                  # open (default) | closed
+      requests: 1000
+      window: 1h
+
+federation:
+  page_cache:
+    store: redis                          # rel:prev/first on any replica
+```
+
+What changes operationally:
+
+- **Rate limiting becomes global and exact.** One token bucket per
+  client across the whole fleet (atomic Lua check-and-decrement), not
+  `quota × N`. A quota/role change starts a fresh bucket.
+- **`rel: prev` / `rel: first` work on any replica** — the page cache
+  is shared, so a remapped or round-robined client no longer degrades
+  to a re-fan-out.
+- **Response cache is coherent** across replicas and survives replica
+  restarts (not Redis restarts — entries are TTL-bounded cache, not
+  data).
+- **HAProxy stickiness becomes optional.** `balance roundrobin` is fine;
+  keeping `balance source` is harmless.
+- **`cursor_secret` is unchanged**: still required, still identical on
+  every replica (cursors were always stateless).
+
+**Failure semantics (Redis down).** Every consumer fails open: the
+response and page caches degrade to pass-through (upstream does the
+work, latency bounded by the 250 ms default read/write timeouts and
+single-attempt commands), and the rate limiter allows traffic —
+switch `failure_mode: closed` to refuse (503 + Retry-After) instead if
+quota enforcement is contractual. Redis being down never fails a
+request and deliberately does NOT fail readiness: pulling every
+replica over a cache-tier outage would convert soft degradation into a
+hard outage. Watch for the throttled `redis ... failed` warnings in
+logs.
+
+**Sizing.** Entries are small (rendered pages up to ~page-size items;
+response-cache envelopes; 2-field bucket hashes). Set a `maxmemory`
+policy of `allkeys-lru` on the Redis side; the proxy prefixes all keys
+(`stacproxy:rc:`, `:pg:`, `:rl:`) so a shared Redis is safe, but a
+dedicated instance keeps blast radii separate. Keys are SHA256/HMAC
+digests — no principal IDs or client IPs appear in the keyspace.
 
 ## Configuration
 
@@ -139,6 +206,28 @@ Validate before deploy:
 ```bash
 ./stac-proxy --validate --config /etc/stac-proxy/config.yaml
 ```
+
+## Rotating `cursor_secret`
+
+There is no built-in rotation API; rotation is a rolling redeploy:
+
+1. Generate the new secret (`openssl rand -hex 32`).
+2. Update the secret in your secrets manager and restart/redeploy all
+   replicas together (same value everywhere — a mixed fleet rejects
+   each other's cursors).
+3. In-flight cursors signed with the old secret become invalid
+   immediately: clients holding a `next`/`prev` link get a cursor
+   validation error and must restart their search from page 0. Cursors
+   expire on their own (default TTL 1 h), so rotating during a low
+   -traffic window bounds the impact to searches actually in flight.
+
+Rotate on a schedule appropriate to your exposure (quarterly is a
+reasonable default) and immediately on suspected compromise. The
+url_remap/asset-signing secret supports overlap-free rotation already
+(old signatures verify against the previous secrets in the list); the
+cursor secret intentionally does not carry old-secret verification —
+cursors are short-lived, pagination is restartable, and one live HMAC
+key is easier to reason about than a ring.
 
 ## TLS termination
 

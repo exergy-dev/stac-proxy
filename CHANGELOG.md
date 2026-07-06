@@ -4,6 +4,79 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-07-06
+
+Production release. Two architectural changes close the gaps that kept
+0.x deployments pinned to sticky single-replica topologies: a shared
+Redis backend makes replicas stateless behind any load balancer, and
+origin failures are now circuit-broken and explicitly signaled instead
+of silently absorbed. The YAML config schema is now covered by the
+semver compatibility promise: breaking config changes require a major
+version from here on.
+
+### Added — stateless replicas (opt-in `store: redis`)
+
+- **Top-level `redis:` block** — one shared client (go-redis v9,
+  `UniversalClient`) for every consumer; addr/auth/DB/TLS/pool/timeout
+  settings; tight 250 ms default op timeouts and no command retries so
+  a degraded Redis costs milliseconds, not stacked latency. go-redis's
+  internal logging is routed into slog.
+- **Response cache `store: redis`** — coherent across replicas; every
+  operation fails open (Redis error = cache miss, never a request
+  failure) with warnings throttled to one line per 30 s.
+- **Federation `page_cache.store: redis`** — `rel: prev`/`rel: first`
+  navigation works on any replica; principal binding and
+  cursor-lifetime TTLs unchanged.
+- **Rate limit `store: redis`** — token buckets become global and
+  exact across the fleet via an atomic Lua check-and-decrement (no
+  read-modify-write race; verified by a 50-goroutine burst test
+  admitting exactly `burst`). Bucket keys are SHA256 digests (no
+  principal IDs/IPs in the keyspace) and fold in a quota fingerprint
+  so role changes start fresh buckets. New `failure_mode: open|closed`
+  knob (default open; closed refuses with 503 + Retry-After while the
+  backend is down).
+- Validation: `store: redis` anywhere requires the `redis:` block
+  (boot error); a `redis:` block nothing consumes warns. Redis is
+  deliberately NOT part of readiness — a cache-tier outage must not
+  make load balancers drain every replica.
+- Deployment: optional `redis` service in
+  `docker-compose.multi.yaml`; with Redis mode, HAProxy stickiness is
+  optional (docs/deploy.md "Stateless replicas" section).
+
+### Added — origin resilience & partial-result signaling
+
+- **Per-origin circuit breaker, on by default** (opt-out via
+  `circuit_breaker.enabled: false`): 5 consecutive failures open the
+  circuit for a jittered 10 s window doubling to 2 m; one half-open
+  probe re-admits traffic. Wired outermost in the origin transport
+  stack so one user request is one breaker sample and open circuits
+  skip OAuth2 token fetches. `context.Canceled` is neutral; timeouts
+  and 5xx count; 4xx/429 don't. Transitions are logged (the breaker's
+  slog lines are its dashboard).
+- **502 `UpstreamFederationFailure`** when every routed origin fails —
+  previously an empty 200 FeatureCollection indistinguishable from
+  zero matches. Applies to both search paths and `GET /collections`.
+- **Partial results are explicit**: `X-Federation-Partial: true` +
+  `X-Federation-Failed-Origins` headers, per-origin status in the
+  response context under `stac_proxy:origins` (with `circuit_open` vs
+  `fetch_failed` causes), a throttled warn log, and the response cache
+  refuses to store partial pages.
+- **Paginated sessions survive transient origin failures**: an errored
+  origin is retried on subsequent pages (up to 3 failed pages, then
+  retired) instead of being silently dropped for the rest of the
+  session; its stashed items still merge. Success resets the budget.
+- **Retry backoff is jittered** (full jitter on the upper half);
+  upstream `Retry-After` on 429/503 is still honored exactly.
+
+### Added — hygiene
+
+- `govulncheck` job in CI.
+- Boot errors for guessable cursor secrets (< 16 chars) and for
+  `rewrite_assets: sign` without a signing secret (previously a silent
+  unsigned fallback).
+- Dedicated unit tests for all five pagination adapters; cursor-secret
+  rotation procedure documented in docs/deploy.md.
+
 ## [0.2.0] — 2026-07-06
 
 Post-v0.1.0 hardening: a severity-tiered review pass (CRITICAL → NIT,

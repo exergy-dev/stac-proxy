@@ -1,9 +1,18 @@
 # Multi-replica stac-proxy behind a sticky HAProxy edge.
 #
-# Each replica keeps its hot state (response cache, rate-limit token buckets,
-# federation page cache) in-memory and per-replica. HAProxy hashes each client
-# to one replica (consistent hashing) so that per-replica state behaves
-# correctly WITHOUT an external store like Redis. See docs/deploy.md.
+# Two supported topologies (see docs/deploy.md):
+#
+#   1. In-memory state (this file's default): each replica keeps its hot
+#      state (response cache, rate-limit token buckets, federation page
+#      cache) in-memory and per-replica. HAProxy hashes each client to one
+#      replica (consistent hashing) so per-replica state behaves correctly
+#      WITHOUT an external store.
+#
+#   2. Shared Redis (stateless replicas): uncomment the `redis` service
+#      below and set `store: redis` on cache/rate_limit/page_cache in the
+#      mounted config (plus a top-level `redis: {addr: redis:6379}` block).
+#      Quotas become global, caches coherent, and HAProxy stickiness
+#      becomes optional (`balance roundrobin` works).
 #
 # Boot (scale to 3 replicas; the HAProxy server-template caps the ceiling at 6):
 #   CURSOR_SECRET=$(openssl rand -hex 32) \
@@ -19,6 +28,20 @@
 # federation mode (validation fails without it).
 
 services:
+  # Shared state backend for the stateless-replica topology. Uncomment
+  # together with `store: redis` in the proxy config. The proxy fails
+  # open on Redis outages, so replicas stay healthy if this dies — you
+  # just lose cache sharing and global quotas until it returns.
+  # redis:
+  #   image: redis:7-alpine
+  #   restart: unless-stopped
+  #   command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 3
+
   haproxy:
     image: haproxy:2.9-alpine
     restart: unless-stopped

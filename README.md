@@ -86,7 +86,9 @@ make ci             # what GitHub Actions runs
 
 ## Roadmap
 
-- v0.2: STAC Transaction Extension (POST/PUT/PATCH/DELETE).
+- 1.x: STAC Transaction Extension (POST/PUT/PATCH/DELETE), mTLS to
+  federated origins, AWS STS/session credentials for SigV4 origins,
+  pre-hashed API keys in YAML, config hot-reload.
 - See [CHANGELOG.md](CHANGELOG.md) for what shipped when.
 
 ## Contributing & security

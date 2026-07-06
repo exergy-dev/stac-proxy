@@ -47,6 +47,14 @@ federation:
   # Inject it from your secrets manager rather than committing it here.
   cursor_secret: "${CURSOR_SECRET:-CHANGE-ME-dev-only-not-for-production}"
 
+  # Page cache for rel:prev / rel:first backwards navigation. Enabled by
+  # default whenever cursor_secret is set. With `store: redis` (requires
+  # a top-level `redis:` block) cached pages are shared across replicas,
+  # so backwards navigation works behind a non-sticky load balancer.
+  # page_cache:
+  #   store: redis
+  #   ttl: 1h
+
   origins:
     # Public STAC server - no auth required
     - id: aws-earth-search
@@ -63,6 +71,19 @@ federation:
       # post-filtering responses. Requires this origin to support the
       # STAC Filter Extension. Defaults to false.
       # supports_filter_extension: true
+
+      # Per-origin circuit breaker — ON by default with these values.
+      # After `failure_threshold` consecutive failures (transport
+      # errors, timeouts, 5xx) the origin fast-fails for a jittered
+      # open period that doubles per failed probe up to
+      # max_open_duration. Failed origins are reported in the
+      # X-Federation-* headers and the response's stac_proxy:origins
+      # context block. Set `enabled: false` to opt out.
+      # circuit_breaker:
+      #   enabled: true
+      #   failure_threshold: 5
+      #   open_duration: 10s
+      #   max_open_duration: 2m
 
     # Another public STAC server
     - id: planetary-computer

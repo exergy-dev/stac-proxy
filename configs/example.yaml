@@ -52,6 +52,21 @@ upstream:
 #   cql2_injection:
 #     enabled: true
 
+# Shared Redis connection — required whenever any component below sets
+# `store: redis`. One client is built at boot and shared by the response
+# cache, the rate limiter, and (in federation mode) the page cache.
+# With store: redis, replicas are stateless: quotas are enforced
+# globally, caches are coherent, and sticky load balancing is optional.
+# Every consumer fails open — a Redis outage degrades to cache misses
+# and (by default) unlimited requests; it never fails requests.
+# redis:
+#   addr: "${REDIS_ADDR:-redis:6379}"
+#   password: "${REDIS_PASSWORD}"
+#   key_prefix: "stacproxy:"
+#   # tls:
+#   #   enabled: true
+#   #   ca_file: /etc/ssl/redis-ca.pem
+
 # Middleware configuration (order matters for priority)
 middleware:
   - name: logging
@@ -60,11 +75,25 @@ middleware:
 
   - name: cache
     config:
+      # memory (default, per-replica) or redis (shared; requires the
+      # top-level `redis:` block).
       store: memory
       max_size: 10000
       collection_ttl: 5m
       item_ttl: 1m
       search_ttl: 30s
+
+  # Rate limiting. With `store: redis` the token buckets live in the
+  # shared Redis, so quotas hold globally across replicas.
+  # `failure_mode: closed` refuses requests (503) while Redis is
+  # unreachable — default is open (allow through).
+  # - name: rate_limit
+  #   config:
+  #     store: redis
+  #     failure_mode: open
+  #     requests: 1000
+  #     window: 1h
+  #     burst: 50
 
   # CORS — preflight short-circuits and per-response headers for browser
   # callers. `allowed_origins: ["*"]` is mutually exclusive with

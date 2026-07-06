@@ -50,6 +50,22 @@ local development.
 - `4xx` → `warn`
 - `2xx`/`3xx` → `info`
 
+### Operational events worth alerting on (added in 1.0)
+
+| `msg` | Level | Meaning |
+|---|---|---|
+| `circuit breaker opened; fast-failing origin` | warn | origin hit its consecutive-failure threshold; carries `origin`, `open_for` |
+| `circuit breaker half-open; probing origin` / `circuit breaker closed; origin recovered` | info | breaker lifecycle |
+| `federation returned partial results` | warn | a 200 was served with ≥1 origin missing (`failed_origins`); throttled to 1/30s |
+| `federated search failed on every routed origin` | warn | the request became a 502 `UpstreamFederationFailure` |
+| `redis get failed; treating as cache miss` (and similar `redis …` warns) | warn | Redis degraded; consumers are failing open; throttled to 1/30s with a `suppressed` count |
+| `rate limiter backend unavailable` | warn | Redis limiter erroring; `failure_mode` decides allow vs 503 |
+
+Partial responses also carry `X-Federation-Partial: true` and
+`X-Federation-Failed-Origins` headers plus a per-origin
+`stac_proxy:origins` block in the body's `context`, so client-side
+detection doesn't require log access.
+
 ## Request ID flow
 
 1. The chi router's `RequestID` middleware mints (or honours) an

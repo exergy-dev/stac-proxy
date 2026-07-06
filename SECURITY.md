@@ -2,14 +2,13 @@
 
 ## Supported versions
 
-Only the latest minor release is supported with security fixes during the
-pre-1.0 series. Once 1.0 ships we'll maintain the current minor + the one
-previous.
+We maintain the current minor + the one previous.
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.1.x   | ✅                 |
-| < 0.1   | ❌                 |
+| 1.0.x   | ✅                 |
+| 0.2.x   | ✅                 |
+| < 0.2   | ❌                 |
 
 ## Reporting a vulnerability
 
@@ -37,6 +36,22 @@ disclosure follows the fix being available in a tagged release.
   via JWKS).
 - API keys compared in constant time.
 - Graceful shutdown drains in-flight requests up to 30s on SIGTERM.
+
+## Added in v1.0
+
+- Federation cursor secrets shorter than 16 characters are rejected at
+  boot (`openssl rand -hex 32` remains the recommendation).
+- `rewrite_assets: sign` without a signing secret is a boot error
+  instead of a silent unsigned fallback.
+- **Redis (optional, `store: redis`)**: inject `redis.password` via
+  `${REDIS_PASSWORD}` env expansion, enable `redis.tls` when the link
+  crosses a trust boundary, and treat the Redis instance as inside the
+  proxy's trust zone — it holds cache entries and rate-limit state (no
+  tokens or credentials; all keys are SHA256/HMAC digests, so no
+  principal IDs or client IPs appear in the keyspace). All consumers
+  fail open on Redis errors; set `rate_limit.failure_mode: closed` if
+  quota enforcement must survive a Redis outage at the cost of
+  availability.
 
 ## Known gaps
 
