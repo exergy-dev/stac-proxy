@@ -98,7 +98,7 @@ runs over config **values only** — never comments or mapping keys.
 
 | Top-level key | Required | Purpose |
 |---|---|---|
-| `server` | yes | host/port/TLS/timeouts/`max_body_bytes` |
+| `server` | yes | host/port/TLS/timeouts/`max_body_bytes`/`max_header_bytes` (inbound request-header cap, default 64 KiB) |
 | `logging` | no | level (debug/info/warn/error), format (json/console) |
 | `health` | no | `/health` settings + upstream probe interval |
 | `mode` | yes | `single` or `federation` |

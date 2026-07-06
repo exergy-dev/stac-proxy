@@ -40,9 +40,22 @@ disclosure follows the fix being available in a tagged release.
 
 ## Known gaps
 
-- API keys are stored plaintext in YAML config. Use restrictive file
-  permissions (`chmod 600`) and prefer env-var injection. Hashed-at-rest
-  storage is on the v0.2 roadmap.
+- API keys are HMAC-SHA256-digested at load; plaintext keys are never
+  retained in memory (see the storage-format comment in
+  `internal/middleware/auth/apikey.go`). The residual exposure is the
+  plaintext key sitting in the YAML *file*. Mitigate it today by
+  injecting keys via `${VAR}` env expansion — so the secret lives in the
+  environment / secrets manager rather than committed YAML — plus
+  restrictive file permissions (`chmod 600`). A pre-hashed
+  `sha256:<hex>`-in-YAML key option (never handling the plaintext at all)
+  is backlog for v0.3, not yet shipped.
+- The proxy trusts `X-Forwarded-For` unconditionally (chi's
+  `middleware.RealIP`), so it MUST be deployed behind a trusted L7 edge
+  that strips any inbound `X-Forwarded-For` and re-sets it from the real
+  client connection — the shipped `deployments/docker/haproxy.cfg` does
+  exactly this. Exposing the proxy directly to untrusted clients lets
+  them spoof the source IP used for rate-limiting keys and request logs.
+  See `docs/deploy.md` for the reverse-proxy deployment topology.
 - mTLS for federated upstream origins is not yet implemented.
 - AWS SigV4 IAM role chaining isn't implemented; only static
   AccessKey/SecretKey credentials work today.

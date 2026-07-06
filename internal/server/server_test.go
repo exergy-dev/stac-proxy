@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +32,56 @@ func TestServer_ReadHeaderTimeoutSet(t *testing.T) {
 	require.NoError(t, err, "New")
 	require.Greater(t, srv.httpServer.ReadHeaderTimeout, time.Duration(0),
 		"expected ReadHeaderTimeout > 0, got %v", srv.httpServer.ReadHeaderTimeout)
+}
+
+// TestServer_MaxHeaderBytes_Returns431 asserts that a request whose
+// headers exceed the configured MaxHeaderBytes is rejected with HTTP
+// 431 rather than being buffered up to Go's 1 MiB default.
+func TestServer_MaxHeaderBytes_Returns431(t *testing.T) {
+	t.Parallel()
+
+	srv, err := New(Config{
+		ServerConfig: &config.ServerConfig{
+			Host:           "127.0.0.1",
+			Port:           0,
+			MaxHeaderBytes: 4 * 1024,
+		},
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	})
+	require.NoError(t, err, "New")
+
+	go func() { _ = srv.Start() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+
+	// Wait for the listener to bind and report a concrete port.
+	var base string
+	require.Eventually(t, func() bool {
+		addr := srv.Addr()
+		if strings.HasSuffix(addr, ":0") {
+			return false
+		}
+		base = "http://" + addr
+		return true
+	}, 3*time.Second, 5*time.Millisecond, "server did not start listening")
+
+	req, err := http.NewRequest(http.MethodGet, base+"/", nil)
+	require.NoError(t, err, "NewRequest")
+	// A single oversized header comfortably past the 4 KiB cap (net/http
+	// also reserves slack for the request line, so overshoot generously).
+	req.Header.Set("X-Big", strings.Repeat("a", 64*1024))
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "Do")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusRequestHeaderFieldsTooLarge, resp.StatusCode,
+		"expected 431 for oversized request headers, got %d", resp.StatusCode)
 }
 
 // TestTLSConfig_NoExplicitCipherSuites_HasH2Protocols asserts that

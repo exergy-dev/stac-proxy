@@ -125,6 +125,19 @@ func TestSetDefaults(t *testing.T) {
 		assert.Equal(t, "info", cfg.Logging.Level)
 		assert.Equal(t, "json", cfg.Logging.Format)
 		assert.Equal(t, "/health", cfg.Health.Path)
+		assert.Equal(t, DefaultMaxHeaderBytes, cfg.Server.MaxHeaderBytes)
+		assert.Equal(t, 64*1024, cfg.Server.MaxHeaderBytes)
+	})
+
+	t.Run("explicit max_header_bytes honored", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+			Server:   ServerConfig{MaxHeaderBytes: 8 * 1024},
+		}
+		cfg.setDefaults()
+		assert.Equal(t, 8*1024, cfg.Server.MaxHeaderBytes,
+			"explicit max_header_bytes must not be overwritten by the default")
 	})
 
 	t.Run("federation defaults", func(t *testing.T) {

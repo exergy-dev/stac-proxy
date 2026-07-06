@@ -100,6 +100,13 @@ func (v *Validator) validateServer(cfg ServerConfig) {
 		v.addError("server.timeouts.idle cannot be negative")
 	}
 
+	// A negative header cap is meaningless: net/http treats
+	// MaxHeaderBytes <= 0 as its 1 MiB default, silently undoing the
+	// tighter limit the operator intended. Reject it at load.
+	if cfg.MaxHeaderBytes < 0 {
+		v.addError("server.max_header_bytes cannot be negative")
+	}
+
 	// Warn about very short timeouts
 	if cfg.Timeouts.Read > 0 && cfg.Timeouts.Read < 5*time.Second {
 		v.addWarning("server.timeouts.read is very short (%v)", cfg.Timeouts.Read)

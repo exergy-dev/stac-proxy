@@ -52,6 +52,7 @@ func New(cfg Config) (*Server, error) {
 		ReadHeaderTimeout: cfg.ServerConfig.Timeouts.ReadHeader,
 		WriteTimeout:      cfg.ServerConfig.Timeouts.Write,
 		IdleTimeout:       cfg.ServerConfig.Timeouts.Idle,
+		MaxHeaderBytes:    cfg.ServerConfig.MaxHeaderBytes,
 	}
 
 	// Set default timeouts if not configured. Normally these are
@@ -68,6 +69,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if httpServer.IdleTimeout == 0 {
 		httpServer.IdleTimeout = 120 * time.Second
+	}
+	if httpServer.MaxHeaderBytes == 0 {
+		httpServer.MaxHeaderBytes = config.DefaultMaxHeaderBytes
 	}
 
 	// Configure TLS if enabled

@@ -33,6 +33,11 @@ type ServerConfig struct {
 	// (1 MiB); negative disables the cap. Set higher when expecting
 	// large GeoJSON intersects polygons on /search.
 	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+	// MaxHeaderBytes caps the total size of inbound request headers. 0 →
+	// default (DefaultMaxHeaderBytes, 64 KiB) — generous for JWTs/API
+	// keys while capping the per-connection memory a client can force the
+	// server to buffer (Go's own default is 16× larger at 1 MiB).
+	MaxHeaderBytes int `yaml:"max_header_bytes"`
 	// PublicBaseURL is the externally reachable base URL of the proxy
 	// (e.g. https://stac.example.com). When set, the federation
 	// handler emits absolute `next` pagination links, rewrites
@@ -538,6 +543,12 @@ func expandEnvStrict(s string, lookup func(string) (string, bool)) (string, []st
 	return b.String(), missing
 }
 
+// DefaultMaxHeaderBytes is the inbound request-header size limit applied
+// when ServerConfig.MaxHeaderBytes is left at zero. 64 KiB is generous
+// for bearer JWTs and API keys while capping per-connection memory at
+// 16× less than Go's 1 MiB default.
+const DefaultMaxHeaderBytes = 64 * 1024
+
 // setDefaults sets default values for optional fields.
 func (c *Config) setDefaults() {
 	if c.Server.Host == "" {
@@ -557,6 +568,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Server.Timeouts.Idle == 0 {
 		c.Server.Timeouts.Idle = 120 * time.Second
+	}
+	if c.Server.MaxHeaderBytes == 0 {
+		c.Server.MaxHeaderBytes = DefaultMaxHeaderBytes
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
