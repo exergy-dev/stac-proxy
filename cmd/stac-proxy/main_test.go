@@ -236,7 +236,7 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	health := observability.NewHealthChecker()
 
-	handler, err := buildFederationHandler(context.Background(), cfg, logger, health)
+	handler, err := buildFederationHandler(context.Background(), cfg, logger, health, nil)
 	require.NoError(t, err, "buildFederationHandler")
 
 	assert.Equal(t, publicBaseURL, handler.ProxyBaseURL(), "ProxyBaseURL")
@@ -341,7 +341,7 @@ func TestBuildFederationHandler_SingleModeWiresPublicBaseURL(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	health := observability.NewHealthChecker()
-	handler, err := buildFederationHandler(context.Background(), cfg, logger, health)
+	handler, err := buildFederationHandler(context.Background(), cfg, logger, health, nil)
 	require.NoError(t, err, "buildFederationHandler")
 	assert.Equalf(t, publicBaseURL, handler.ProxyBaseURL(), "ProxyBaseURL (single-mode dropped server.public_base_url)")
 }

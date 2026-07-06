@@ -176,8 +176,15 @@ type PageCacheConfig struct {
 	// opts out even with a cursor secret in place.
 	Enabled *bool `yaml:"enabled"`
 
+	// Store selects the backend: "memory" (default) or "redis".
+	// "redis" requires the top-level redis block and makes rel:prev /
+	// rel:first navigation work across replicas without sticky
+	// routing — any replica can serve a page another replica cached.
+	Store string `yaml:"store"`
+
 	// MaxEntries caps the number of stored pages. LRU evicts when
-	// the cap is hit. Default 1024.
+	// the cap is hit. Default 1024. Memory store only — Redis
+	// capacity is governed by the server's own maxmemory policy.
 	MaxEntries int `yaml:"max_entries"`
 
 	// TTL is the per-entry TTL. Capped at the cursor's remaining

@@ -223,6 +223,13 @@ func (v *Validator) validateFederation(cfg FederationConfig) {
 		if cfg.PageCache.Enabled != nil && *cfg.PageCache.Enabled && cfg.CursorSecret == "" {
 			v.addError("federation.page_cache.enabled is true but federation.cursor_secret is empty; the cache has no cursors to key by")
 		}
+		switch cfg.PageCache.Store {
+		case "", "memory", "redis":
+			// "redis" additionally requires the top-level redis block —
+			// checked in validateRedis, which sees the whole Config.
+		default:
+			v.addError("federation.page_cache.store %q is not supported; valid stores: memory, redis", cfg.PageCache.Store)
+		}
 	}
 }
 
@@ -408,6 +415,14 @@ func storeSelection(cfg map[string]interface{}) string {
 // each component's validator so messages carry the middleware index.
 func (v *Validator) validateRedis(cfg *Config) {
 	if cfg.Redis == nil {
+		// The cache middleware's equivalent cross-check lives in
+		// validateCacheMiddleware (it has the middleware index for the
+		// message); the page cache's lives here because
+		// validateFederation only sees the federation subtree.
+		if cfg.Federation != nil && cfg.Federation.PageCache != nil &&
+			cfg.Federation.PageCache.Store == "redis" {
+			v.addError("federation.page_cache.store \"redis\" requires the top-level redis block")
+		}
 		return
 	}
 	r := cfg.Redis
@@ -440,6 +455,10 @@ func anyRedisConsumer(cfg *Config) bool {
 				return true
 			}
 		}
+	}
+	if cfg.Federation != nil && cfg.Federation.PageCache != nil &&
+		cfg.Federation.PageCache.Store == "redis" {
+		return true
 	}
 	return false
 }

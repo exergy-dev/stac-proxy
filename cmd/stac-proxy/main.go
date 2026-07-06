@@ -143,7 +143,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// Build the federation handler. Single-origin mode is modeled as a
 	// federation-of-1 — the single-origin code path collapses into
 	// reverseProxyOnce against the synthetic "primary" origin.
-	handler, err := buildFederationHandler(ctx, cfg, logger, healthChecker)
+	handler, err := buildFederationHandler(ctx, cfg, logger, healthChecker, redisClient)
 	if err != nil {
 		return fmt.Errorf("failed to build handler: %w", err)
 	}
@@ -611,7 +611,8 @@ func configSelectsRedis(cfg *config.Config) bool {
 			return true
 		}
 	}
-	return false
+	return cfg.Federation != nil && cfg.Federation.PageCache != nil &&
+		cfg.Federation.PageCache.Store == "redis"
 }
 
 // buildCorsHTTPMiddleware builds the chi-style CORS middleware from the
@@ -751,8 +752,10 @@ func intFromAny(v interface{}) (int, bool) {
 // single-origin mode (cfg.Mode != "federation") it synthesizes a
 // single-element Origins list from cfg.Upstream, so the same code
 // path handles both deployment shapes.
-func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker) (*federation.Handler, error) {
-	// Single-origin → federation-of-1 translation.
+func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slog.Logger, health *observability.HealthChecker, rdb redis.UniversalClient) (*federation.Handler, error) {
+	// Single-origin → federation-of-1 translation. The page cache (the
+	// only redis consumer below) is federation-only, so the client is
+	// not threaded through.
 	if !cfg.IsFederation() {
 		return buildSingleOriginAsFederation(ctx, cfg, logger, health)
 	}
@@ -825,7 +828,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		Logger:           logger,
 		AssetSigner:      buildAssetSigner(cfg),
 		CursorSecret:     []byte(cfg.Federation.CursorSecret),
-		PageCache:        buildPageCache(cfg.Federation, logger),
+		PageCache:        buildPageCache(cfg, rdb, logger),
 	})
 	if err != nil {
 		return nil, err
@@ -898,7 +901,11 @@ func originRetryPolicy(c *config.RetryConfig) *federation.RetryPolicy {
 // The default when `page_cache` is absent or `enabled` is unset is
 // ON, matching the user-stated preference: backwards navigation works
 // out of the box wherever federated pagination is already configured.
-func buildPageCache(fc *config.FederationConfig, logger *slog.Logger) *pagecache.Cache {
+//
+// With `store: redis` the pages live in the shared Redis, so rel:prev
+// / rel:first navigation works across replicas without sticky routing.
+func buildPageCache(cfg *config.Config, rdb redis.UniversalClient, logger *slog.Logger) *pagecache.Cache {
+	fc := cfg.Federation
 	if fc == nil || fc.CursorSecret == "" {
 		return nil
 	}
@@ -924,13 +931,29 @@ func buildPageCache(fc *config.FederationConfig, logger *slog.Logger) *pagecache
 		}
 	}
 
-	store := cache.NewMemoryStore(cache.MemoryConfig{MaxSize: maxEntries})
+	var store pagecache.Store
+	storeKind := "memory"
+	if fc.PageCache != nil && fc.PageCache.Store == "redis" {
+		if rdb == nil {
+			// Validation guarantees the redis block exists; a nil client
+			// here is a wiring regression. Degrade to memory rather than
+			// panic — the page cache is an optimization.
+			logger.Warn("federation page cache: store is redis but no redis client was built; falling back to memory")
+		} else {
+			store = redisstore.NewKV(rdb, redisKeyPrefix(cfg)+"pg:", logger)
+			storeKind = "redis"
+		}
+	}
+	if store == nil {
+		store = cache.NewMemoryStore(cache.MemoryConfig{MaxSize: maxEntries})
+	}
 	c, err := pagecache.New(store, ttl, []byte(fc.CursorSecret))
 	if err != nil {
 		logger.Warn("federation page cache disabled (construction failed)", "err", err)
 		return nil
 	}
 	logger.Info("Federation page cache enabled",
+		"store", storeKind,
 		"max_entries", maxEntries,
 		"ttl", ttl,
 	)

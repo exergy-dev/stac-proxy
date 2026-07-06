@@ -850,6 +850,56 @@ func TestValidationWarnings(t *testing.T) {
 		assert.True(t, containsValidationError(err, "is not supported"), "unexpected error: %v", err)
 	})
 
+	t.Run("page_cache store redis without redis block rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "federation",
+			Server: ServerConfig{Port: 8080},
+			Federation: &FederationConfig{
+				Origins:      []OriginConfig{{ID: "a", BaseURL: "https://stac.example.com", Enabled: true}},
+				CursorSecret: "s3cret",
+				PageCache:    &PageCacheConfig{Store: "redis"},
+			},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		require.Error(t, err, "expected error for page_cache.store=redis without redis block")
+		assert.True(t, containsValidationError(err, "requires the top-level redis block"), "unexpected error: %v", err)
+	})
+
+	t.Run("page_cache store redis with redis block accepted", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "federation",
+			Server: ServerConfig{Port: 8080},
+			Federation: &FederationConfig{
+				Origins:      []OriginConfig{{ID: "a", BaseURL: "https://stac.example.com", Enabled: true}},
+				CursorSecret: "s3cret",
+				PageCache:    &PageCacheConfig{Store: "redis"},
+			},
+			Redis: &RedisConfig{Addr: "redis:6379"},
+		}
+		cfg.setDefaults()
+		require.NoError(t, NewValidator().Validate(cfg))
+	})
+
+	t.Run("page_cache store bogus rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "federation",
+			Server: ServerConfig{Port: 8080},
+			Federation: &FederationConfig{
+				Origins:      []OriginConfig{{ID: "a", BaseURL: "https://stac.example.com", Enabled: true}},
+				CursorSecret: "s3cret",
+				PageCache:    &PageCacheConfig{Store: "sqlite"},
+			},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		require.Error(t, err, "expected error for page_cache.store=sqlite")
+		assert.True(t, containsValidationError(err, "page_cache.store \"sqlite\" is not supported"), "unexpected error: %v", err)
+	})
+
 	t.Run("redis block requires addr", func(t *testing.T) {
 		t.Parallel()
 		cfg := &Config{
