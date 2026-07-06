@@ -4,7 +4,7 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-07-06
 
 Post-v0.1.0 hardening: a severity-tiered review pass (CRITICAL → NIT,
 ~80 fixes across auth, authz, federation, cache, ratelimit, server,
@@ -15,6 +15,39 @@ server, Redis cache, CloudFront/S3-presigned signers, AWS SigV4 IAM
 role, `server.hot_reload`). The `Removed` block below is the breaking
 change set; everything else is fixes and wiring. See git log for the
 full list.
+
+### Deployment & operations
+
+- **Multi-replica deployment topology.** New
+  `deployments/docker/docker-compose.multi.yaml` + `haproxy.cfg` put a
+  sticky HAProxy edge in front of N proxy replicas. Since all hot state
+  (response cache, rate-limit buckets, federation page cache) is
+  in-memory per replica, HAProxy uses consistent source-IP hashing so
+  each client sticks to one replica — making per-replica state correct
+  without Redis. The edge owns `X-Forwarded-For` (drops inbound, sets
+  from the real source) because chi's `RealIP` trusts it
+  unconditionally; active `GET /health` checks pull dead replicas from
+  the hash ring. See the new "Multiple replicas" section in
+  `docs/deploy.md`.
+- **`server.max_header_bytes`** (default 64 KiB) caps inbound request
+  headers, 16× tighter than net/http's 1 MiB default; oversized
+  headers get HTTP 431.
+- **Startup warning when the server is unauthenticated.** Boot logs a
+  prominent WARN, naming the keys to lock it down, when no auth
+  provider or authz enforcer is configured to reject anonymous
+  requests. `allow_anonymous` defaults are unchanged.
+- **Lifecycle correctness.** Background work (JWKS refresh, origin
+  discovery, OPA policy compile) is bound to the server lifetime
+  context so it cancels cleanly on shutdown; the duplicate
+  "Server starting" boot log was removed.
+- **Federated pagination — per-origin item stashing.** Items fetched
+  but not emitted on the current page are stashed on the cursor and
+  carried to the next page instead of being dropped, and over-fetching
+  was reduced. Adds the `post_body` pagination adapter (below).
+- **Toolchain.** Build and CI moved to Go 1.25.x; linting migrated to
+  golangci-lint v2. Fuzz targets added (`FuzzExpandEnvStrict`,
+  `FuzzDecodeCursor`) with a `make fuzz` runner; the container builder
+  image was bumped to match the `go 1.25` directive.
 
 ### Federation — backwards navigation + page cache
 
@@ -59,9 +92,11 @@ full list.
   `next_url` (Earth Search and any upstream that emits a `rel: next`
   href the proxy can follow verbatim), `offset` (offset-based catalogs;
   configurable param name — `offset` or `page`), `link_header` (RFC 5988
-  `Link:` header; OGC API Features gateways), and `auto` (the default
-  — probes the first response and locks its choice into the cursor for
-  the rest of the session).
+  `Link:` header; OGC API Features gateways), `post_body` (upstreams —
+  e.g. Earth Search — that emit `rel: next` with `method: POST` and a
+  request `body` cursor field, replayed verbatim), and `auto` (the
+  default — probes the first response and locks its choice into the
+  cursor for the rest of the session).
 - **Fixes a real bug**: Earth Search uses `?next=<id>` for pagination.
   The proxy previously captured the upstream's full next-URL on
   `OriginCursor.NextURL` but never read it on follow-up calls, so
@@ -256,6 +291,17 @@ full list.
   operators must rebuild their key store on upgrade.
 - `${VAR}` env expansion errors on undefined variables (use
   `${VAR:-}` to opt-out).
+- **Env expansion is now `${VAR}`-only.** Expansion runs over parsed
+  YAML scalar *values* (never comments or keys) and recognizes only
+  `${VAR}` / `${VAR:-default}`; a bare `$NAME` is left literal and `$$`
+  escapes a `$`. This permanently protects `url_remap` regex
+  replacements (`$1`/`$2`) and stops references inside comments from
+  being demanded. Configs that relied on undocumented bare-`$VAR`
+  expansion must switch to `${VAR}`.
+- **`federation.cursor_secret` is now required in federation mode.**
+  Previously an empty secret only warned and silently disabled
+  paginated search; it is now a load-time error. Generate one with
+  `openssl rand -hex 32` and keep it identical across replicas.
 - YAML decoder rejects unknown keys (`KnownFields(true)`).
 - AWS SigV4 origin-auth requires `github.com/aws/aws-sdk-go-v2`
   (added as a direct dep).
@@ -306,6 +352,15 @@ full list.
   policy broaden or hide a client's filter and were never going to
   ship. With the `KnownFields(true)` decoder, leftover `combine:`
   keys will now error at startup.
+- **Breaking — `federation.conflict_strategy` removed.** The enum
+  (`first-wins`/`priority`/`merge`/`namespace`) and its merger paths
+  are gone; result merging is now always first-wins-by-origin-priority.
+  Leftover `conflict_strategy:` keys error at startup under
+  `KnownFields(true)`.
+- Bloom-filter dedup fallback in the federation paginator (internal;
+  no config surface). Realistic federated pages never approached its
+  threshold, so it was dead complexity; dedup is exact-match.
+- `config.MustValidate` (panicking, unused) helper.
 
 ## [0.1.0] — 2026-05-11
 

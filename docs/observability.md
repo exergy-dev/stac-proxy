@@ -64,6 +64,9 @@ local development.
 
 ## Tracing
 
-OpenTelemetry instrumentation isn't wired in v0.1. It's on the v0.2
-roadmap (W3C Trace-Context propagation to upstreams + spans around
-every middleware + federation fan-out).
+OpenTelemetry instrumentation isn't wired in. Observability is
+log-based by design (structured slog with request-id propagation);
+Prometheus exposition was intentionally removed. Tracing (W3C
+Trace-Context propagation to upstreams + spans around every middleware
+and federation fan-out) remains a possible future addition, not a
+committed roadmap item.

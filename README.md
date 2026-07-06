@@ -5,7 +5,7 @@ written in Go. It mediates between clients and one or many upstream STAC
 servers, adding authentication, authorization (OPA + geofencing +
 CQL2-injection), caching, rate limiting, URL signing, and federation.
 
-> **Status: v0.1.0 — first production-ready release.**
+> **Status: v0.2.0 — hardening release.**
 > Pre-1.0; API and config keys may evolve. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Why
