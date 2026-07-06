@@ -76,14 +76,28 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 	})
 
 	sources := make([]itemSource, 0, len(results))
+	statuses := make([]OriginStatus, 0, len(results))
 	var totalMatched int
 	for _, result := range results {
 		if result.Error != nil {
-			continue // Skip failed origins
+			// Failed origins contribute no items, but their absence is
+			// surfaced in the per-origin status block rather than
+			// silently narrowing the result set.
+			statuses = append(statuses, OriginStatus{
+				ID:    result.OriginID,
+				Error: classifyOriginError(result.Error),
+			})
+			continue
+		}
+		status := OriginStatus{
+			ID:       result.OriginID,
+			Returned: len(result.Items),
 		}
 		if result.Context != nil {
 			totalMatched += result.Context.Matched
+			status.Matched = result.Context.Matched
 		}
+		statuses = append(statuses, status)
 		sources = append(sources, itemSource{
 			OriginID:  result.OriginID,
 			OriginURL: result.OriginURL,
@@ -102,6 +116,7 @@ func (m *ResultMerger) MergeSearchResults(results []*OriginSearchResult,
 	sc := &stac.SearchContext{
 		Returned: len(items),
 		Matched:  totalMatched,
+		Origins:  statuses,
 	}
 	if req.Limit > 0 {
 		sc.Limit = req.Limit

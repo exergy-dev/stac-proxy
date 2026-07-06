@@ -267,6 +267,15 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			if _, ok := cacheable[status]; !ok {
 				return
 			}
+			// Never cache a partial federation response: replaying a
+			// page that silently misses an origin's items for the
+			// whole TTL would extend a transient outage's blast
+			// radius. The header is also not in the cacheable
+			// whitelist, so a stored partial would replay UNMARKED —
+			// worse than not caching it.
+			if cap.HeadersOut().Get("X-Federation-Partial") == "true" {
+				return
+			}
 			// Negative-cache lifetime applies to every 4xx in the
 			// allowlist; success entries take the Strategy TTL.
 			var ttl time.Duration

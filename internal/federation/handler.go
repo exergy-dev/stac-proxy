@@ -14,11 +14,13 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
+	"github.com/yourorg/stac-proxy/internal/logx"
 	"github.com/yourorg/stac-proxy/internal/httpx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
@@ -45,6 +47,12 @@ type Handler struct {
 	// for "sign", the rewrite falls back to passthrough (we never
 	// silently emit unsigned URLs while pretending they are gated).
 	assetSigner AssetSigner
+
+	logger *slog.Logger
+	// partialWarn throttles the partial-result warning: during an
+	// origin outage every response is partial, and logs-only
+	// observability means a per-response Warn would bury the signal.
+	partialWarn *logx.LogThrottle
 }
 
 // AssetSigner is the minimal contract rewriteAssetHref needs from a
@@ -106,6 +114,7 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 		maxPageSize:      cfg.MaxPageSize,
 		conformanceCaps:  cfg.ConformanceCaps,
 		assetSigner:      cfg.AssetSigner,
+		partialWarn:      logx.NewLogThrottle(30 * time.Second),
 	}
 
 	if handler.maxConcurrent <= 0 {
@@ -129,6 +138,7 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	handler.logger = logger
 
 	// Initialize origin clients
 	for _, origin := range cfg.Origins {
@@ -326,6 +336,21 @@ func (h *Handler) handleSearch(ctx context.Context, req *request) (*response, er
 	// Fallback: single-page fan-out when no cursor secret is set.
 	results := h.fanOutSearch(ctx, origins, searchReq)
 
+	// All routed origins down → 502, not an empty 200 that reads as
+	// "no matches".
+	var failed []string
+	for _, r := range results {
+		if r.Error != nil {
+			failed = append(failed, r.OriginID)
+		}
+	}
+	sort.Strings(failed)
+	if len(results) > 0 && len(failed) == len(results) {
+		h.logger.Warn("federated search failed on every routed origin",
+			"origins", strings.Join(failed, ","))
+		return federationFailureResponse(failed)
+	}
+
 	// Merge results
 	fc, err := h.merger.MergeSearchResults(results, searchReq)
 	if err != nil {
@@ -333,7 +358,7 @@ func (h *Handler) handleSearch(ctx context.Context, req *request) (*response, er
 	}
 
 	// Build response
-	return h.buildSearchResponse(fc, req)
+	return h.buildSearchResponse(fc, req, failed)
 }
 
 // fanOutSearch executes search requests to multiple origins in parallel.
@@ -533,6 +558,22 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 
 	wg.Wait()
 
+	// All origins down → 502; a subset down → 200 with the partial
+	// headers, so a caller can tell a shrunken catalog from the real
+	// one.
+	var failed []string
+	for _, r := range results {
+		if r.Error != nil {
+			failed = append(failed, r.OriginID)
+		}
+	}
+	sort.Strings(failed)
+	if len(results) > 0 && len(failed) == len(results) {
+		h.logger.Warn("GET /collections failed on every origin",
+			"origins", strings.Join(failed, ","))
+		return federationFailureResponse(failed)
+	}
+
 	// Merge collections
 	collections := h.merger.MergeCollections(results)
 
@@ -546,13 +587,15 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 		return nil, err
 	}
 
-	return &response{
+	out := &response{
 		StatusCode: http.StatusOK,
 		Headers: http.Header{
 			"Content-Type": []string{"application/json"},
 		},
 		Body: body,
-	}, nil
+	}
+	h.markPartial(out, failed)
+	return out, nil
 }
 
 // handleGetCollection handles GET /collections/{collectionId}. Iterates
@@ -1038,12 +1081,30 @@ func (h *Handler) buildPaginatedSearchResponse(result *SearchResult,
 	}
 
 	sc := &stac.SearchContext{Returned: len(items)}
+	var failed []string
 	if result.Context != nil {
 		sc.Limit = result.Context.Limit
 		sc.Matched = result.Context.Matched
+		// Surface the paginator's per-origin status block — computed
+		// since the first cursor implementation but previously dropped
+		// here, which made origin failures invisible to clients.
+		if len(result.Context.Origins) > 0 {
+			sc.Origins = result.Context.Origins
+			failed = failedFromStatuses(result.Context.Origins)
+		}
 	}
 	if sc.Limit == 0 && searchReq.Limit > 0 {
 		sc.Limit = searchReq.Limit
+	}
+
+	// Every routed origin failed and nothing was served (no stash
+	// carry-over): 502, not an empty 200. Mid-session pages that
+	// still emit stashed items stay 200-partial.
+	if len(items) == 0 && result.Context != nil &&
+		len(result.Context.Origins) > 0 && len(failed) == len(result.Context.Origins) {
+		h.logger.Warn("paginated federated search failed on every routed origin",
+			"origins", strings.Join(failed, ","))
+		return federationFailureResponse(failed)
 	}
 
 	fc := &stac.FeatureCollection{
@@ -1073,13 +1134,15 @@ func (h *Handler) buildPaginatedSearchResponse(result *SearchResult,
 		return nil, err
 	}
 
-	return &response{
+	resp := &response{
 		StatusCode: http.StatusOK,
 		Headers: http.Header{
 			"Content-Type": []string{"application/geo+json"},
 		},
 		Body: body,
-	}, nil
+	}
+	h.markPartial(resp, failed)
+	return resp, nil
 }
 
 // cursorSearchLink builds a Link with the given rel carrying the
@@ -1132,20 +1195,22 @@ func (h *Handler) cursorSearchLink(orig *http.Request, rel, cursor string) *stac
 
 // buildSearchResponse builds the HTTP response for search results.
 func (h *Handler) buildSearchResponse(fc *stac.FeatureCollection,
-	req *request) (*response, error) {
+	req *request, failedOrigins []string) (*response, error) {
 
 	body, err := json.Marshal(fc)
 	if err != nil {
 		return nil, err
 	}
 
-	return &response{
+	resp := &response{
 		StatusCode: http.StatusOK,
 		Headers: http.Header{
 			"Content-Type": []string{"application/geo+json"},
 		},
 		Body: body,
-	}, nil
+	}
+	h.markPartial(resp, failedOrigins)
+	return resp, nil
 }
 
 // OriginCount returns the number of configured origins.

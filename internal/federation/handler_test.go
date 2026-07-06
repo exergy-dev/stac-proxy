@@ -930,7 +930,7 @@ func TestBuildSearchResponse(t *testing.T) {
 		Request: httptest.NewRequest(http.MethodPost, "/search", nil),
 	}
 
-	resp, err := handler.buildSearchResponse(fc, req)
+	resp, err := handler.buildSearchResponse(fc, req, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "StatusCode")

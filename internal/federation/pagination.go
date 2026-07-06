@@ -349,6 +349,17 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 	// Fetch pages in parallel
 	results := s.fetchFromOrigins(ctx, req, cursor, toFetch, limit)
 
+	// Classify this page's fetch errors for the status block below —
+	// "circuit_open" (fast-fail, origin cooling down) reads very
+	// differently from "fetch_failed" (live failure) in a client
+	// retry loop or an operator's log query.
+	errKinds := make(map[string]string, len(results))
+	for _, r := range results {
+		if r.Error != nil {
+			errKinds[r.OriginID] = classifyOriginError(r.Error)
+		}
+	}
+
 	// Merge and deduplicate results
 	mergedItems := s.mergeResults(results, cursor, limit)
 
@@ -406,10 +417,19 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 			Exhausted: origin.Exhausted,
 		}
 		if origin.Error {
-			status.Error = "fetch failed"
+			if kind, ok := errKinds[id]; ok {
+				status.Error = kind
+			} else {
+				// Errored on a previous page; the concrete cause is
+				// no longer in hand.
+				status.Error = "fetch_failed"
+			}
 		}
 		result.Context.Origins = append(result.Context.Origins, status)
 	}
+	sort.Slice(result.Context.Origins, func(i, j int) bool {
+		return result.Context.Origins[i].ID < result.Context.Origins[j].ID
+	})
 
 	// Store the rendered page in the cache. The key is the cursor
 	// that PRODUCED this page (cursorStr) — when a client later

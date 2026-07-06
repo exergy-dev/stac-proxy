@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/yourorg/stac-proxy/internal/logx"
 )
 
 // KV is a Redis-backed byte KV store implementing the method set of
@@ -19,7 +21,7 @@ type KV struct {
 	rdb     redis.UniversalClient
 	prefix  string
 	logger  *slog.Logger
-	logGate *LogThrottle
+	logGate *logx.LogThrottle
 }
 
 // NewKV returns a KV writing keys under prefix (e.g. "stacproxy:rc:").
@@ -29,7 +31,7 @@ func NewKV(rdb redis.UniversalClient, prefix string, logger *slog.Logger) *KV {
 		rdb:     rdb,
 		prefix:  prefix,
 		logger:  logger,
-		logGate: NewLogThrottle(30 * time.Second),
+		logGate: logx.NewLogThrottle(30 * time.Second),
 	}
 }
 

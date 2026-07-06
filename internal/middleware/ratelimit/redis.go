@@ -15,7 +15,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	redisstore "github.com/yourorg/stac-proxy/internal/store/redis"
+	"github.com/yourorg/stac-proxy/internal/logx"
 )
 
 // tokenBucketScript implements the same semantics as
@@ -77,7 +77,7 @@ type RedisLimiter struct {
 	rdb     redis.UniversalClient
 	prefix  string
 	logger  *slog.Logger
-	logGate *redisstore.LogThrottle
+	logGate *logx.LogThrottle
 }
 
 // NewRedisLimiter returns a RedisLimiter writing bucket hashes under
@@ -87,7 +87,7 @@ func NewRedisLimiter(rdb redis.UniversalClient, prefix string, logger *slog.Logg
 		rdb:     rdb,
 		prefix:  prefix,
 		logger:  logger,
-		logGate: redisstore.NewLogThrottle(30 * time.Second),
+		logGate: logx.NewLogThrottle(30 * time.Second),
 	}
 }
 

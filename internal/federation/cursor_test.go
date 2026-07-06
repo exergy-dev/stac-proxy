@@ -305,11 +305,30 @@ func TestHasMore(t *testing.T) {
 		assert.False(t, cursor.HasMore(), "cursor with all exhausted origins should not have more")
 	})
 
-	t.Run("all origins have errors", func(t *testing.T) {
+	t.Run("transiently errored origin still has more (retried next page)", func(t *testing.T) {
 		t.Parallel()
 		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
-		cursor.Origins["origin1"].Error = true
-		assert.False(t, cursor.HasMore(), "cursor with all error origins should not have more")
+		cursor.MarkError("origin1")
+		assert.True(t, cursor.HasMore(), "an origin under the retry budget must keep the session alive")
+	})
+
+	t.Run("retired origin (retry budget exhausted) has no more", func(t *testing.T) {
+		t.Parallel()
+		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
+		for i := 0; i < maxOriginErrorRetries; i++ {
+			cursor.MarkError("origin1")
+		}
+		assert.False(t, cursor.HasMore(), "an origin that failed %d pages must not emit next links forever", maxOriginErrorRetries)
+	})
+
+	t.Run("success resets the retry budget", func(t *testing.T) {
+		t.Parallel()
+		cursor := NewFederatedCursor("hash", "", []string{"origin1"}, nil)
+		cursor.MarkError("origin1")
+		cursor.MarkError("origin1")
+		cursor.UpdateOriginState("origin1", OriginUpdate{ItemCount: 5, NextToken: "t"})
+		assert.False(t, cursor.Origins["origin1"].Error, "successful fetch must clear the error flag")
+		assert.Equal(t, 0, cursor.Origins["origin1"].ErrorCount, "successful fetch must reset the error count")
 	})
 }
 
@@ -325,13 +344,16 @@ func TestActiveOrigins(t *testing.T) {
 		}
 	})
 
-	t.Run("excludes inactive", func(t *testing.T) {
+	t.Run("excludes exhausted and retired, keeps retryable errored", func(t *testing.T) {
 		t.Parallel()
-		cursor := NewFederatedCursor("hash", "", []string{"a", "b", "c"}, nil)
+		cursor := NewFederatedCursor("hash", "", []string{"a", "b", "c", "d"}, nil)
 		cursor.Origins["b"].Exhausted = true
-		cursor.Origins["c"].Error = true
+		cursor.MarkError("c") // transient: stays active, retried next page
+		for i := 0; i < maxOriginErrorRetries; i++ {
+			cursor.MarkError("d") // retired: dropped from the session
+		}
 		active := cursor.ActiveOrigins()
-		assert.Equalf(t, []string{"a"}, active, "expected [a], got %v", active)
+		assert.Equalf(t, []string{"a", "c"}, active, "expected [a c], got %v", active)
 	})
 }
 

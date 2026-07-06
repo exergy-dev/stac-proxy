@@ -1,4 +1,4 @@
-package redisstore
+package logx
 
 import (
 	"log/slog"
@@ -8,7 +8,7 @@ import (
 
 // LogThrottle rate-limits repetitive warnings to one per interval.
 //
-// With logs-only observability, a dead Redis would otherwise emit one
+// With logs-only observability, a repeated failure (dead Redis, degraded origin) would otherwise emit one
 // warning per request — at proxy request rates that's a log storm that
 // buries the signal it is meant to carry. Suppressed occurrences are
 // counted and reported on the next emitted line.

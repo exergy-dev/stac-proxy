@@ -49,6 +49,14 @@ type SearchContext struct {
 	Limit    int  `json:"limit,omitempty"`
 	Matched  int  `json:"matched,omitempty"`
 	Next     bool `json:"-"` // Internal flag for pagination
+
+	// Origins carries per-origin fan-out status (federation's
+	// []OriginStatus; typed as any to avoid an import cycle). The
+	// vendor-prefixed key follows STAC extension conventions. Clients
+	// use it to tell "no results" from "an origin was down for this
+	// page" — `matched` is only a lower bound when any entry carries
+	// a non-empty error.
+	Origins any `json:"stac_proxy:origins,omitempty"`
 }
 
 // SearchRequest represents a STAC API search request.

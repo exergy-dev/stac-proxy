@@ -123,6 +123,13 @@ type OriginCursor struct {
 	// State
 	Exhausted bool `json:"ex"`
 	Error     bool `json:"err"`
+	// ErrorCount is the number of pages on which this origin's fetch
+	// failed. Errored origins are retried on subsequent pages until
+	// maxOriginErrorRetries — a transient blip (or a circuit breaker
+	// in its open window) must not silently drop an origin from the
+	// rest of a paginated session, but an origin that fails every
+	// page must not keep the session alive forever either.
+	ErrorCount int `json:"ec,omitempty"`
 
 	// Items returned so far from this origin
 	ItemCount int `json:"ic"`
@@ -287,12 +294,26 @@ func (c *FederatedCursor) IsExpired() bool {
 	return time.Now().Unix() >= c.ExpiresAt
 }
 
+// maxOriginErrorRetries bounds how many pages an origin may fail on
+// before it is permanently dropped from the session. Retrying at all
+// matters because origin failures are frequently transient (breaker
+// open window, deploy blip); the bound matters because a dead origin
+// must not emit `rel: next` links forever.
+const maxOriginErrorRetries = 3
+
+// retired reports whether an origin is permanently out of the
+// session: it failed on maxOriginErrorRetries pages.
+func (o *OriginCursor) retired() bool {
+	return o.Error && o.ErrorCount >= maxOriginErrorRetries
+}
+
 // HasMore returns true if any origin has more results — either
 // un-fetched upstream pages remain, or a stash of previously-fetched
-// items is queued for emit on the next page.
+// items is queued for emit on the next page. Errored-but-not-retired
+// origins count: they are retried on the next page.
 func (c *FederatedCursor) HasMore() bool {
 	for _, origin := range c.Origins {
-		if origin.Error {
+		if origin.retired() {
 			continue
 		}
 		if !origin.Exhausted || len(origin.Stash) > 0 {
@@ -309,7 +330,7 @@ func (c *FederatedCursor) HasMore() bool {
 func (c *FederatedCursor) ActiveOrigins() []string {
 	var active []string
 	for id, origin := range c.Origins {
-		if origin.Error {
+		if origin.retired() {
 			continue
 		}
 		if !origin.Exhausted || len(origin.Stash) > 0 {
@@ -330,10 +351,13 @@ func (c *FederatedCursor) MarkExhausted(originID string) {
 	}
 }
 
-// MarkError marks an origin as having encountered an error.
+// MarkError marks an origin as having encountered an error on this
+// page. The origin is retried on subsequent pages until ErrorCount
+// reaches maxOriginErrorRetries.
 func (c *FederatedCursor) MarkError(originID string) {
 	if origin, ok := c.Origins[originID]; ok {
 		origin.Error = true
+		origin.ErrorCount++
 	}
 }
 
@@ -378,6 +402,10 @@ func (c *FederatedCursor) UpdateOriginState(originID string, u OriginUpdate) {
 	origin.NextBody = u.NextBody
 	origin.Offset = u.Offset
 	origin.LastSortValue = u.LastSortValue
+	// A successful fetch clears the transient-error state — the retry
+	// budget is for consecutive-page failures, not lifetime ones.
+	origin.Error = false
+	origin.ErrorCount = 0
 	// AdapterName is sticky: once locked (auto's choice), don't
 	// overwrite on subsequent updates with an empty string. The named
 	// adapter's response will not re-emit the adapter name.
