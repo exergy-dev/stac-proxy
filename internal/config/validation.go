@@ -58,6 +58,9 @@ func (v *Validator) Validate(cfg *Config) error {
 	// components that select `store: redis`).
 	v.validateRedis(cfg)
 
+	// Cross-check: signed asset rewriting needs a signing secret.
+	v.validateAssetSigning(cfg)
+
 	// Return combined errors
 	if len(v.errors) > 0 {
 		return &ValidationError{Errors: v.errors, Warnings: v.warnings}
@@ -192,6 +195,11 @@ func (v *Validator) validateUpstream(cfg UpstreamConfig) {
 	}
 }
 
+// minCursorSecretLen is the minimum accepted cursor_secret length.
+// 16 characters is a floor against outright-guessable keys, not a
+// strength guarantee — the docs steer operators to 64 hex chars.
+const minCursorSecretLen = 16
+
 func (v *Validator) validateFederation(cfg FederationConfig) {
 	if len(cfg.Origins) == 0 {
 		v.addError("federation.origins cannot be empty in federation mode")
@@ -209,8 +217,13 @@ func (v *Validator) validateFederation(cfg FederationConfig) {
 	// silently fails at request time. Hard-fail at load instead. Single
 	// mode does not engage the cursor path (buildSingleOriginAsFederation
 	// passes no CursorSecret), so this is only required here.
-	if strings.TrimSpace(cfg.CursorSecret) == "" {
+	if secret := strings.TrimSpace(cfg.CursorSecret); secret == "" {
 		v.addError("federation.cursor_secret is required in federation mode; paginated search cannot sign cursors without it. Generate one with `openssl rand -hex 32` and inject it from your secrets manager (identical across all replicas).")
+	} else if len(secret) < minCursorSecretLen {
+		// An HMAC key this short is guessable — a forged cursor means
+		// forged pagination state. Refuse at boot rather than sign
+		// with it.
+		v.addError("federation.cursor_secret is too short (%d chars, need >= %d); generate one with `openssl rand -hex 32`", len(secret), minCursorSecretLen)
 	}
 
 	if cfg.PageCache != nil {
@@ -489,6 +502,34 @@ func (v *Validator) validateRedis(cfg *Config) {
 	if !anyRedisConsumer(cfg) {
 		v.addWarning("redis block is configured but no component selects store: redis — the connection will not be used")
 	}
+}
+
+// validateAssetSigning hard-fails when any origin opts into
+// `rewrite_assets: sign` but no url_remap signing secret exists.
+// Previously this silently fell back to unsigned passthrough at
+// request time (main.go's buildAssetSigner returns nil) — a config
+// that promises gated asset URLs and quietly doesn't deliver them.
+func (v *Validator) validateAssetSigning(cfg *Config) {
+	if cfg.Federation == nil {
+		return
+	}
+	var signers []string
+	for _, o := range cfg.Federation.Origins {
+		if o.RewriteAssets == "sign" {
+			signers = append(signers, o.ID)
+		}
+	}
+	if len(signers) == 0 {
+		return
+	}
+	for _, mw := range cfg.Middleware {
+		if mw.Name == "url_remap" {
+			if s, _ := mw.Config["secret"].(string); strings.TrimSpace(s) != "" {
+				return
+			}
+		}
+	}
+	v.addError("origins %s set rewrite_assets: sign, but no url_remap middleware with a non-empty `secret` is configured — asset URLs would silently be emitted unsigned. Add the url_remap secret or switch the origins to rewrite_assets: proxy/none.", strings.Join(signers, ", "))
 }
 
 // anyRedisConsumer reports whether any component's store selector is

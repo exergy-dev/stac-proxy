@@ -55,6 +55,17 @@ jobs:
         with:
           version: v2.1.6
 
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: true
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   image:
     runs-on: ubuntu-latest
     needs: [test]

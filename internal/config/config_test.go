@@ -857,7 +857,7 @@ func TestValidationWarnings(t *testing.T) {
 			Server: ServerConfig{Port: 8080},
 			Federation: &FederationConfig{
 				Origins:      []OriginConfig{{ID: "a", BaseURL: "https://stac.example.com", Enabled: true}},
-				CursorSecret: "s3cret",
+				CursorSecret: "s3cret-of-16chars",
 				PageCache:    &PageCacheConfig{Store: "redis"},
 			},
 		}
@@ -874,7 +874,7 @@ func TestValidationWarnings(t *testing.T) {
 			Server: ServerConfig{Port: 8080},
 			Federation: &FederationConfig{
 				Origins:      []OriginConfig{{ID: "a", BaseURL: "https://stac.example.com", Enabled: true}},
-				CursorSecret: "s3cret",
+				CursorSecret: "s3cret-of-16chars",
 				PageCache:    &PageCacheConfig{Store: "redis"},
 			},
 			Redis: &RedisConfig{Addr: "redis:6379"},
@@ -890,7 +890,7 @@ func TestValidationWarnings(t *testing.T) {
 			Server: ServerConfig{Port: 8080},
 			Federation: &FederationConfig{
 				Origins:      []OriginConfig{{ID: "a", BaseURL: "https://stac.example.com", Enabled: true}},
-				CursorSecret: "s3cret",
+				CursorSecret: "s3cret-of-16chars",
 				PageCache:    &PageCacheConfig{Store: "sqlite"},
 			},
 		}
@@ -951,6 +951,59 @@ func TestValidationWarnings(t *testing.T) {
 			},
 			Upstream: &UpstreamConfig{URL: "https://example.com"},
 			Redis:    &RedisConfig{Addr: "redis:6379"},
+		}
+		cfg.setDefaults()
+		require.NoError(t, NewValidator().Validate(cfg))
+	})
+
+	t.Run("short cursor_secret rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "federation",
+			Server: ServerConfig{Port: 8080},
+			Federation: &FederationConfig{
+				CursorSecret: "hunter2",
+				Origins:      []OriginConfig{{ID: "a", BaseURL: "https://stac.example.com", Enabled: true}},
+			},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		require.Error(t, err, "expected error for 7-char cursor_secret")
+		assert.True(t, containsValidationError(err, "cursor_secret is too short"), "unexpected error: %v", err)
+	})
+
+	t.Run("rewrite_assets sign without url_remap secret rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "federation",
+			Server: ServerConfig{Port: 8080},
+			Federation: &FederationConfig{
+				CursorSecret: "test-cursor-secret",
+				Origins: []OriginConfig{
+					{ID: "a", BaseURL: "https://stac.example.com", Enabled: true, RewriteAssets: "sign"},
+				},
+			},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		require.Error(t, err, "expected error for sign without signing secret")
+		assert.True(t, containsValidationError(err, "rewrite_assets: sign"), "unexpected error: %v", err)
+	})
+
+	t.Run("rewrite_assets sign with url_remap secret accepted", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "federation",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "url_remap", Config: map[string]interface{}{"secret": "asset-signing-secret"}},
+			},
+			Federation: &FederationConfig{
+				CursorSecret: "test-cursor-secret",
+				Origins: []OriginConfig{
+					{ID: "a", BaseURL: "https://stac.example.com", Enabled: true, RewriteAssets: "sign"},
+				},
+			},
 		}
 		cfg.setDefaults()
 		require.NoError(t, NewValidator().Validate(cfg))
@@ -1444,7 +1497,7 @@ func TestValidateOrigin_AcceptsLoopbackWhenAllowed(t *testing.T) {
 		Server: ServerConfig{Port: 8080},
 		Federation: &FederationConfig{
 			AllowPrivateOrigins: true,
-			CursorSecret:        "test-secret",
+			CursorSecret:        "test-secret-16chars",
 			Origins: []OriginConfig{
 				{ID: "origin1", BaseURL: "https://127.0.0.1"},
 			},
@@ -1499,7 +1552,7 @@ func TestValidateOrigin_AcceptsPublicAlways(t *testing.T) {
 		Mode:   "federation",
 		Server: ServerConfig{Port: 8080},
 		Federation: &FederationConfig{
-			CursorSecret: "test-secret",
+			CursorSecret: "test-secret-16chars",
 			Origins:      []OriginConfig{{ID: "origin1", BaseURL: "https://example.com"}},
 		},
 	}
