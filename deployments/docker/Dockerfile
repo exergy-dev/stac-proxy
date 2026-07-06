@@ -3,7 +3,7 @@
 # ---- build stage -----------------------------------------------------------
 # Pin Go's minor version. Bump deliberately (not via :1.23) so reproducible
 # builds don't drift when upstream cuts a new patch tag.
-FROM golang:1.25.3-alpine3.21 AS builder
+FROM golang:1.25.11-alpine3.22 AS builder
 
 WORKDIR /src
 
@@ -39,7 +39,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # Pin alpine patch version too. ca-certificates is the only runtime dep
 # (TLS to upstream STAC origins); tzdata only if you actually need
 # RFC3339-with-named-zone in logs — STAC datetimes are UTC so we skip it.
-FROM alpine:3.20.3
+FROM alpine:3.22.3
 
 RUN apk add --no-cache ca-certificates && \
     adduser -D -H -u 65532 -s /sbin/nologin stacproxy
