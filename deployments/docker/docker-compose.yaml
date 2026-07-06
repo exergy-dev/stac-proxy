@@ -42,6 +42,12 @@ services:
       # COPERNICUS_CLIENT_ID: ${COPERNICUS_CLIENT_ID}
       # COPERNICUS_CLIENT_SECRET: ${COPERNICUS_CLIENT_SECRET}
 
+    # This exposes the proxy directly. chi's RealIP middleware trusts inbound
+    # X-Forwarded-For unconditionally, so a direct client can spoof its IP
+    # (forging rate-limit keys, logs, and audit fields). Fine for dev, or
+    # when behind the operator's own trusted L7 proxy that owns XFF. For
+    # multi-replica / production use docker-compose.multi.yaml, where HAProxy
+    # is the trust boundary and rewrites X-Forwarded-For from the real source.
     ports:
       - "${STAC_PROXY_PORT:-8080}:8080" # public API
 

@@ -3,7 +3,7 @@
 # ---- build stage -----------------------------------------------------------
 # Pin Go's minor version. Bump deliberately (not via :1.23) so reproducible
 # builds don't drift when upstream cuts a new patch tag.
-FROM golang:1.23.4-alpine3.20 AS builder
+FROM golang:1.25.3-alpine3.21 AS builder
 
 WORKDIR /src
 

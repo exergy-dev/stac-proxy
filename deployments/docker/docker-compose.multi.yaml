@@ -1,0 +1,92 @@
+# Multi-replica stac-proxy behind a sticky HAProxy edge.
+#
+# Each replica keeps its hot state (response cache, rate-limit token buckets,
+# federation page cache) in-memory and per-replica. HAProxy hashes each client
+# to one replica (consistent hashing) so that per-replica state behaves
+# correctly WITHOUT an external store like Redis. See docs/deploy.md.
+#
+# Boot (scale to 3 replicas; the HAProxy server-template caps the ceiling at 6):
+#   CURSOR_SECRET=$(openssl rand -hex 32) \
+#     docker compose -f deployments/docker/docker-compose.multi.yaml up -d --scale stac-proxy=3
+# Smoke (only HAProxy is reachable from off-box):
+#   curl -fsS http://localhost:8080/health
+# Down:
+#   docker compose -f deployments/docker/docker-compose.multi.yaml down
+#
+# CURSOR_SECRET must be set and IDENTICAL across replicas. Because there is a
+# single `stac-proxy` service definition, every scaled replica inherits the
+# same env, so the secret is automatically identical. It is REQUIRED in
+# federation mode (validation fails without it).
+
+services:
+  haproxy:
+    image: haproxy:2.9-alpine
+    restart: unless-stopped
+    # The only port published off-box. Never publish replica ports directly
+    # (that re-opens X-Forwarded-For spoofing of the rate limiter and logs).
+    ports:
+      - "${STAC_PROXY_PORT:-8080}:8080"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - stac-proxy
+    # haproxy:alpine ships no curl; busybox wget is present, so probe the
+    # edge's own /health passthrough with it.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  stac-proxy:
+    image: stac-proxy:dev
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT:  ${COMMIT:-local}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    restart: unless-stopped
+
+    # No container_name: Compose requires it be absent to run
+    # `--scale stac-proxy=N` (otherwise the fixed name collides).
+    #
+    # No ports: only HAProxy is reachable from off-box. Replicas are reached
+    # over the compose network by the `stac-proxy` DNS name, which HAProxy
+    # re-resolves via Docker's embedded DNS.
+
+    # Same config + policies as the single-node compose, mounted read-only.
+    volumes:
+      - ../../configs/example.yaml:/etc/stac-proxy/example.yaml:ro
+      - ../../policies:/etc/stac-proxy/policies:ro
+
+    environment:
+      STAC_PROXY_UPSTREAM: ${STAC_PROXY_UPSTREAM:-https://earth-search.aws.element84.com/v1}
+      # Shared across ALL replicas (single service definition => identical).
+      # REQUIRED in federation mode; generate with `openssl rand -hex 32`.
+      CURSOR_SECRET: ${CURSOR_SECRET:?set CURSOR_SECRET (openssl rand -hex 32) - it must be identical across replicas}
+      # JWT_SECRET: ${JWT_SECRET}
+      # PLANET_API_KEY: ${PLANET_API_KEY}
+      # COPERNICUS_CLIENT_ID: ${COPERNICUS_CLIENT_ID}
+      # COPERNICUS_CLIENT_SECRET: ${COPERNICUS_CLIENT_SECRET}
+
+    # Inherit the image's HEALTHCHECK; restated for operator visibility and so
+    # HAProxy's /health check and Docker's agree on replica liveness.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/stac-proxy", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    # SIGTERM-then-drain, matching the single-node compose.
+    stop_signal: SIGTERM
+    stop_grace_period: 45s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M

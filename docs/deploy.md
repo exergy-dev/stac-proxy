@@ -27,6 +27,70 @@ The compose file mounts `configs/example.yaml` + `policies/` read-only,
 injects placeholder env vars, and sets `stop_grace_period: 45s` so the
 drain finishes cleanly.
 
+## Multiple replicas (Compose + HAProxy)
+
+For horizontal scale on a single VM, run N replicas behind a sticky
+HAProxy edge:
+
+```
+client → HAProxy (:8080) → { replica-1, replica-2, … replica-N }
+```
+
+```bash
+CURSOR_SECRET=$(openssl rand -hex 32) \
+  docker compose -f deployments/docker/docker-compose.multi.yaml up -d --scale stac-proxy=3
+curl -fsS http://localhost:8080/health          # via HAProxy
+docker compose -f deployments/docker/docker-compose.multi.yaml down
+```
+
+**Why stickiness.** Every replica keeps its hot state in-memory and
+per-replica: the response cache, the rate-limit token buckets, and the
+federation page cache. There is no Redis. HAProxy uses `balance source`
+with consistent hashing to pin each client to one replica, so that
+per-replica state behaves correctly — a client's cache hits, rate-limit
+counters, and page-cache-backed `rel: prev`/`rel: first` navigation all
+stay on the instance that holds them.
+
+**Quota semantics.** Because a client sticks to one replica, its
+per-client rate-limit quota is preserved exactly. The aggregate cluster
+quota across *distinct* clients is `quota × N` (N replicas each enforce
+the quota against the subset of clients hashed to them). This is
+intended: the limiter is a per-client control, not a global one.
+
+**`cursor_secret` is required and must be identical.** In federation
+mode the cursor secret is mandatory (validation fails without it), and
+every replica must use the **same** value so a cursor minted on one
+replica verifies on any other. Generate once and inject via the
+`CURSOR_SECRET` env var:
+
+```bash
+CURSOR_SECRET=$(openssl rand -hex 32)
+```
+
+The multi-replica compose has a single `stac-proxy` service definition,
+so all scaled replicas inherit the same env — the secret is identical by
+construction.
+
+**Replica death.** When a replica fails its `GET /health` check (2
+consecutive failures) HAProxy removes it from the hash ring. Consistent
+hashing remaps only the clients that were pinned to the dead replica
+(~1/N), leaving everyone else put. A remapped client's in-flight
+`rel: prev`/`rel: first` requests degrade to a fresh re-fan-out, because
+the new replica does not hold that client's page cache — but the cursors
+themselves still verify anywhere, since the secret is shared.
+
+**Scale ceiling.** HAProxy's `server-template` pre-templates a fixed
+number of replica slots (6 in the bundled `haproxy.cfg`). Scaling beyond
+that leaves extra replicas unrouted; raise the template count and
+re-deploy the edge to lift the ceiling.
+
+**Never publish replica ports directly.** Only HAProxy is bound off-box.
+Publishing a replica's port bypasses the edge and re-opens
+`X-Forwarded-For` spoofing of the rate limiter and logs (chi RealIP
+trusts XFF unconditionally). HAProxy owning that header — deleting the
+inbound value and setting it from the real source — is the whole point
+of the trust boundary.
+
 ## Configuration
 
 YAML with environment-variable expansion applied at load. Expansion
