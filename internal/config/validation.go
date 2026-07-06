@@ -394,6 +394,39 @@ func (v *Validator) validateMiddleware(cfg *Config) {
 			v.validateCorsMiddleware(i, mw.Config)
 		case "cache":
 			v.validateCacheMiddleware(i, mw.Config, cfg)
+		case "rate_limit":
+			v.validateRateLimitMiddleware(i, mw.Config, cfg)
+		}
+	}
+}
+
+// validateRateLimitMiddleware checks the store selector (memory, the
+// default, or redis — redis requiring the top-level block) and the
+// failure_mode knob (open/closed; only meaningful with redis, since
+// the in-memory limiter cannot fail).
+func (v *Validator) validateRateLimitMiddleware(idx int, mwCfg map[string]interface{}, cfg *Config) {
+	store := storeSelection(mwCfg)
+	switch store {
+	case "", "memory":
+	case "redis":
+		if cfg.Redis == nil {
+			v.addError("middleware[%d] rate_limit: store \"redis\" requires the top-level redis block", idx)
+		}
+	default:
+		v.addError("middleware[%d] rate_limit: store %q is not supported; valid stores: memory, redis", idx, store)
+	}
+	if mwCfg == nil {
+		return
+	}
+	if fm, ok := mwCfg["failure_mode"]; ok {
+		s, _ := fm.(string)
+		switch s {
+		case "open", "closed":
+			if store != "redis" {
+				v.addWarning("middleware[%d] rate_limit: failure_mode has no effect without store: redis (the in-memory limiter cannot fail)", idx)
+			}
+		default:
+			v.addError("middleware[%d] rate_limit: failure_mode %q is not supported; valid modes: open, closed", idx, fm)
 		}
 	}
 }

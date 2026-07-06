@@ -900,6 +900,62 @@ func TestValidationWarnings(t *testing.T) {
 		assert.True(t, containsValidationError(err, "page_cache.store \"sqlite\" is not supported"), "unexpected error: %v", err)
 	})
 
+	t.Run("rate_limit store redis without redis block rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "rate_limit", Config: map[string]interface{}{
+					"store": "redis",
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		require.Error(t, err, "expected error for rate_limit.store=redis without redis block")
+		assert.True(t, containsValidationError(err, "requires the top-level redis block"), "unexpected error: %v", err)
+	})
+
+	t.Run("rate_limit failure_mode enum enforced", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "rate_limit", Config: map[string]interface{}{
+					"store":        "redis",
+					"failure_mode": "explode",
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+			Redis:    &RedisConfig{Addr: "redis:6379"},
+		}
+		cfg.setDefaults()
+		err := NewValidator().Validate(cfg)
+		require.Error(t, err, "expected error for failure_mode=explode")
+		assert.True(t, containsValidationError(err, "failure_mode"), "unexpected error: %v", err)
+	})
+
+	t.Run("rate_limit redis with failure_mode closed accepted", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{
+			Mode:   "single",
+			Server: ServerConfig{Port: 8080},
+			Middleware: []MiddlewareConfig{
+				{Name: "rate_limit", Config: map[string]interface{}{
+					"store":        "redis",
+					"failure_mode": "closed",
+				}},
+			},
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+			Redis:    &RedisConfig{Addr: "redis:6379"},
+		}
+		cfg.setDefaults()
+		require.NoError(t, NewValidator().Validate(cfg))
+	})
+
 	t.Run("redis block requires addr", func(t *testing.T) {
 		t.Parallel()
 		cfg := &Config{

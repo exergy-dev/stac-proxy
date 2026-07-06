@@ -21,6 +21,16 @@ type Config struct {
 	KeyFunc      KeyFunc
 	QuotaFunc    QuotaFunc
 	DefaultQuota Quota
+
+	// FailClosed selects the failure mode when the limiter errors —
+	// only reachable with a remote limiter (Redis); the in-memory one
+	// never errors. Default false: fail open, because making the
+	// rate-limit backend a hard availability dependency turns a
+	// cache-tier outage into a full proxy outage, and an edge LB can
+	// backstop-limit meanwhile. Operators with strict quota/billing
+	// contracts opt into true: requests are refused with 503 while
+	// the backend is unreachable.
+	FailClosed bool
 }
 
 // NewHTTPMiddleware returns chi-compatible rate-limit middleware.
@@ -82,6 +92,17 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 
 			allowed, info, err := limiter.Allow(ctx, key, quota)
 			if err != nil {
+				// The limiter itself logs the (throttled) warning.
+				if cfg.FailClosed {
+					w.Header().Set("Retry-After", "1")
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"code":        "RateLimiterUnavailable",
+						"description": "Rate limiting backend unavailable; refusing request (failure_mode: closed)",
+					})
+					return
+				}
 				// Fail open: allow through, no headers added.
 				next.ServeHTTP(w, r)
 				return

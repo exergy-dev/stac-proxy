@@ -178,7 +178,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	} else if authMW != nil {
 		httpMiddlewares = append(httpMiddlewares, authMW)
 	}
-	if rlMW := buildRateLimitHTTPMiddleware(cfg); rlMW != nil {
+	if rlMW := buildRateLimitHTTPMiddleware(cfg, redisClient, logger); rlMW != nil {
 		httpMiddlewares = append(httpMiddlewares, rlMW)
 	}
 	if azMW, err := buildAuthzHTTPMiddleware(ctx, cfg, logger); err != nil {
@@ -682,8 +682,11 @@ func buildAssetSigner(cfg *config.Config) federation.AssetSigner {
 
 // buildRateLimitHTTPMiddleware builds the chi-style rate-limit middleware
 // from the `rate_limit` block of the middleware config list. Returns nil
-// when no `rate_limit` block is configured.
-func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Handler {
+// when no `rate_limit` block is configured. With `store: redis`, buckets
+// live in the shared Redis so quotas hold globally across replicas;
+// `failure_mode` (open, the default, or closed) picks the behavior when
+// Redis is unreachable.
+func buildRateLimitHTTPMiddleware(cfg *config.Config, rdb redis.UniversalClient, logger *slog.Logger) func(http.Handler) http.Handler {
 	var rawCfg map[string]interface{}
 	for _, mw := range cfg.Middleware {
 		if mw.Name == "rate_limit" {
@@ -719,13 +722,24 @@ func buildRateLimitHTTPMiddleware(cfg *config.Config) func(http.Handler) http.Ha
 		burst = 50
 	}
 
-	return ratelimit.NewHTTPMiddleware(ratelimit.Config{
+	mwCfg := ratelimit.Config{
 		DefaultQuota: ratelimit.Quota{
 			Requests: requests,
 			Window:   window,
 			Burst:    burst,
 		},
-	})
+	}
+	if s, _ := rawCfg["store"].(string); s == "redis" {
+		if rdb == nil {
+			// Validation guarantees the redis block; degrade loudly to
+			// the in-memory limiter rather than boot without limiting.
+			logger.Warn("rate_limit store is redis but no redis client was built; using in-memory limiter")
+		} else {
+			mwCfg.Limiter = ratelimit.NewRedisLimiter(rdb, redisKeyPrefix(cfg)+"rl:", logger)
+			mwCfg.FailClosed = rawCfg["failure_mode"] == "closed"
+		}
+	}
+	return ratelimit.NewHTTPMiddleware(mwCfg)
 }
 
 // intFromAny accepts the int / float64 shapes that YAML scalar
