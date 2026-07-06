@@ -303,7 +303,7 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			enforcer, err := NewEmbeddedOPAEnforcer(tt.config)
+			enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), tt.config)
 
 			if tt.wantErr {
 				require.Error(t, err, "expected error containing '%s'", tt.errString)
@@ -328,7 +328,7 @@ func TestNewEmbeddedOPAEnforcer(t *testing.T) {
 func TestEmbeddedOPAEnforcer_NoBundleDeniesByDefault(t *testing.T) {
 	t.Parallel()
 
-	enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name: "no-bundle",
 		// No PolicyPath, no PolicyPaths, no Modules.
 	})
@@ -346,7 +346,7 @@ func TestEmbeddedOPAEnforcer_NoBundleDeniesByDefault(t *testing.T) {
 func TestEmbeddedOPAEnforcer_Name(t *testing.T) {
 	t.Parallel()
 
-	enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name: "test-name",
 		Modules: map[string]string{
 			"policy.rego": allowAllPolicy,
@@ -439,7 +439,7 @@ reasons[msg] {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+			enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 				Name: tt.name,
 				Modules: map[string]string{
 					"policy.rego": tt.policy,
@@ -469,7 +469,7 @@ reasons[msg] {
 func TestEmbeddedOPAEnforcer_Authorize_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name: "cancel-test",
 		Modules: map[string]string{
 			"policy.rego": allowAllPolicy,
@@ -507,7 +507,7 @@ func TestEmbeddedOPAEnforcer_Authorize_ContextCancellation(t *testing.T) {
 func TestEmbeddedOPAEnforcer_Authorize_EmptyInput(t *testing.T) {
 	t.Parallel()
 
-	enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name: "empty-test",
 		Modules: map[string]string{
 			"policy.rego": allowAllPolicy,
@@ -528,7 +528,7 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy(t *testing.T) {
 	// Create temp policy file
 	tmpFile := createTempPolicyFile(t, denyAllPolicy)
 
-	enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name:       "reload-test",
 		PolicyPath: tmpFile,
 	})
@@ -558,7 +558,7 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy(t *testing.T) {
 	require.NoError(t, os.WriteFile(tmpFile, []byte(allowAllPolicy), 0644), "failed to update policy file")
 
 	// Reload policy
-	require.NoError(t, enforcer.ReloadPolicy(), "failed to reload policy")
+	require.NoError(t, enforcer.ReloadPolicy(context.Background()), "failed to reload policy")
 
 	// Second check - should allow
 	decision, err = enforcer.Authorize(ctx, input)
@@ -569,7 +569,7 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy(t *testing.T) {
 func TestEmbeddedOPAEnforcer_ReloadPolicy_NoPath(t *testing.T) {
 	t.Parallel()
 
-	enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name: "no-path",
 		Modules: map[string]string{
 			"policy.rego": allowAllPolicy,
@@ -578,7 +578,7 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy_NoPath(t *testing.T) {
 	require.NoError(t, err, "failed to create enforcer")
 
 	// Reload should be a no-op when no policy path is set
-	assert.NoError(t, enforcer.ReloadPolicy(), "unexpected error on reload with no path")
+	assert.NoError(t, enforcer.ReloadPolicy(context.Background()), "unexpected error on reload with no path")
 }
 
 func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidFile(t *testing.T) {
@@ -586,7 +586,7 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidFile(t *testing.T) {
 
 	tmpFile := createTempPolicyFile(t, allowAllPolicy)
 
-	enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name:       "invalid-reload",
 		PolicyPath: tmpFile,
 	})
@@ -596,7 +596,7 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidFile(t *testing.T) {
 	require.NoError(t, os.Remove(tmpFile), "failed to remove temp file")
 
 	// Reload should fail
-	assert.Error(t, enforcer.ReloadPolicy(), "expected error when reloading deleted policy file")
+	assert.Error(t, enforcer.ReloadPolicy(context.Background()), "expected error when reloading deleted policy file")
 }
 
 func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidSyntax(t *testing.T) {
@@ -604,7 +604,7 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidSyntax(t *testing.T) {
 
 	tmpFile := createTempPolicyFile(t, allowAllPolicy)
 
-	enforcer, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name:       "invalid-syntax-reload",
 		PolicyPath: tmpFile,
 	})
@@ -614,7 +614,7 @@ func TestEmbeddedOPAEnforcer_ReloadPolicy_InvalidSyntax(t *testing.T) {
 	require.NoError(t, os.WriteFile(tmpFile, []byte(invalidPolicy), 0644), "failed to update policy file")
 
 	// Reload should fail
-	assert.Error(t, enforcer.ReloadPolicy(), "expected error when reloading invalid policy")
+	assert.Error(t, enforcer.ReloadPolicy(context.Background()), "expected error when reloading invalid policy")
 }
 
 func TestStructToMap(t *testing.T) {
@@ -744,7 +744,7 @@ default allow = false
 other_rule { input.principal.id == "x" }
 `
 
-	_, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	_, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name: "dup-default",
 		Modules: map[string]string{
 			"a.rego": moduleA,
@@ -816,7 +816,7 @@ package stac.authz
 # Deliberately wrong: returns reasons without an allow key.
 result = {"reasons": ["missing allow"]}
 `
-	enf, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enf, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name:    "no-allow",
 		Modules: map[string]string{"p.rego": policy},
 	})

@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -41,7 +42,7 @@ result := {
 `
 	require.NoError(t, os.WriteFile(policyPath, []byte(policy), 0644), "write policy")
 
-	enf, err := authz.NewEmbeddedOPAEnforcer(authz.EmbeddedOPAConfig{
+	enf, err := authz.NewEmbeddedOPAEnforcer(context.Background(), authz.EmbeddedOPAConfig{
 		Name:        "e2e",
 		PolicyPaths: []string{policyPath},
 	})

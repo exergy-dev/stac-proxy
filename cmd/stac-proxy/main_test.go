@@ -94,7 +94,7 @@ func TestAuthProviderWiring_AllConfiguredTypesAreActive(t *testing.T) {
 
 	got := make([]auth.Provider, 0, len(providersRaw))
 	for i, pCfg := range providersRaw {
-		p, err := buildAuthProvider(pCfg.(map[string]interface{}), logger)
+		p, err := buildAuthProvider(context.Background(), pCfg.(map[string]interface{}), logger)
 		require.NoErrorf(t, err, "providers[%d]", i)
 		require.NotNilf(t, p, "providers[%d]: returned nil without error", i)
 		got = append(got, p)
@@ -114,7 +114,7 @@ func TestAuthProviderWiring_AllConfiguredTypesAreActive(t *testing.T) {
 	}
 
 	// Unknown type should produce an error rather than silently drop.
-	_, err := buildAuthProvider(map[string]interface{}{"type": "made_up"}, logger)
+	_, err := buildAuthProvider(context.Background(), map[string]interface{}{"type": "made_up"}, logger)
 	assert.Error(t, err, "expected error for unknown auth provider type")
 }
 
@@ -367,4 +367,63 @@ func newAuthWiringOIDCDiscovery(t *testing.T) *httptest.Server {
 	srv = httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// TestServerIsUnauthenticated verifies the warn-condition predicate: it
+// reports true when nothing in the middleware chain rejects anonymous
+// requests, and false once auth (allow_anonymous: false) or an authz
+// enforcer gates the server.
+func TestServerIsUnauthenticated(t *testing.T) {
+	authBlock := func(allowAnon bool) config.MiddlewareConfig {
+		return config.MiddlewareConfig{
+			Name: "auth",
+			Config: map[string]interface{}{
+				"allow_anonymous": allowAnon,
+				"providers": []interface{}{
+					map[string]interface{}{"type": "bearer", "secret": "s"},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want bool
+	}{
+		{
+			name: "no auth, no authz → open",
+			cfg:  &config.Config{},
+			want: true,
+		},
+		{
+			name: "auth block allows anonymous → open",
+			cfg:  &config.Config{Middleware: []config.MiddlewareConfig{authBlock(true)}},
+			want: true,
+		},
+		{
+			name: "auth block without allow_anonymous key defaults open",
+			cfg: &config.Config{Middleware: []config.MiddlewareConfig{{
+				Name:   "auth",
+				Config: map[string]interface{}{},
+			}}},
+			want: true,
+		},
+		{
+			name: "auth required (allow_anonymous: false) → closed",
+			cfg:  &config.Config{Middleware: []config.MiddlewareConfig{authBlock(false)}},
+			want: false,
+		},
+		{
+			name: "authz OPA enforcer gates anonymous → closed",
+			cfg:  &config.Config{Authz: &config.AuthzConfig{OPA: &config.OPAConfig{Embedded: true}}},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, serverIsUnauthenticated(tt.cfg))
+		})
+	}
 }

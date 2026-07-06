@@ -126,6 +126,11 @@ type JWKSClientConfig struct {
 	// background refresh failures during stale-while-revalidate. nil →
 	// slog.Default().
 	Logger *slog.Logger
+	// LifetimeCtx bounds background (stale-while-revalidate) refreshes so
+	// they are cancelled at process shutdown instead of running detached.
+	// nil → context.Background() (unbounded, legacy behavior). Production
+	// callers should thread main's root/lifetime context here.
+	LifetimeCtx context.Context
 	// now is an injectable clock for tests. nil → time.Now.
 	now func() time.Time
 }
@@ -166,6 +171,12 @@ type JWKSClient struct {
 	negCacheTTL        time.Duration
 	logger             *slog.Logger
 	now                func() time.Time
+
+	// lifetimeCtx bounds background refreshes; cancelled at shutdown.
+	// refreshTimeout is the per-attempt deadline layered on top of it,
+	// derived from the HTTP client's Timeout (default 10s).
+	lifetimeCtx    context.Context
+	refreshTimeout time.Duration
 
 	mu          sync.RWMutex
 	keys        map[string]cachedKey
@@ -229,6 +240,17 @@ func NewJWKSClientFromConfig(url string, cfg JWKSClientConfig) (*JWKSClient, err
 	if now == nil {
 		now = time.Now
 	}
+	lifetimeCtx := cfg.LifetimeCtx
+	if lifetimeCtx == nil {
+		lifetimeCtx = context.Background()
+	}
+	// Per-attempt background-refresh deadline mirrors the HTTP client's
+	// own timeout so behavior is unchanged when the request-scoped ctx
+	// isn't available (background path).
+	refreshTimeout := httpClient.Timeout
+	if refreshTimeout <= 0 {
+		refreshTimeout = 10 * time.Second
+	}
 	return &JWKSClient{
 		url:                url,
 		http:               httpClient,
@@ -238,6 +260,8 @@ func NewJWKSClientFromConfig(url string, cfg JWKSClientConfig) (*JWKSClient, err
 		negCacheTTL:        negTTL,
 		logger:             logger,
 		now:                now,
+		lifetimeCtx:        lifetimeCtx,
+		refreshTimeout:     refreshTimeout,
 		keys:               map[string]cachedKey{},
 		negKids:            map[string]time.Time{},
 	}, nil
@@ -323,9 +347,11 @@ func (c *JWKSClient) lookup(kid string) (cachedKey, lookupState) {
 }
 
 // maybeKickBackgroundRefresh launches a non-blocking refresh if one
-// isn't already in flight. The refresh runs against context.Background
-// so it isn't cancelled when the originating request finishes; the HTTP
-// client's own timeout still bounds it.
+// isn't already in flight. The refresh is decoupled from the originating
+// request (so it isn't cancelled when that request finishes) but is
+// bounded by the client's lifetime context — so it IS cancelled at
+// process shutdown — plus a per-attempt refreshTimeout that preserves
+// the previous HTTP-client-timeout bound.
 func (c *JWKSClient) maybeKickBackgroundRefresh() {
 	c.mu.Lock()
 	if c.bgRefresh {
@@ -341,7 +367,9 @@ func (c *JWKSClient) maybeKickBackgroundRefresh() {
 			c.bgRefresh = false
 			c.mu.Unlock()
 		}()
-		if err := c.refresh(context.Background()); err != nil {
+		ctx, cancel := context.WithTimeout(c.lifetimeCtx, c.refreshTimeout)
+		defer cancel()
+		if err := c.refresh(ctx); err != nil {
 			c.logger.Warn("jwks: background refresh failed; serving stale",
 				"url", c.url,
 				"error", err,

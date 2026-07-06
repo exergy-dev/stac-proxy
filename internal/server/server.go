@@ -96,10 +96,8 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
-	s.logger.Info("Server starting",
-		"addr", addr,
-		"tls", s.cfg.TLS.Enabled,
-	)
+	// NOTE: the "Server starting" line is logged by the caller (main.run)
+	// with the tls flag; don't duplicate it here.
 
 	if s.cfg.TLS.Enabled {
 		return s.httpServer.ServeTLS(s.listener, s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)

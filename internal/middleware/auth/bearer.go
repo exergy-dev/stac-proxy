@@ -44,6 +44,10 @@ type BearerConfig struct {
 	// AllowInsecureHTTPJWKS bypasses the https-only check on JWKSURL.
 	// Test-only.
 	AllowInsecureHTTPJWKS bool
+	// LifetimeCtx bounds the JWKS client's background key-refresh
+	// goroutine so it is cancelled at process shutdown. nil →
+	// context.Background(). Only relevant for the JWKS (asymmetric) path.
+	LifetimeCtx context.Context
 }
 
 var (
@@ -92,6 +96,7 @@ func NewBearerProvider(cfg BearerConfig) (*BearerProvider, error) {
 		jwks, err := NewJWKSClientFromConfig(cfg.JWKSURL, JWKSClientConfig{
 			TTL:               time.Hour,
 			AllowInsecureHTTP: cfg.AllowInsecureHTTPJWKS,
+			LifetimeCtx:       cfg.LifetimeCtx,
 		})
 		if err != nil {
 			return nil, err

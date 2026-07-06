@@ -155,7 +155,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	} else if corsMW != nil {
 		httpMiddlewares = append(httpMiddlewares, corsMW)
 	}
-	if authMW, err := buildAuthHTTPMiddleware(cfg, logger); err != nil {
+	if authMW, err := buildAuthHTTPMiddleware(ctx, cfg, logger); err != nil {
 		return fmt.Errorf("failed to build auth middleware: %w", err)
 	} else if authMW != nil {
 		httpMiddlewares = append(httpMiddlewares, authMW)
@@ -163,7 +163,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if rlMW := buildRateLimitHTTPMiddleware(cfg); rlMW != nil {
 		httpMiddlewares = append(httpMiddlewares, rlMW)
 	}
-	if azMW, err := buildAuthzHTTPMiddleware(cfg, logger); err != nil {
+	if azMW, err := buildAuthzHTTPMiddleware(ctx, cfg, logger); err != nil {
 		return fmt.Errorf("failed to build authz middleware: %w", err)
 	} else if azMW != nil {
 		httpMiddlewares = append(httpMiddlewares, azMW)
@@ -205,6 +205,14 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	healthChecker.Start()
 	defer healthChecker.Stop()
 
+	// Loud warning when the middleware chain does not reject anonymous
+	// traffic — an easy-to-miss misconfiguration for a public deployment.
+	if serverIsUnauthenticated(cfg) {
+		logger.Warn("SERVER IS OPEN: it will accept UNAUTHENTICATED requests; no auth provider is configured to reject anonymous clients",
+			"remedy", "add a `middleware` entry named `auth` with `allow_anonymous: false` and at least one provider, and/or configure `authz.opa` to gate requests",
+		)
+	}
+
 	logger.Info("Server starting",
 		"address", fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
 		"tls", cfg.Server.TLS.Enabled,
@@ -230,7 +238,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 // buildAuthzMiddleware wires the authz middleware (including CQL2
 // injection) from the top-level authz config. Returns (nil, nil) when
 // authz is not configured.
-func buildAuthzHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
+func buildAuthzHTTPMiddleware(ctx context.Context, cfg *config.Config, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
 	az := cfg.Authz
 	if az == nil || az.OPA == nil {
 		return nil, nil
@@ -239,7 +247,7 @@ func buildAuthzHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(htt
 	if !az.OPA.Embedded {
 		return nil, fmt.Errorf("authz.opa.embedded must be true; only embedded OPA is supported")
 	}
-	enf, err := authz.NewEmbeddedOPAEnforcer(authz.EmbeddedOPAConfig{
+	enf, err := authz.NewEmbeddedOPAEnforcer(ctx, authz.EmbeddedOPAConfig{
 		Name:        "embedded-opa",
 		PolicyPaths: az.OPA.RegoFiles,
 	})
@@ -289,6 +297,42 @@ func buildAuthzHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(htt
 	}), nil
 }
 
+// serverIsUnauthenticated reports whether the configured middleware
+// chain will accept anonymous (unauthenticated) requests — i.e. nothing
+// in the chain is configured to reject a client that presents no
+// credentials. It returns true (server is open) when:
+//
+//   - there is no `auth` middleware block whose `allow_anonymous` is
+//     false, AND
+//   - there is no authz (embedded OPA) enforcer, which — with its
+//     fail-closed default policy — gates every request including
+//     anonymous ones.
+//
+// Note that `allow_anonymous` defaults to true, matching
+// buildAuthHTTPMiddleware, so an `auth` block that omits it is still
+// considered open.
+func serverIsUnauthenticated(cfg *config.Config) bool {
+	// An authz (OPA) enforcer evaluates every request, so a configured
+	// enforcer means anonymous clients are gated by policy.
+	if cfg.Authz != nil && cfg.Authz.OPA != nil {
+		return false
+	}
+	for _, mw := range cfg.Middleware {
+		if mw.Name != "auth" {
+			continue
+		}
+		allowAnon := true
+		if v, ok := mw.Config["allow_anonymous"].(bool); ok {
+			allowAnon = v
+		}
+		// `allow_anonymous: false` makes the auth chain reject
+		// unauthenticated requests → the server is not open.
+		return allowAnon
+	}
+	// No auth block configured at all → open.
+	return true
+}
+
 // buildAuthHTTPMiddleware builds the chi-style auth middleware from
 // the `auth` block of the middleware config list. Returns
 // (nil, nil) when no `auth` block is configured — the router skips
@@ -299,7 +343,7 @@ func buildAuthzHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(htt
 // they were silently ignored, which meant a misspelled type made a
 // production deployment look authenticated when it was actually
 // running fully open.
-func buildAuthHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
+func buildAuthHTTPMiddleware(ctx context.Context, cfg *config.Config, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
 	var rawCfg map[string]interface{}
 	for _, mw := range cfg.Middleware {
 		if mw.Name == "auth" {
@@ -323,7 +367,7 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(http
 			if !ok {
 				return nil, fmt.Errorf("auth.providers[%d]: expected map, got %T", i, pCfg)
 			}
-			provider, err := buildAuthProvider(pMap, logger)
+			provider, err := buildAuthProvider(ctx, pMap, logger)
 			if err != nil {
 				return nil, fmt.Errorf("auth.providers[%d]: %w", i, err)
 			}
@@ -343,15 +387,16 @@ func buildAuthHTTPMiddleware(cfg *config.Config, logger *slog.Logger) (func(http
 // map. Returns (nil, nil) only when the constructor is best-effort
 // soft-failed (e.g. JWKS unreachable at boot) — currently no
 // branches do that, but the signature leaves the door open.
-func buildAuthProvider(pMap map[string]interface{}, _ *slog.Logger) (auth.Provider, error) {
+func buildAuthProvider(ctx context.Context, pMap map[string]interface{}, _ *slog.Logger) (auth.Provider, error) {
 	pType, _ := pMap["type"].(string)
 	switch pType {
 	case "bearer", "jwt":
 		bearerCfg := auth.BearerConfig{
-			Name:     "bearer",
-			Issuer:   getStringConfig(pMap, "issuer"),
-			Audience: getStringConfig(pMap, "audience"),
-			JWKSURL:  getStringConfig(pMap, "jwks_url"),
+			Name:        "bearer",
+			Issuer:      getStringConfig(pMap, "issuer"),
+			Audience:    getStringConfig(pMap, "audience"),
+			JWKSURL:     getStringConfig(pMap, "jwks_url"),
+			LifetimeCtx: ctx,
 		}
 		if s := getStringConfig(pMap, "secret"); s != "" {
 			bearerCfg.Secret = []byte(s)

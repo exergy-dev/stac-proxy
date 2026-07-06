@@ -1412,7 +1412,7 @@ func (blockingSigner) Sign(ctx context.Context, _ string, _ time.Duration) strin
 func TestRewriteAssetHref_RespectsRequestCancellation(t *testing.T) {
 	t.Parallel()
 
-	client, err := NewOriginClient(&Origin{
+	client, err := NewOriginClientWithContext(context.Background(), nil, &Origin{
 		ID:            "a",
 		BaseURL:       "https://upstream.example",
 		Enabled:       true,
@@ -1454,7 +1454,7 @@ func TestRewriteAssetHref_RespectsRequestCancellation(t *testing.T) {
 func TestTransformResponse_SkipsDecodeWhenNoRewriteNeeded(t *testing.T) {
 	t.Parallel()
 
-	client, err := NewOriginClient(&Origin{
+	client, err := NewOriginClientWithContext(context.Background(), nil, &Origin{
 		ID:      "a",
 		BaseURL: "https://upstream.example",
 		Enabled: true,
@@ -1495,7 +1495,7 @@ func TestTransformResponse_SkipsDecodeWhenNoRewriteNeeded(t *testing.T) {
 func TestRewriteLinks_DoesNotRecurseIntoProperties(t *testing.T) {
 	t.Parallel()
 
-	client, err := NewOriginClient(&Origin{
+	client, err := NewOriginClientWithContext(context.Background(), nil, &Origin{
 		ID:      "a",
 		BaseURL: "https://upstream.example",
 		Enabled: true,
@@ -1551,7 +1551,7 @@ func TestRewriteLinks_DoesNotRecurseIntoProperties(t *testing.T) {
 func TestRewriteLinks_RecursesIntoFeatures(t *testing.T) {
 	t.Parallel()
 
-	client, err := NewOriginClient(&Origin{
+	client, err := NewOriginClientWithContext(context.Background(), nil, &Origin{
 		ID:      "a",
 		BaseURL: "https://upstream.example",
 		Enabled: true,

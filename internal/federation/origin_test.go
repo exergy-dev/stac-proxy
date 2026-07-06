@@ -151,7 +151,7 @@ func TestNewOriginClient(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client, err := NewOriginClient(tt.origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, tt.origin)
 
 			if tt.wantErr {
 				require.Error(t, err, "expected error but got nil")
@@ -196,7 +196,7 @@ func TestNewOriginClient_AutoDiscover(t *testing.T) {
 		AutoDiscover: true,
 	}
 
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err)
 
 	// Wait a bit for autodiscovery goroutine to complete
@@ -376,7 +376,7 @@ func TestOriginClient_DoRequest(t *testing.T) {
 				Auth:    tt.authConfig,
 			}
 
-			client, err := NewOriginClient(origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 			require.NoError(t, err, "failed to create client")
 
 			// Execute request
@@ -412,7 +412,7 @@ func TestOriginClient_DoRequest_ContextCancellation(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err, "failed to create client")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -542,7 +542,7 @@ func TestOriginClient_Search(t *testing.T) {
 				Timeout: 5 * time.Second,
 			}
 
-			client, err := NewOriginClient(origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 			require.NoError(t, err, "failed to create client")
 
 			// Execute search
@@ -629,7 +629,7 @@ func TestOriginClient_GetCollections(t *testing.T) {
 				Timeout: 5 * time.Second,
 			}
 
-			client, err := NewOriginClient(origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 			require.NoError(t, err, "failed to create client")
 
 			// Execute get collections
@@ -714,7 +714,7 @@ func TestOriginClient_GetCollection(t *testing.T) {
 				Timeout: 5 * time.Second,
 			}
 
-			client, err := NewOriginClient(origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 			require.NoError(t, err, "failed to create client")
 
 			// Execute get collection
@@ -809,7 +809,7 @@ func TestOriginClient_GetItem(t *testing.T) {
 				Timeout: 5 * time.Second,
 			}
 
-			client, err := NewOriginClient(origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 			require.NoError(t, err, "failed to create client")
 
 			// Execute get item
@@ -947,7 +947,7 @@ func TestOriginClient_Retry(t *testing.T) {
 				Retry:   tt.retryPolicy,
 			}
 
-			client, err := NewOriginClient(origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 			require.NoError(t, err, "failed to create client")
 
 			// Execute request
@@ -1036,7 +1036,7 @@ func TestOriginClient_DiscoverCollections(t *testing.T) {
 				Timeout: 5 * time.Second,
 			}
 
-			client, err := NewOriginClient(origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 			require.NoError(t, err, "failed to create client")
 
 			// Execute discovery
@@ -1153,7 +1153,7 @@ func TestOriginClient_HasCollection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client, err := NewOriginClient(tt.origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, tt.origin)
 			require.NoError(t, err, "failed to create client")
 
 			if tt.setupCache != nil {
@@ -1173,7 +1173,7 @@ func TestOriginClient_CachedCollections(t *testing.T) {
 		BaseURL: "https://api.example.com",
 	}
 
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err, "failed to create client")
 
 	// Initially empty
@@ -1201,7 +1201,7 @@ func TestOriginClient_Origin(t *testing.T) {
 	t.Parallel()
 
 	origin := &Origin{ID: "test-origin", BaseURL: "https://api.example.com", Name: "Test Origin"}
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err)
 
 	assert.Same(t, origin, client.Origin(), "Origin() did not return the same origin instance")
@@ -1271,7 +1271,7 @@ func TestOriginClient_URLConstruction(t *testing.T) {
 				Timeout: 5 * time.Second,
 			}
 
-			client, err := NewOriginClient(origin)
+			client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 			require.NoError(t, err, "failed to create client")
 
 			ctx := context.Background()
@@ -1417,7 +1417,7 @@ func TestOriginClient_InvalidJSON(t *testing.T) {
 				w.Write([]byte(`{invalid json`))
 			}))
 			defer server.Close()
-			client, err := NewOriginClient(&Origin{ID: "test-origin", BaseURL: server.URL, Timeout: 5 * time.Second})
+			client, err := NewOriginClientWithContext(context.Background(), nil, &Origin{ID: "test-origin", BaseURL: server.URL, Timeout: 5 * time.Second})
 			require.NoError(t, err)
 			assert.Error(t, tc.call(context.Background(), client))
 		})
@@ -1449,7 +1449,7 @@ func TestOriginClient_Retry_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err, "failed to create client")
 
 	// Create context that will be cancelled during retry
@@ -1495,7 +1495,7 @@ func TestOriginClient_DiscoverCollections_UpdateCache(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
@@ -1522,7 +1522,7 @@ func TestOriginClient_Search_MarshalError(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err, "failed to create client")
 
 	ctx := context.Background()
@@ -1546,7 +1546,7 @@ func TestOriginClient_HasCollection_EmptyCache(t *testing.T) {
 		BaseURL: "https://api.example.com",
 	}
 
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err, "failed to create client")
 
 	// With empty cache and no explicit collections, should return false
@@ -1596,7 +1596,7 @@ func TestOriginClient_DoRequest_PathPrefixedBaseURL(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client, err := NewOriginClient(&Origin{
+			client, err := NewOriginClientWithContext(context.Background(), nil, &Origin{
 				ID:      "t",
 				BaseURL: srv.URL + tt.basePath,
 				Enabled: true,
@@ -1643,7 +1643,7 @@ func TestOriginClient_RejectsOversizedResponse(t *testing.T) {
 		MaxResponseBytes: 1024,
 	}
 
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err, "failed to create client")
 
 	_, _, err = client.Search(context.Background(), sampleSearchRequest())
@@ -1671,7 +1671,7 @@ func TestOriginClient_AcceptsUnderLimit(t *testing.T) {
 		MaxResponseBytes: 1 << 20,
 	}
 
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err, "failed to create client")
 
 	got, _, err := client.Search(context.Background(), sampleSearchRequest())
@@ -1687,7 +1687,7 @@ func TestOriginClient_DefaultMaxResponseBytes(t *testing.T) {
 		ID:      "test-origin",
 		BaseURL: "https://api.example.com",
 	}
-	client, err := NewOriginClient(origin)
+	client, err := NewOriginClientWithContext(context.Background(), nil, origin)
 	require.NoError(t, err, "failed to create client")
 	assert.Equal(t, int64(32<<20), client.MaxResponseBytes(), "default MaxResponseBytes")
 }

@@ -262,7 +262,7 @@ result := {
     }
 }
 `
-	enf, err := NewEmbeddedOPAEnforcer(EmbeddedOPAConfig{
+	enf, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
 		Name:    "test",
 		Modules: map[string]string{"test.rego": policy},
 	})

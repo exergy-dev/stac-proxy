@@ -36,8 +36,11 @@ type EmbeddedOPAConfig struct {
 	Modules     map[string]string // Inline policy modules
 }
 
-// NewEmbeddedOPAEnforcer creates a new embedded OPA enforcer.
-func NewEmbeddedOPAEnforcer(cfg EmbeddedOPAConfig) (*EmbeddedOPAEnforcer, error) {
+// NewEmbeddedOPAEnforcer creates a new embedded OPA enforcer. ctx bounds
+// the one-shot policy compilation (PrepareForEval); pass the process's
+// construction/lifetime context so a shutdown during boot aborts the
+// compile rather than running detached.
+func NewEmbeddedOPAEnforcer(ctx context.Context, cfg EmbeddedOPAConfig) (*EmbeddedOPAEnforcer, error) {
 	e := &EmbeddedOPAEnforcer{
 		name:        cfg.Name,
 		policyPath:  cfg.PolicyPath,
@@ -81,7 +84,7 @@ func NewEmbeddedOPAEnforcer(cfg EmbeddedOPAConfig) (*EmbeddedOPAEnforcer, error)
 	}
 
 	// Prepare the query
-	if err := e.prepareQuery(modules); err != nil {
+	if err := e.prepareQuery(ctx, modules); err != nil {
 		return nil, err
 	}
 
@@ -127,9 +130,7 @@ constraints = {}
 // the operator. Operators with multi-file policies must consolidate
 // to a single `default` rule per name (e.g. keep the
 // `default allow = false` only in one shared base module).
-func (e *EmbeddedOPAEnforcer) prepareQuery(modules map[string]string) error {
-	ctx := context.Background()
-
+func (e *EmbeddedOPAEnforcer) prepareQuery(ctx context.Context, modules map[string]string) error {
 	options := make([]func(*rego.Rego), 0, 1+len(modules))
 	options = append(options, rego.Query(e.queryString))
 	for name, content := range modules {
@@ -287,8 +288,8 @@ func structToMap(v interface{}) (map[string]interface{}, error) {
 	return result, nil
 }
 
-// ReloadPolicy reloads the policy from disk.
-func (e *EmbeddedOPAEnforcer) ReloadPolicy() error {
+// ReloadPolicy reloads the policy from disk. ctx bounds the recompile.
+func (e *EmbeddedOPAEnforcer) ReloadPolicy(ctx context.Context) error {
 	if e.policyPath == "" {
 		return nil
 	}
@@ -302,5 +303,5 @@ func (e *EmbeddedOPAEnforcer) ReloadPolicy() error {
 		e.policyPath: string(content),
 	}
 
-	return e.prepareQuery(modules)
+	return e.prepareQuery(ctx, modules)
 }

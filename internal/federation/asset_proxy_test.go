@@ -56,7 +56,7 @@ func TestRewriteAssetHref_Modes(t *testing.T) {
 			Timeout:       5 * time.Second,
 			RewriteAssets: mode,
 		}
-		c, err := NewOriginClient(o)
+		c, err := NewOriginClientWithContext(context.Background(), nil, o)
 		require.NoError(t, err, "client")
 		return c
 	}
@@ -312,7 +312,7 @@ func TestRewriteLinks_WalksAssets(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer upstream.Close()
 
-	client, err := NewOriginClient(&Origin{
+	client, err := NewOriginClientWithContext(context.Background(), nil, &Origin{
 		ID:            "a",
 		BaseURL:       upstream.URL,
 		Enabled:       true,

@@ -38,14 +38,6 @@ type OriginClient struct {
 	lastDiscovery   time.Time
 }
 
-// NewOriginClient creates a new client for an origin using a detached
-// background context for auto-discovery. Prefer NewOriginClientWithContext
-// for new call sites — it ties background discovery to the proxy's
-// lifetime so shutdown aborts in-flight upstream calls.
-func NewOriginClient(origin *Origin) (*OriginClient, error) {
-	return NewOriginClientWithContext(context.Background(), slog.Default(), origin)
-}
-
 // NewOriginClientWithContext creates a new client for an origin and
 // binds the background discovery goroutine to parentCtx. Retry and
 // auth are layered into the transport so that ReverseProxy, raw
@@ -142,7 +134,7 @@ func NewOriginClientWithContext(parentCtx context.Context, logger *slog.Logger, 
 
 // DoRequest executes an HTTP request to the origin. Authentication and
 // retry are applied transparently by the client's RoundTripper chain
-// — see NewOriginClient.
+// — see NewOriginClientWithContext.
 //
 // The supplied path is treated as a suffix to be appended to the
 // origin's BaseURL path: BaseURL=https://example.com/v1 + path=/search
