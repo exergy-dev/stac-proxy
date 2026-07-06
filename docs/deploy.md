@@ -29,7 +29,8 @@ drain finishes cleanly.
 
 ## Configuration
 
-YAML; `${ENV_VAR}` expansion happens at load (`os.ExpandEnv`).
+YAML with environment-variable expansion applied at load. Expansion
+runs over config **values only** — never comments or mapping keys.
 
 | Top-level key | Required | Purpose |
 |---|---|---|
@@ -44,7 +45,19 @@ YAML; `${ENV_VAR}` expansion happens at load (`os.ExpandEnv`).
 
 ### Environment-variable injection
 
-Use `${VAR}` or `${VAR:-default}` in any string value. Example:
+Expansion follows a strict, url_remap-safe contract:
+
+- `${VAR}` — substitutes `VAR`. If `VAR` is unset **and** has no
+  `:-default`, the load fails with an error listing every missing
+  variable (an unset secret must never silently become `""`).
+- `${VAR:-default}` — `VAR`'s value when set and non-empty, otherwise
+  the literal `default` text (the default is not itself expanded).
+- `$$` — escapes a single literal `$`.
+- Bare `$VAR` (no braces) is left **literal** and never expanded. This
+  protects `url_remap` regex replacements such as `$1`/`$2`.
+
+Expansion applies to string **values** only — YAML comments and keys
+are untouched. Example:
 
 ```yaml
 upstream:
@@ -116,9 +129,11 @@ backwards navigation (`rel: prev`, `rel: first`) the proxy keeps a
 rendered-page cache so a returning client can replay an earlier page
 without re-fanning out to every origin.
 
-**Prerequisite.** Set `federation.cursor_secret` (HMAC key, ≥32 bytes
-recommended). Without it cursors are unsigned and the page cache is
-not engaged.
+**Prerequisite.** `federation.cursor_secret` (HMAC key, ≥32 bytes
+recommended; generate with `openssl rand -hex 32`) is **required** in
+federation mode — validation fails without it. Use the identical value
+across every replica, otherwise a client's `next`/`prev` cursor breaks
+when it lands on a different instance.
 
 **When to enable.** Federation deployments with deep pagination
 workloads where clients walk back over previously-returned pages. The
@@ -142,9 +157,9 @@ items. Estimate `max_entries × page_size × avg_item_bytes`. For
 1024 entries × 100 items × 4 KB ≈ 400 MB worst case; in practice items
 are smaller and the LRU rarely fills.
 
-**Disabling.** Either omit `cursor_secret` (also disables backwards
-navigation), or set `page_cache.enabled: false` while keeping the
-cursor secret (forward-only pagination remains signed).
+**Disabling.** Set `page_cache.enabled: false` while keeping the
+cursor secret (forward-only pagination remains signed). The cursor
+secret itself cannot be omitted in federation mode.
 
 **Horizontal scaling.** Like the response cache, the page cache is
 per-replica in-memory only. A sticky-session load balancer keeps a

@@ -391,25 +391,45 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Expand environment variables. Unlike os.ExpandEnv, we treat
-	// undefined references as a configuration error rather than
-	// silently expanding to "" — a YAML containing ${MISSING_SECRET}
-	// otherwise reads as "configured" with an empty value and slips
-	// past validation. Shell-style ${VAR:-default} provides an
-	// explicit opt-out for genuinely optional fields.
-	expanded, err := expandEnvStrict(string(data))
-	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+	// Parse into a node tree first so environment-variable expansion
+	// touches only scalar string *values* — never YAML comments or
+	// mapping keys. Expanding raw file text (the old approach) both
+	// clobbered ${...} references inside comments and collided with the
+	// url_remap regex-replace feature, whose `$1`/`$2` capture-group
+	// syntax looked like bare variables.
+	var root yaml.Node
+	if err := yaml.NewDecoder(bytes.NewReader(data)).Decode(&root); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
-	data = []byte(expanded)
 
-	// KnownFields(true) makes the decoder error on YAML keys that don't
-	// map to a struct field. Without it, typos like `lggging.level` or
-	// keys that document features the proxy does not implement
-	// (search_strategy, check_upstreams, …) silently no-op, leaving the
-	// operator with a config that "loads fine" but does the wrong thing.
+	// Expand env vars over the parsed scalars. Undefined ${VAR}
+	// references (without a :-default) are collected and reported as a
+	// single error — a YAML containing ${MISSING_SECRET} otherwise
+	// reads as "configured" with an empty value and slips past
+	// validation. ${VAR:-default} provides an explicit opt-out.
+	var missing []string
+	expandNode(&root, func(name string) (string, bool) {
+		return os.LookupEnv(name)
+	}, &missing)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("config: undefined environment variable(s) referenced in config: %s (use ${VAR:-default} to provide a fallback)",
+			strings.Join(missing, ", "))
+	}
+
+	// yaml.Node.Decode does not honor KnownFields, so re-marshal the
+	// mutated tree and run it through a strict decoder. KnownFields(true)
+	// makes the decoder error on YAML keys that don't map to a struct
+	// field. Without it, typos like `lggging.level` or keys that document
+	// features the proxy does not implement (search_strategy,
+	// check_upstreams, …) silently no-op, leaving the operator with a
+	// config that "loads fine" but does the wrong thing.
+	expanded, err := yaml.Marshal(&root)
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-encode config after env expansion: %w", err)
+	}
+
 	var cfg Config
-	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec := yaml.NewDecoder(bytes.NewReader(expanded))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
@@ -425,46 +445,97 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// expandEnvStrict performs ${VAR} / $VAR substitution like
-// os.ExpandEnv, with two semantic differences:
-//
-//   - References to unset environment variables produce an error
-//     rather than expanding to "". This catches configs where a
-//     required secret was forgotten — without the strict check, the
-//     YAML would parse as if the field were set to "" and downstream
-//     validation would happily accept the empty string as
-//     "configured".
-//
-//   - Shell-style ${VAR:-default} returns "default" when VAR is
-//     unset (or set to ""), giving operators an explicit way to
-//     declare a fallback for genuinely optional fields.
-//
-// All undefined references are collected before returning so the
-// operator gets a single error listing every missing variable, not
-// one-error-per-load-attempt.
-func expandEnvStrict(s string) (string, error) {
-	var missing []string
-	out := os.Expand(s, func(name string) string {
-		// ${VAR:-default}: name == "VAR:-default"
-		if idx := strings.Index(name, ":-"); idx >= 0 {
-			varName := name[:idx]
-			fallback := name[idx+2:]
-			if v, ok := os.LookupEnv(varName); ok && v != "" {
-				return v
-			}
-			return fallback
-		}
-		if v, ok := os.LookupEnv(name); ok {
-			return v
-		}
-		missing = append(missing, name)
-		return ""
-	})
-	if len(missing) > 0 {
-		return "", fmt.Errorf("undefined environment variable(s) referenced in config: %s (use ${VAR:-default} to provide a fallback)",
-			strings.Join(missing, ", "))
+// expandNode walks a YAML node tree and expands environment variables
+// inside every string scalar value. Any missing (undefined, no-default)
+// references are appended to *missing so the caller can report them all
+// at once. Mapping keys are scalar children too, but keys never contain
+// expandable ${...} in practice; expanding them is harmless because a
+// key like ${FOO} would already be an unknown-field error downstream.
+func expandNode(n *yaml.Node, lookup func(string) (string, bool), missing *[]string) {
+	if n == nil {
+		return
 	}
-	return out, nil
+	if n.Kind == yaml.ScalarNode && n.Tag == "!!str" {
+		out, miss := expandEnvStrict(n.Value, lookup)
+		*missing = append(*missing, miss...)
+		if out != n.Value {
+			// Clear the tag/style so the expanded value is re-resolved
+			// on re-marshal — this reproduces the observable behavior of
+			// substituting the value into the raw YAML text (e.g.
+			// `port: ${PORT}` → an int), rather than freezing it as a
+			// quoted string.
+			n.Value = out
+			n.Tag = ""
+			n.Style = 0
+		}
+	}
+	for _, c := range n.Content {
+		expandNode(c, lookup, missing)
+	}
+}
+
+// expandEnvStrict expands environment-variable references in a single
+// string according to a strict, url_remap-safe contract:
+//
+//   - ${VAR}            → the value of VAR, or (if unset) collected as
+//     a missing reference (returned in the second result) so the caller
+//     can fail the load with a single aggregated error.
+//   - ${VAR:-default}   → VAR's value when set and non-empty, else the
+//     literal default text (which is NOT recursively expanded). This
+//     matches shell `:-` semantics and is the explicit opt-out for
+//     genuinely optional fields.
+//   - $$                → a single literal '$'.
+//   - bare $NAME        → left verbatim, NEVER expanded. This
+//     permanently protects url_remap regex replacements like `$1`/`$2`.
+//
+// It deliberately does not use os.Expand/os.ExpandEnv, both of which
+// expand bare $NAME and would break the url_remap feature.
+func expandEnvStrict(s string, lookup func(string) (string, bool)) (string, []string) {
+	var b strings.Builder
+	var missing []string
+	for i := 0; i < len(s); {
+		if s[i] != '$' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		// s[i] == '$'
+		if i+1 < len(s) && s[i+1] == '$' {
+			// $$ escape → literal '$'.
+			b.WriteByte('$')
+			i += 2
+			continue
+		}
+		if i+1 < len(s) && s[i+1] == '{' {
+			end := strings.IndexByte(s[i+2:], '}')
+			if end < 0 {
+				// No closing brace — treat the '$' as a literal.
+				b.WriteByte('$')
+				i++
+				continue
+			}
+			expr := s[i+2 : i+2+end]
+			if idx := strings.Index(expr, ":-"); idx >= 0 {
+				name := expr[:idx]
+				def := expr[idx+2:]
+				if v, ok := lookup(name); ok && v != "" {
+					b.WriteString(v)
+				} else {
+					b.WriteString(def)
+				}
+			} else if v, ok := lookup(expr); ok {
+				b.WriteString(v)
+			} else {
+				missing = append(missing, expr)
+			}
+			i += 2 + end + 1
+			continue
+		}
+		// Bare $NAME (no braces) is left literal.
+		b.WriteByte('$')
+		i++
+	}
+	return b.String(), missing
 }
 
 // setDefaults sets default values for optional fields.

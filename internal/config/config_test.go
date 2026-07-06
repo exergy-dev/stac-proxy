@@ -52,6 +52,7 @@ server:
 logging:
   level: debug
 federation:
+  cursor_secret: test-cursor-secret
   origins:
     - id: origin1
       base_url: https://origin1.example.com
@@ -223,6 +224,7 @@ func TestValidate(t *testing.T) {
 		cfg := &Config{
 			Mode: "federation",
 			Federation: &FederationConfig{
+				CursorSecret: "test-cursor-secret",
 				Origins: []OriginConfig{
 					{ID: "origin1", BaseURL: "https://origin1.com"},
 					{ID: "origin2", BaseURL: "https://origin2.com"},
@@ -630,6 +632,7 @@ func TestOriginAuthValidation(t *testing.T) {
 				Mode:   "federation",
 				Server: ServerConfig{Port: 8080},
 				Federation: &FederationConfig{
+					CursorSecret: "test-cursor-secret",
 					Origins: []OriginConfig{{
 						ID:      "origin1",
 						BaseURL: "https://origin1.com",
@@ -868,6 +871,7 @@ func TestEdgeCases(t *testing.T) {
 			Mode:   "federation",
 			Server: ServerConfig{Port: 8080},
 			Federation: &FederationConfig{
+				CursorSecret: "test-cursor-secret",
 				Origins: []OriginConfig{{
 					ID:      "origin1",
 					BaseURL: "https://origin1.com",
@@ -885,7 +889,8 @@ func TestEdgeCases(t *testing.T) {
 			Mode:   "federation",
 			Server: ServerConfig{Port: 8080},
 			Federation: &FederationConfig{
-				Origins: []OriginConfig{{ID: "my-origin", BaseURL: "https://origin1.com"}},
+				CursorSecret: "test-cursor-secret",
+				Origins:      []OriginConfig{{ID: "my-origin", BaseURL: "https://origin1.com"}},
 			},
 		}
 		cfg.setDefaults()
@@ -1006,6 +1011,88 @@ upstream:
 	cfg, err := Load(tmp)
 	require.NoError(t, err)
 	assert.Equal(t, "https://from-env.example.com", cfg.Upstream.URL, "expected env-set value to win")
+}
+
+// TestConfig_FederationRequiresCursorSecret verifies that federation
+// mode now hard-fails validation when cursor_secret is empty (paginated
+// search cannot sign cursors without it).
+func TestConfig_FederationRequiresCursorSecret(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Mode:   "federation",
+		Server: ServerConfig{Port: 8080},
+		Federation: &FederationConfig{
+			Origins: []OriginConfig{{ID: "origin1", BaseURL: "https://origin1.com"}},
+		},
+	}
+	cfg.setDefaults()
+	err := NewValidator().Validate(cfg)
+	require.Error(t, err, "expected error for missing cursor_secret in federation mode")
+	assert.True(t, containsValidationError(err, "cursor_secret is required"), "got: %v", err)
+
+	// Whitespace-only is also rejected.
+	cfg.Federation.CursorSecret = "   "
+	err = NewValidator().Validate(cfg)
+	require.Error(t, err)
+	assert.True(t, containsValidationError(err, "cursor_secret is required"), "got: %v", err)
+}
+
+// TestConfig_ExpandEnv_IgnoresCommentsAndRegexReplace is the key
+// regression for Phase 2: expansion runs over parsed scalar values
+// only, so (a) a ${DOES_NOT_EXIST} reference inside a YAML comment does
+// NOT fail the load, and (b) a url_remap replace value containing a
+// regex capture group `$1` survives verbatim (bare $NAME is never
+// treated as a variable).
+func TestConfig_ExpandEnv_IgnoresCommentsAndRegexReplace(t *testing.T) {
+	t.Parallel()
+
+	yaml := `
+mode: single
+# this comment references ${DOES_NOT_EXIST} and must be ignored
+upstream:
+  url: https://example.com/stac
+middleware:
+  - name: url_remap
+    config:
+      rules:
+        - match: "^https://internal/(.*)$"
+          replace: "https://cdn.example.com/$1"
+`
+	tmp := createTempFile(t, yaml)
+	defer os.Remove(tmp)
+
+	cfg, err := Load(tmp)
+	require.NoError(t, err, "comment ${...} and regex $1 must not fail load")
+	require.Len(t, cfg.Middleware, 1)
+
+	rules, ok := cfg.Middleware[0].Config["rules"].([]interface{})
+	require.True(t, ok, "expected rules list, got %T", cfg.Middleware[0].Config["rules"])
+	require.Len(t, rules, 1)
+	rule, ok := rules[0].(map[string]interface{})
+	require.True(t, ok, "expected rule map, got %T", rules[0])
+	assert.Equal(t, "https://cdn.example.com/$1", rule["replace"], "regex capture group $1 must survive literally")
+}
+
+// TestConfig_ExpandEnv_DollarEscape verifies $$ collapses to a single
+// literal '$'.
+func TestConfig_ExpandEnv_DollarEscape(t *testing.T) {
+	t.Parallel()
+
+	yaml := `
+mode: single
+upstream:
+  url: https://example.com/stac
+middleware:
+  - name: url_remap
+    config:
+      literal: "a$$b"
+`
+	tmp := createTempFile(t, yaml)
+	defer os.Remove(tmp)
+
+	cfg, err := Load(tmp)
+	require.NoError(t, err)
+	assert.Equal(t, "a$b", cfg.Middleware[0].Config["literal"])
 }
 
 // TestConfig_RejectsUnknownKeys verifies that the YAML decoder runs
@@ -1134,15 +1221,6 @@ func TestValidateOrigin_RejectsRFC1918ByDefault(t *testing.T) {
 	err := NewValidator().Validate(cfg)
 	require.Error(t, err)
 	assert.True(t, containsValidationError(err, "private"), "got: %v", err)
-}
-
-// TestMustValidate verifies the panic helper.
-func TestMustValidate(t *testing.T) {
-	t.Parallel()
-	cfg := &Config{Mode: "single", Upstream: &UpstreamConfig{URL: "https://example.com"}}
-	cfg.setDefaults()
-	assert.NotPanics(t, func() { MustValidate(cfg) })
-	assert.Panics(t, func() { MustValidate(&Config{Mode: "invalid"}) })
 }
 
 // TestValidateOrigin_RejectsLoopbackByDefault: H8.

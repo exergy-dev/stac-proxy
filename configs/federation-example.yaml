@@ -36,6 +36,17 @@ federation:
   default_page_size: 100
   max_page_size: 1000
 
+  # cursor_secret is the HMAC key used to sign federated pagination
+  # cursors. REQUIRED in federation mode. The placeholder below only
+  # exists so this example validates with an empty environment — it is
+  # NOT safe for production. In production you MUST:
+  #   * replace it with a real secret: `openssl rand -hex 32`, and
+  #   * use the IDENTICAL value across every replica (otherwise a
+  #     client's `next`/`prev` cursor breaks when it lands on a
+  #     different instance).
+  # Inject it from your secrets manager rather than committing it here.
+  cursor_secret: "${CURSOR_SECRET:-CHANGE-ME-dev-only-not-for-production}"
+
   origins:
     # Public STAC server - no auth required
     - id: aws-earth-search

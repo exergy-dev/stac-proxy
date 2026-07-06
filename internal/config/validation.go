@@ -192,13 +192,14 @@ func (v *Validator) validateFederation(cfg FederationConfig) {
 		v.validateOrigin(i, origin, seenIDs, cfg.AllowPrivateOrigins)
 	}
 
-	// Federated pagination cursors are HMAC-signed. When the cursor
-	// path is wired (PaginatedSearcher), NewPaginatedSearcher itself
-	// errors out on an empty secret — that's the authoritative gate.
-	// Here we only warn so the operator gets a startup-time signal
-	// without breaking existing single-page-only deployments.
-	if cfg.CursorSecret == "" {
-		v.addWarning("federation.cursor_secret is empty; paginated search will be unavailable. Inject a secret from your secrets manager for production.")
+	// Federated pagination cursors are HMAC-signed. In federation mode
+	// the paginated searcher is always wired (NewPaginatedSearcher
+	// rejects an empty key), so a missing secret means paginated search
+	// silently fails at request time. Hard-fail at load instead. Single
+	// mode does not engage the cursor path (buildSingleOriginAsFederation
+	// passes no CursorSecret), so this is only required here.
+	if strings.TrimSpace(cfg.CursorSecret) == "" {
+		v.addError("federation.cursor_secret is required in federation mode; paginated search cannot sign cursors without it. Generate one with `openssl rand -hex 32` and inject it from your secrets manager (identical across all replicas).")
 	}
 
 	if cfg.PageCache != nil {
@@ -450,13 +451,6 @@ func isValidID(id string) bool {
 func ValidateConfig(cfg *Config) error {
 	v := NewValidator()
 	return v.Validate(cfg)
-}
-
-// MustValidate validates and panics on error.
-func MustValidate(cfg *Config) {
-	if err := ValidateConfig(cfg); err != nil {
-		panic(err)
-	}
 }
 
 // Quick validation helpers
