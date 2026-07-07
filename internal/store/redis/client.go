@@ -77,6 +77,13 @@ func New(cfg Config) (redis.UniversalClient, error) {
 		// response to a struggling Redis is an immediate miss, not
 		// stacked retry latency on the request path.
 		MaxRetries: -1,
+		// Honor context deadlines for the WHOLE operation including
+		// dial. Without this, go-redis v9 bounds commands only by
+		// Dial/Read/WriteTimeout — so during an outage each consumer's
+		// per-call context deadline is ignored and sequential ops
+		// stack full 2s dial timeouts into user-visible seconds
+		// (observed: 20s on the first request after killing Redis).
+		ContextTimeoutEnabled: true,
 	}
 	if cfg.TLS.Enabled {
 		tc, err := buildTLSConfig(cfg.TLS)

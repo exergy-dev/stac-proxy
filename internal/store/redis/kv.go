@@ -35,9 +35,19 @@ func NewKV(rdb redis.UniversalClient, prefix string, logger *slog.Logger) *KV {
 	}
 }
 
+// kvCallTimeout bounds a single cache operation end-to-end (dial
+// included — the client sets ContextTimeoutEnabled). This, not the
+// client's Read/WriteTimeout, is what keeps a Redis outage to a
+// milliseconds-scale degradation per request: without a per-op
+// deadline the first request after an outage serially eats full dial
+// timeouts across cache get/set and page-cache get/put.
+const kvCallTimeout = 250 * time.Millisecond
+
 // Get retrieves a value. Any backend error (including a down Redis)
 // is reported as a miss; a throttled warning is logged.
 func (s *KV) Get(ctx context.Context, key string) ([]byte, bool) {
+	ctx, cancel := context.WithTimeout(ctx, kvCallTimeout)
+	defer cancel()
 	val, err := s.rdb.Get(ctx, s.prefix+key).Bytes()
 	if err != nil {
 		if !errors.Is(err, redis.Nil) {
@@ -56,6 +66,8 @@ func (s *KV) Set(ctx context.Context, key string, value []byte, ttl time.Duratio
 	if ttl <= 0 {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, kvCallTimeout)
+	defer cancel()
 	err := s.rdb.Set(ctx, s.prefix+key, value, ttl).Err()
 	if err != nil {
 		s.logGate.Warn(s.logger, "redis set failed; entry not cached",
@@ -66,6 +78,8 @@ func (s *KV) Set(ctx context.Context, key string, value []byte, ttl time.Duratio
 
 // Delete removes a key.
 func (s *KV) Delete(ctx context.Context, key string) error {
+	ctx, cancel := context.WithTimeout(ctx, kvCallTimeout)
+	defer cancel()
 	return s.rdb.Del(ctx, s.prefix+key).Err()
 }
 
