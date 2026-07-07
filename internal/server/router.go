@@ -85,6 +85,12 @@ func NewRouter(cfg RouterConfig) *Router {
 		r.Use(bodyLimitMiddleware(limit))
 	}
 
+	// Classify the route and attach STACInfo BEFORE the search parser
+	// and operator middlewares — both read it from the context, and
+	// context values attached later (in the route handler) are
+	// invisible to them. See stacInfoClassifier.
+	r.Use(stacInfoClassifier(r.Mux))
+
 	// Parse search bodies/queries before authz so authz constraint
 	// enforcement (AllowedCollections, DeniedCollections,
 	// RequiredFilters) can mutate the parsed SearchRequest. Must
@@ -181,13 +187,16 @@ func (r *Router) handleAsset(w http.ResponseWriter, req *http.Request) {
 	originID := chi.URLParam(req, "originId")
 	ref := chi.URLParam(req, "ref")
 
-	// Attach STACInfo so the middleware chain (authz, cache opt-out,
-	// metrics) sees this as an Asset request keyed by origin.
-	info := &middleware.STACInfo{
-		RequestType: middleware.RequestTypeAsset,
-		Collection:  originID, // reuse the Collection slot for the origin/route key
+	// STACInfo (RequestType=Asset, Collection=originID) is attached by
+	// stacInfoClassifier so the middleware chain saw it; keep a
+	// fallback for direct-handler callers.
+	if middleware.STACInfoFromContext(req.Context()) == nil {
+		info := &middleware.STACInfo{
+			RequestType: middleware.RequestTypeAsset,
+			Collection:  originID, // reuse the Collection slot for the origin/route key
+		}
+		req = req.WithContext(middleware.WithSTACInfo(req.Context(), info))
 	}
-	req = req.WithContext(middleware.WithSTACInfo(req.Context(), info))
 
 	// Delegate to the asset handler so it can stream bytes; we do NOT
 	// route through dispatch() because that path buffers the
@@ -195,12 +204,20 @@ func (r *Router) handleAsset(w http.ResponseWriter, req *http.Request) {
 	r.assetHandler.ServeAssetHTTP(w, req, originID, ref)
 }
 
-// dispatch attaches STACInfo to req.Context() so chi-layer middlewares
-// can read the parsed STAC shape, then delegates to the inner handler.
+// dispatch delegates to the inner handler. STACInfo is normally
+// already in the context — attached by stacInfoClassifier before the
+// middleware chain — and MUST be reused when present: the search
+// parser and authz middlewares mutate that instance (SearchReq,
+// injected constraints), and replacing it here would silently discard
+// their work. The fallback attach only serves callers that invoke
+// route handlers directly without the router's middleware stack
+// (tests, embedding).
 func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, rt middleware.RequestType, collection, itemID string) {
-	info := &middleware.STACInfo{RequestType: rt, Collection: collection, ItemID: itemID}
-	ctx := middleware.WithSTACInfo(req.Context(), info)
-	r.handler.ServeHTTP(w, req.WithContext(ctx))
+	if middleware.STACInfoFromContext(req.Context()) == nil {
+		info := &middleware.STACInfo{RequestType: rt, Collection: collection, ItemID: itemID}
+		req = req.WithContext(middleware.WithSTACInfo(req.Context(), info))
+	}
+	r.handler.ServeHTTP(w, req)
 }
 
 // bodyLimitMiddleware wraps every request body in http.MaxBytesReader
