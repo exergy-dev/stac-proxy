@@ -849,14 +849,16 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		return nil, err
 	}
 
-	// Register origin health checks against the same *http.Client the
-	// federation fan-out uses, so probes share the project's
-	// instrumented transport (retry, custom CA pool, per-origin auth)
-	// rather than constructing a parallel client (M-observability-2).
+	// Register origin health checks against the client that shares the
+	// fan-out's instrumented transport (retry, custom CA pool,
+	// per-origin auth — M-observability-2) but BYPASSES the circuit
+	// breaker: probes must observe the origin itself, or an open
+	// circuit fails readiness on every replica at once and the load
+	// balancer drains the fleet over a partial-results degradation.
 	for _, o := range origins {
 		var client *http.Client
 		if oc := handler.OriginClient(o.ID); oc != nil {
-			client = oc.HTTPClient()
+			client = oc.HealthClient()
 		}
 		baseURL := o.BaseURL
 		health.AddCheck(observability.NewOriginCheck(o.ID, baseURL, client))
@@ -1089,11 +1091,12 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 		return nil, err
 	}
 
-	// Register upstream health check against the same instrumented
-	// HTTP client used for fan-out (M-observability-2).
+	// Register upstream health check against the instrumented client
+	// that bypasses the circuit breaker (M-observability-2; see the
+	// federation path's comment for the breaker rationale).
 	var hc *http.Client
 	if oc := handler.OriginClient(origin.ID); oc != nil {
-		hc = oc.HTTPClient()
+		hc = oc.HealthClient()
 	}
 	health.AddCheck(observability.NewOriginCheck("upstream", cfg.Upstream.URL, hc))
 

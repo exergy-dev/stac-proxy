@@ -90,6 +90,14 @@ type BreakerTransport struct {
 	reopens     int
 	openUntil   time.Time
 	probes      int
+	// gen increments every time the circuit opens. Outcomes are
+	// recorded against the generation that admitted them, and stale
+	// generations are ignored: without this, one slow request
+	// admitted before the circuit opened can complete with a 2xx a
+	// moment later and instantly close the open circuit (zeroing the
+	// exponential backoff), so a 90%-failing origin never actually
+	// fast-fails.
+	gen uint64
 }
 
 // NewBreakerTransport wraps inner with a circuit breaker. name is the
@@ -112,55 +120,64 @@ func NewBreakerTransport(inner http.RoundTripper, name string, cfg BreakerConfig
 
 // RoundTrip implements http.RoundTripper.
 func (b *BreakerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if err := b.admit(); err != nil {
+	gen, err := b.admit()
+	if err != nil {
 		return nil, err
 	}
 	resp, err := b.inner.RoundTrip(req)
-	b.record(resp, err)
+	b.record(gen, resp, err)
 	return resp, err
 }
 
-// admit decides whether the request may pass in the current state.
-func (b *BreakerTransport) admit() error {
+// admit decides whether the request may pass in the current state and
+// returns the generation the outcome must be recorded against.
+func (b *BreakerTransport) admit() (uint64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	switch b.state {
 	case stateClosed:
-		return nil
+		return b.gen, nil
 	case stateOpen:
 		if time.Now().Before(b.openUntil) {
-			return fmt.Errorf("origin %s: %w", b.name, ErrCircuitOpen)
+			return 0, fmt.Errorf("origin %s: %w", b.name, ErrCircuitOpen)
 		}
 		b.state = stateHalfOpen
 		b.probes = 1
 		b.logger.Info("circuit breaker half-open; probing origin",
 			"origin", b.name)
-		return nil
+		return b.gen, nil
 	default: // stateHalfOpen
 		if b.probes >= b.cfg.HalfOpenProbes {
-			return fmt.Errorf("origin %s: %w", b.name, ErrCircuitOpen)
+			return 0, fmt.Errorf("origin %s: %w", b.name, ErrCircuitOpen)
 		}
 		b.probes++
-		return nil
+		return b.gen, nil
 	}
 }
 
-// record classifies the outcome and drives state transitions.
-func (b *BreakerTransport) record(resp *http.Response, err error) {
+// record classifies the outcome and drives state transitions. gen is
+// the generation that admitted the request; outcomes from an older
+// generation are dropped — the circuit opened since they started, and
+// neither their successes (which would cancel the open window and
+// zero the backoff) nor their failures (which would double-count into
+// the next threshold) say anything about the origin NOW.
+func (b *BreakerTransport) record(gen uint64, resp *http.Response, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if gen != b.gen {
+		return
+	}
+
 	// Neutral: a canceled parent context is not an origin-health
 	// signal. Release a half-open probe slot without judging.
 	if err != nil && errors.Is(err, context.Canceled) {
-		b.mu.Lock()
 		if b.state == stateHalfOpen && b.probes > 0 {
 			b.probes--
 		}
-		b.mu.Unlock()
 		return
 	}
 	failure := err != nil || (resp != nil && resp.StatusCode >= 500)
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	if failure {
 		switch b.state {
 		case stateClosed:
@@ -173,7 +190,8 @@ func (b *BreakerTransport) record(resp *http.Response, err error) {
 			b.reopens++
 			b.open("probe_failed", b.reopens)
 		case stateOpen:
-			// A request admitted before the circuit opened; nothing to do.
+			// Same-generation failure while open is impossible (open
+			// bumps the generation); nothing to do.
 		}
 		return
 	}
@@ -201,6 +219,7 @@ func (b *BreakerTransport) open(reasonKey string, reasonVal int) {
 	b.openUntil = time.Now().Add(period)
 	b.consecFails = 0
 	b.probes = 0
+	b.gen++ // invalidate outcomes of everything admitted before the open
 	b.logger.Warn("circuit breaker opened; fast-failing origin",
 		"origin", b.name,
 		reasonKey, reasonVal,

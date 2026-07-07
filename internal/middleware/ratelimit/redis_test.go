@@ -193,3 +193,26 @@ func TestMiddleware_FailureModes(t *testing.T) {
 		assert.Contains(t, rr.Body.String(), "RateLimiterUnavailable")
 	})
 }
+
+// TestRedisLimiter_ResetAtParityWithMemory: X-RateLimit-Reset must not
+// shift when an operator switches stores. Both backends compute it
+// from PRE-consumption tokens.
+func TestRedisLimiter_ResetAtParityWithMemory(t *testing.T) {
+	t.Parallel()
+	rl, _ := newTestRedisLimiter(t)
+	ml := NewTokenBucketLimiter(0)
+	ctx := context.Background()
+	// 1 token/minute refill: a one-interval divergence would be 60s —
+	// far larger than test scheduling jitter.
+	quota := Quota{Requests: 60, Window: time.Hour, Burst: 5}
+
+	_, rInfo, err := rl.Allow(ctx, "k", quota)
+	require.NoError(t, err)
+	_, mInfo, err := ml.Allow(ctx, "k", quota)
+	require.NoError(t, err)
+
+	assert.InDelta(t, mInfo.ResetAt, rInfo.ResetAt, 2,
+		"ResetAt must agree across backends (both from pre-consumption tokens)")
+	assert.Equal(t, mInfo.Remaining, rInfo.Remaining, "Remaining parity")
+	assert.Equal(t, mInfo.Limit, rInfo.Limit, "Limit parity")
+}

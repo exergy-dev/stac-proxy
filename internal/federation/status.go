@@ -35,6 +35,33 @@ func classifyOriginError(err error) string {
 	return "fetch_failed"
 }
 
+// originFailures collects the sorted IDs of failed origins from a
+// fan-out result set. status reports (originID, failed) per result.
+func originFailures[T any](results []T, status func(T) (string, bool)) []string {
+	var failed []string
+	for _, r := range results {
+		if id, f := status(r); f {
+			failed = append(failed, id)
+		}
+	}
+	sort.Strings(failed)
+	return failed
+}
+
+// respondIfAllFailed returns the 502 UpstreamFederationFailure
+// response (and done=true) when every one of total routed origins
+// failed. Shared by the fan-out search and collections paths; the
+// paginated path has its own variant keyed off cursor statuses.
+func (h *Handler) respondIfAllFailed(op string, failed []string, total int) (*response, error, bool) {
+	if total == 0 || len(failed) != total {
+		return nil, nil, false
+	}
+	h.logger.Warn(op+" failed on every routed origin",
+		"origins", strings.Join(failed, ","))
+	resp, err := federationFailureResponse(failed)
+	return resp, err, true
+}
+
 // failedFromStatuses extracts the IDs of origins whose status carries
 // an error, sorted.
 func failedFromStatuses(statuses []OriginStatus) []string {
@@ -50,6 +77,12 @@ func failedFromStatuses(statuses []OriginStatus) []string {
 
 // markPartial stamps the partial-result headers onto resp and logs a
 // throttled warning. No-op when failed is empty.
+//
+// Cache-Control: no-store protects every cache — the proxy's own
+// response cache (which honors no-store generically) AND any CDN or
+// edge cache the operator put in front. A cached partial page would
+// keep serving the shrunken result set for its full TTL after the
+// origins recovered.
 func (h *Handler) markPartial(resp *response, failed []string) {
 	if len(failed) == 0 {
 		return
@@ -59,6 +92,7 @@ func (h *Handler) markPartial(resp *response, failed []string) {
 	}
 	resp.Headers.Set(HeaderFederationPartial, "true")
 	resp.Headers.Set(HeaderFederationFailedOrigins, strings.Join(failed, ","))
+	resp.Headers.Set("Cache-Control", "no-store")
 	h.partialWarn.Warn(h.logger, "federation returned partial results",
 		"failed_origins", strings.Join(failed, ","),
 	)
@@ -80,6 +114,7 @@ func federationFailureResponse(failed []string) (*response, error) {
 		StatusCode: http.StatusBadGateway,
 		Headers: http.Header{
 			"Content-Type":                []string{"application/json"},
+			"Cache-Control":               []string{"no-store"},
 			HeaderFederationPartial:       []string{"true"},
 			HeaderFederationFailedOrigins: []string{strings.Join(failed, ",")},
 		},

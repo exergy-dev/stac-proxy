@@ -425,21 +425,11 @@ func (v *Validator) validateMiddleware(cfg *Config) {
 	}
 }
 
-// validateRateLimitMiddleware checks the store selector (memory, the
-// default, or redis — redis requiring the top-level block) and the
-// failure_mode knob (open/closed; only meaningful with redis, since
-// the in-memory limiter cannot fail).
+// validateRateLimitMiddleware checks the store selector (see
+// validateStoreSelector) and the failure_mode knob (open/closed; only
+// meaningful with redis, since the in-memory limiter cannot fail).
 func (v *Validator) validateRateLimitMiddleware(idx int, mwCfg map[string]interface{}, cfg *Config) {
-	store := storeSelection(mwCfg)
-	switch store {
-	case "", "memory":
-	case "redis":
-		if cfg.Redis == nil {
-			v.addError("middleware[%d] rate_limit: store \"redis\" requires the top-level redis block", idx)
-		}
-	default:
-		v.addError("middleware[%d] rate_limit: store %q is not supported; valid stores: memory, redis", idx, store)
-	}
+	store := v.validateStoreSelector("rate_limit", idx, mwCfg, cfg)
 	if mwCfg == nil {
 		return
 	}
@@ -592,22 +582,29 @@ func (v *Validator) validateCorsMiddleware(idx int, cfg map[string]interface{}) 
 	}
 }
 
-// validateCacheMiddleware rejects unsupported cache stores at config
-// load time. Without this, a config with a bogus `store:` parses fine
-// and the proxy boots, then errors on the first request — a much worse
-// failure mode than a clean startup error. `store: redis` additionally
-// requires the top-level `redis:` block.
-func (v *Validator) validateCacheMiddleware(idx int, mwCfg map[string]interface{}, cfg *Config) {
+// validateStoreSelector rejects unsupported `store:` selections at
+// config load time. Without this, a bogus store parses fine and the
+// proxy boots, then errors on the first request — a much worse
+// failure mode than a clean startup error. `store: redis`
+// additionally requires the top-level `redis:` block. Returns the
+// selected store so callers can layer component-specific checks.
+func (v *Validator) validateStoreSelector(component string, idx int, mwCfg map[string]interface{}, cfg *Config) string {
 	store := storeSelection(mwCfg)
 	switch store {
 	case "", "memory":
 	case "redis":
 		if cfg.Redis == nil {
-			v.addError("middleware[%d] cache: store \"redis\" requires the top-level redis block", idx)
+			v.addError("middleware[%d] %s: store \"redis\" requires the top-level redis block", idx, component)
 		}
 	default:
-		v.addError("middleware[%d] cache: store %q is not supported; valid stores: memory, redis", idx, store)
+		v.addError("middleware[%d] %s: store %q is not supported; valid stores: memory, redis", idx, component, store)
 	}
+	return store
+}
+
+// validateCacheMiddleware — see validateStoreSelector.
+func (v *Validator) validateCacheMiddleware(idx int, mwCfg map[string]interface{}, cfg *Config) {
+	v.validateStoreSelector("cache", idx, mwCfg, cfg)
 }
 
 // isValidID checks if an ID is valid (alphanumeric with hyphens).

@@ -231,3 +231,47 @@ func TestBreaker_HalfOpenAdmitsLimitedProbes(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestBreaker_StaleOutcomeIgnored: a request admitted before the
+// circuit opened must not corrupt breaker state when it completes
+// later — a straggler 2xx would otherwise close the open circuit
+// instantly and zero the exponential backoff.
+func TestBreaker_StaleOutcomeIgnored(t *testing.T) {
+	t.Parallel()
+	inner := &scriptedRT{outcomes: repeat(scriptedOutcome{err: errors.New("down")}, 10)}
+	b := NewBreakerTransport(inner, "o", BreakerConfig{FailureThreshold: 2, OpenBase: time.Hour}, nil)
+
+	// Admit a slow request while closed; its outcome arrives later.
+	staleGen, err := b.admit()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two failures open the circuit (bumping the generation).
+	_, _ = b.RoundTrip(newReq(t))
+	_, _ = b.RoundTrip(newReq(t))
+	if _, err := b.RoundTrip(newReq(t)); !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("want open, got %v", err)
+	}
+
+	// The straggler completes with a 200 — must be ignored.
+	b.record(staleGen, &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil)
+	if _, err := b.RoundTrip(newReq(t)); !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("stale success must not close the open circuit, got %v", err)
+	}
+
+	// A stale FAILURE must not double-count either (e.g. re-extend
+	// the window or bump reopens).
+	b.mu.Lock()
+	reopensBefore := b.reopens
+	b.mu.Unlock()
+	b.record(staleGen, nil, errors.New("stale failure"))
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.reopens != reopensBefore {
+		t.Fatalf("stale failure must not touch reopens: %d -> %d", reopensBefore, b.reopens)
+	}
+	if b.state != stateOpen {
+		t.Fatalf("state must remain open, got %v", b.state)
+	}
+}

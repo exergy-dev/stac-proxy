@@ -131,7 +131,8 @@ func (l *RedisLimiter) Allow(ctx context.Context, key string, quota Quota) (bool
 
 	allowed := toInt64(res[0]) == 1
 	preTokens := toFloat(res[1])
-	postTokens := toFloat(res[2])
+	// res[2] (post-consumption tokens) is returned by the script for
+	// debuggability but unused: Info derives everything from pre.
 	retryMs := toInt64(res[3])
 
 	preRem := int(math.Floor(preTokens))
@@ -141,7 +142,11 @@ func (l *RedisLimiter) Allow(ctx context.Context, key string, quota Quota) (bool
 	info := Info{
 		Limit:     quota.Requests,
 		Remaining: preRem,
-		ResetAt:   resetAt(now, postTokens, float64(burst), quota).Unix(),
+		// From PRE-consumption tokens — parity with the in-memory
+		// limiter (limiter.go computes resetAt from preTokens), so
+		// X-RateLimit-Reset doesn't shift by a token interval when an
+		// operator switches stores.
+		ResetAt: resetAt(now, preTokens, float64(burst), quota).Unix(),
 	}
 	if !allowed {
 		info.RetryAfter = int(math.Ceil(float64(retryMs) / 1000.0))

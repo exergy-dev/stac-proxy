@@ -340,6 +340,11 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 		if oc == nil || oc.Exhausted {
 			continue
 		}
+		// Retired origins are active only to drain their stash —
+		// never fetched again.
+		if oc.retired() {
+			continue
+		}
 		if len(oc.Stash) >= limit {
 			continue
 		}
@@ -436,7 +441,23 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 	// follows `rel: prev` and arrives back here with that same
 	// cursorStr, the Get above hits and we serve the cached bytes
 	// without re-fanning-out.
-	if cursorStr != "" {
+	//
+	// NEVER cache a page rendered while any origin was failing: the
+	// cache fast path at the top of Search returns hits before any
+	// refetch, so a cached failure page would replay for its whole
+	// TTL — a client retrying the cursor of an all-failed page would
+	// get the same 502 back long after the origins recovered,
+	// defeating the ErrorCount retry budget entirely. Skipping the
+	// put costs a re-fan-out on the next prev/first follow, which is
+	// the cache's documented miss behavior.
+	pageDegraded := false
+	for _, st := range result.Context.Origins {
+		if st.Error != "" {
+			pageDegraded = true
+			break
+		}
+	}
+	if cursorStr != "" && !pageDegraded {
 		s.putToPageCache(ctx, cursorStr, principalHash, cursor, result)
 	}
 

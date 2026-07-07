@@ -310,10 +310,16 @@ func (o *OriginCursor) retired() bool {
 // HasMore returns true if any origin has more results — either
 // un-fetched upstream pages remain, or a stash of previously-fetched
 // items is queued for emit on the next page. Errored-but-not-retired
-// origins count: they are retried on the next page.
+// origins count: they are retried on the next page. A RETIRED origin
+// counts only for its remaining stash — those items were already
+// fetched and paid for; dropping them because the upstream later died
+// would silently lose real results the proxy holds in hand.
 func (c *FederatedCursor) HasMore() bool {
 	for _, origin := range c.Origins {
 		if origin.retired() {
+			if len(origin.Stash) > 0 {
+				return true
+			}
 			continue
 		}
 		if !origin.Exhausted || len(origin.Stash) > 0 {
@@ -324,13 +330,18 @@ func (c *FederatedCursor) HasMore() bool {
 }
 
 // ActiveOrigins returns origins that have more results — same rule
-// as HasMore. An origin whose upstream is exhausted but whose stash
-// still has items is "active" for the merge phase (mergeResults will
-// consume from its Stash); it just won't be fetched again.
+// as HasMore. An origin whose upstream is exhausted (or retired) but
+// whose stash still has items is "active" for the merge phase
+// (mergeResults will consume from its Stash); it just won't be
+// fetched again — the fetch-selection loop in Search additionally
+// excludes retired origins.
 func (c *FederatedCursor) ActiveOrigins() []string {
 	var active []string
 	for id, origin := range c.Origins {
 		if origin.retired() {
+			if len(origin.Stash) > 0 {
+				active = append(active, id)
+			}
 			continue
 		}
 		if !origin.Exhausted || len(origin.Stash) > 0 {

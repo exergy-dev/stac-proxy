@@ -14,14 +14,13 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
-	"github.com/yourorg/stac-proxy/internal/logx"
 	"github.com/yourorg/stac-proxy/internal/httpx"
+	"github.com/yourorg/stac-proxy/internal/logx"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
@@ -338,17 +337,11 @@ func (h *Handler) handleSearch(ctx context.Context, req *request) (*response, er
 
 	// All routed origins down → 502, not an empty 200 that reads as
 	// "no matches".
-	var failed []string
-	for _, r := range results {
-		if r.Error != nil {
-			failed = append(failed, r.OriginID)
-		}
-	}
-	sort.Strings(failed)
-	if len(results) > 0 && len(failed) == len(results) {
-		h.logger.Warn("federated search failed on every routed origin",
-			"origins", strings.Join(failed, ","))
-		return federationFailureResponse(failed)
+	failed := originFailures(results, func(r *OriginSearchResult) (string, bool) {
+		return r.OriginID, r.Error != nil
+	})
+	if resp, err, done := h.respondIfAllFailed("federated search", failed, len(results)); done {
+		return resp, err
 	}
 
 	// Merge results
@@ -561,17 +554,11 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 	// All origins down → 502; a subset down → 200 with the partial
 	// headers, so a caller can tell a shrunken catalog from the real
 	// one.
-	var failed []string
-	for _, r := range results {
-		if r.Error != nil {
-			failed = append(failed, r.OriginID)
-		}
-	}
-	sort.Strings(failed)
-	if len(results) > 0 && len(failed) == len(results) {
-		h.logger.Warn("GET /collections failed on every origin",
-			"origins", strings.Join(failed, ","))
-		return federationFailureResponse(failed)
+	failed := originFailures(results, func(r *OriginCollectionsResult) (string, bool) {
+		return r.OriginID, r.Error != nil
+	})
+	if resp, err, done := h.respondIfAllFailed("GET /collections", failed, len(results)); done {
+		return resp, err
 	}
 
 	// Merge collections

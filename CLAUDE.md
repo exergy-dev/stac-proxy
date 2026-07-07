@@ -47,9 +47,9 @@ Client → Middleware Chain → Router/Handler → Origins
 - `internal/middleware/` - Chi-style `func(http.Handler) http.Handler` middleware components plus shared types (`types.go`: `RequestType`, priorities, context keys, `STACInfo`, error types):
   - `auth/` - Authentication providers (JWT bearer, JWKS, OIDC discovery, API key, basic, mTLS)
   - `authz/` - Authorization with embedded OPA, CQL2 injection, geofencing, and file-policy conditions (`time_range`, `ip_range`, `attribute`)
-  - `cache/` - Response caching (in-memory LRU only)
+  - `cache/` - Response caching (`store: memory` LRU, default, or `store: redis` shared across replicas; honors `Cache-Control: no-store`)
   - `cors/` - CORS preflight + per-response headers
-  - `ratelimit/` - Token-bucket rate limiting (per-IP / per-principal)
+  - `ratelimit/` - Token-bucket rate limiting (per-IP / per-principal); `store: redis` makes buckets global across replicas via an atomic Lua script, with a `failure_mode: open|closed` knob
   - `remap/` - URL remapping and HMAC URL signing
   - `logging/` - Structured slog request logging with request-id propagation
 - `internal/federation/` - Multi-origin federation (also handles single-origin as federation-of-1):
@@ -60,12 +60,15 @@ Client → Middleware Chain → Router/Handler → Origins
   - `pagination.go` - Federated cursor-based pagination with per-search dedup
   - `cursor.go` - Principal-bound cursor encoding (v2: `PrevCursor`/`FirstCursor`/`PageSeq`)
   - `auth_providers.go` - Per-origin auth (basic, bearer, oauth2 with singleflight, AWS SigV4 via aws-sdk-go-v2 — static keys only)
-  - `pagecache/` - In-memory LRU of rendered pages, keyed by cursor signature + principal hash, for `rel: prev` / `rel: first` navigation without re-fanning-out
+  - `pagecache/` - Cache of rendered pages (in-memory LRU or shared Redis via `page_cache.store`), keyed by cursor signature + principal hash, for `rel: prev` / `rel: first` navigation without re-fanning-out; degraded pages (any origin errored) are never cached
   - `pageadapter/` - Pluggable upstream pagination adapters (`token`, `next_url`, `offset`, `link_header`, `auto`)
+  - `status.go` - Partial-result signaling: 502 `UpstreamFederationFailure` when all routed origins fail; `X-Federation-Partial` / `X-Federation-Failed-Origins` headers + `stac_proxy:origins` context block on partial 200s
 - `internal/geo/` - Geospatial operations (geometry, GeoJSON, antimeridian-aware bbox, spatial index)
 - `internal/stac/` - STAC types (aliased from `go-stac-client`), parser, conformance helpers, CQL2 evaluator (incl. S_INTERSECTS)
-- `internal/httpx/` - HTTP utilities: bounded response capture, retry transport (retryablehttp), outbound `X-Forwarded-*` propagation, hop-by-hop header stripping. Inbound trusted-proxy / `RemoteAddr` rewriting is delegated to chi's `middleware.RealIP`.
-- `internal/observability/` - cached `/health`, `/health/live`, `/health/ready` checks (alexliesenfeld/health adapter); no metrics exposition
+- `internal/httpx/` - HTTP utilities: bounded response capture, retry transport (retryablehttp, full-jitter backoff), per-origin circuit breaker (`breaker.go`, outermost in the origin transport stack; health probes bypass it), outbound `X-Forwarded-*` propagation, hop-by-hop header stripping. Inbound trusted-proxy / `RemoteAddr` rewriting is delegated to chi's `middleware.RealIP`.
+- `internal/store/redis/` - Shared Redis client (go-redis v9) + fail-open byte-KV store used by cache/pagecache when `store: redis`; every op has a per-call deadline so a Redis outage degrades by milliseconds
+- `internal/logx/` - `LogThrottle` (one warn per interval + suppressed count) — load-bearing under logs-only observability
+- `internal/observability/` - cached `/health`, `/health/live`, `/health/ready` checks (alexliesenfeld/health adapter); no metrics exposition (logs-only, deliberate). Redis is intentionally NOT a readiness check; origin probes bypass the circuit breaker
 
 ### Key Interfaces
 

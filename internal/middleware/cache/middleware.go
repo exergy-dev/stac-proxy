@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/httpx"
@@ -267,13 +268,14 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			if _, ok := cacheable[status]; !ok {
 				return
 			}
-			// Never cache a partial federation response: replaying a
+			// Honor Cache-Control: no-store from the inner handler.
+			// This is how partial federation responses opt out of
+			// caching (federation.markPartial sets it — replaying a
 			// page that silently misses an origin's items for the
 			// whole TTL would extend a transient outage's blast
-			// radius. The header is also not in the cacheable
-			// whitelist, so a stored partial would replay UNMARKED —
-			// worse than not caching it.
-			if cap.HeadersOut().Get("X-Federation-Partial") == "true" {
+			// radius), and it works for any other producer or
+			// upstream that declares a response uncacheable.
+			if strings.Contains(strings.ToLower(cap.HeadersOut().Get("Cache-Control")), "no-store") {
 				return
 			}
 			// Negative-cache lifetime applies to every 4xx in the

@@ -25,8 +25,12 @@ const defaultMaxResponseBytes int64 = 32 << 20 // 32 MiB
 
 // OriginClient handles communication with a single downstream STAC server.
 type OriginClient struct {
-	origin           *Origin
-	httpClient       *http.Client
+	origin     *Origin
+	httpClient *http.Client
+	// healthClient shares auth+retry with httpClient but bypasses the
+	// circuit breaker — see the probeRT note in
+	// NewOriginClientWithContext and HealthClient below.
+	healthClient     *http.Client
 	transport        http.RoundTripper
 	authProvider     AuthProvider
 	baseURL          *url.URL
@@ -93,6 +97,18 @@ func NewOriginClientWithContext(parentCtx context.Context, logger *slog.Logger, 
 		}
 	}
 
+	// Health probes get the pre-breaker transport (auth + retry, no
+	// breaker). Routing probes through the breaker couples readiness
+	// to breaker state in both directions: an open circuit fails the
+	// probe without touching the network (the aggregated health
+	// checker then marks the replica down, and since every replica's
+	// breaker opens on the same outage, load balancers drain the
+	// whole fleet — a partial-results degradation amplified into a
+	// full outage), and conversely a cheap successful GET probe can
+	// occupy the single half-open slot and close a circuit that
+	// search traffic would immediately re-open.
+	probeRT := rt
+
 	// Circuit breaker sits OUTERMOST (outside auth and retry): one
 	// user-visible request = one breaker sample regardless of retry
 	// fan-out, and an open circuit fast-fails before the auth layer
@@ -125,6 +141,7 @@ func NewOriginClientWithContext(parentCtx context.Context, logger *slog.Logger, 
 	client := &OriginClient{
 		origin:           origin,
 		httpClient:       httpClient,
+		healthClient:     &http.Client{Transport: probeRT, Timeout: origin.Timeout},
 		transport:        rt,
 		authProvider:     authProvider,
 		baseURL:          baseURL,
@@ -547,6 +564,20 @@ func (c *OriginClient) Transport() http.RoundTripper {
 // transport (retry, custom CA pool, per-origin auth) rather than
 // constructing a parallel client that bypasses project-wide policy.
 func (c *OriginClient) HTTPClient() *http.Client {
+	return c.httpClient
+}
+
+// HealthClient returns a client for readiness probes: same auth,
+// retry, and TLS stack as HTTPClient, WITHOUT the circuit breaker.
+// Probes must observe the origin, not the breaker — an open circuit
+// failing the probe would drain every replica at the load balancer
+// during any origin outage, and a probe succeeding as the half-open
+// trial would close circuits on behalf of traffic it doesn't
+// represent.
+func (c *OriginClient) HealthClient() *http.Client {
+	if c.healthClient != nil {
+		return c.healthClient
+	}
 	return c.httpClient
 }
 
