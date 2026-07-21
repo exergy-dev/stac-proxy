@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -294,87 +293,5 @@ func ExtractNextLink(links []*Link) *Link {
 			return link
 		}
 	}
-	return nil
-}
-
-// ExtractNextToken extracts the token query parameter from the next
-// link's href. Uses url.Parse + Query so it correctly handles cases
-// like ?other=token=foo (where a substring "token=" appears inside
-// another query value) and percent-encoded token values.
-func ExtractNextToken(links []*Link) string {
-	link := ExtractNextLink(links)
-	if link == nil || link.Href == "" {
-		return ""
-	}
-	u, err := url.Parse(link.Href)
-	if err != nil {
-		return ""
-	}
-	return u.Query().Get("token")
-}
-
-// ValidateItem validates a STAC item.
-//
-// Per RFC 7946 §3.1 a Feature MAY have a null `geometry`, and the STAC
-// Item spec follows that — but only when a `bbox` is also present so
-// downstream consumers retain a coarse spatial extent. We accept null
-// geometry only when bbox is non-empty; rejecting items that omit both.
-func ValidateItem(item *Item) error {
-	if item.ID == "" {
-		return errors.New("item missing ID")
-	}
-	if len(item.Geometry) == 0 {
-		// "null" is JSON for an explicit null. Treat it the same as
-		// truly absent: allowed iff bbox carries the spatial extent.
-		if len(item.Bbox) == 0 {
-			return errors.New("item missing geometry (and no bbox to substitute)")
-		}
-	}
-	return nil
-}
-
-// ValidateCollection validates a STAC collection.
-func ValidateCollection(collection *Collection) error {
-	if collection.ID == "" {
-		return errors.New("collection missing ID")
-	}
-	if collection.Description == "" {
-		return errors.New("collection missing description")
-	}
-	if collection.License == "" {
-		return errors.New("collection missing license")
-	}
-	return nil
-}
-
-// ValidateSearchRequest validates a search request.
-//
-// Per STAC API §7.2.1, `bbox` and `intersects` are mutually exclusive.
-// Both being set is a client error.
-func ValidateSearchRequest(req *SearchRequest) error {
-	// Validate bbox
-	if req.BBox != nil {
-		if len(req.BBox) != 4 && len(req.BBox) != 6 {
-			return errors.New("bbox must have 4 or 6 coordinates")
-		}
-		// Check coordinate order
-		if req.BBox[0] > req.BBox[2] {
-			return errors.New("bbox west must be less than east")
-		}
-		if req.BBox[1] > req.BBox[3] {
-			return errors.New("bbox south must be less than north")
-		}
-	}
-
-	// Mutual exclusion (STAC API §7.2.1).
-	if req.BBox != nil && len(req.Intersects) > 0 {
-		return errors.New("bbox and intersects are mutually exclusive")
-	}
-
-	// Validate limit
-	if req.Limit < 0 {
-		return errors.New("limit must be non-negative")
-	}
-
 	return nil
 }
