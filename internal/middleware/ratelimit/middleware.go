@@ -6,11 +6,11 @@
 package ratelimit
 
 import (
-	"encoding/json"
 	"net"
 	"net/http"
 	"strconv"
 
+	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 )
 
@@ -68,7 +68,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				// The limiter itself logs the (throttled) warning.
 				if cfg.FailClosed {
 					w.Header().Set("Retry-After", "1")
-					writeJSONError(w, http.StatusServiceUnavailable,
+					middleware.WriteJSONError(w, http.StatusServiceUnavailable,
 						"RateLimiterUnavailable",
 						"Rate limiting backend unavailable; refusing request (failure_mode: closed)")
 					return
@@ -95,7 +95,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 
 			if !allowed {
 				w.Header().Set("Retry-After", strconv.Itoa(info.RetryAfter))
-				writeJSONError(w, http.StatusTooManyRequests,
+				middleware.WriteJSONError(w, http.StatusTooManyRequests,
 					"RateLimitExceeded", "Rate limit exceeded")
 				return
 			}
@@ -103,14 +103,4 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// writeJSONError emits the proxy's standard JSON error envelope.
-func writeJSONError(w http.ResponseWriter, status int, code, description string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"code":        code,
-		"description": description,
-	})
 }

@@ -258,19 +258,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // into a STAC-shaped JSON response. Mirrors the router's handleError
 // for the cases reachable from federation.Handle.
 func writeFederationError(w http.ResponseWriter, _ *http.Request, err error) {
-	type body struct {
-		Code        string `json:"code"`
-		Description string `json:"description"`
-	}
-	w.Header().Set("Content-Type", "application/json")
 	var ie *middleware.InternalError
 	if errors.As(err, &ie) {
-		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(body{Code: "BadGateway", Description: ie.Message})
+		middleware.WriteJSONError(w, http.StatusBadGateway, "BadGateway", ie.Message)
 		return
 	}
-	w.WriteHeader(http.StatusInternalServerError)
-	_ = json.NewEncoder(w).Encode(body{Code: "InternalError", Description: "internal error"})
+	middleware.WriteJSONError(w, http.StatusInternalServerError, "InternalError", "internal error")
+}
+
+// errorResponse builds a STAC-shaped JSON error envelope as an
+// internal *response, for handler paths that return responses rather
+// than writing directly. Same {"code","description"} shape as
+// middleware.WriteJSONError.
+func errorResponse(status int, code, description string) *response {
+	body, _ := json.Marshal(map[string]string{"code": code, "description": description})
+	return &response{
+		StatusCode: status,
+		Headers:    http.Header{"Content-Type": []string{"application/json"}},
+		Body:       body,
+	}
 }
 
 // handleSearch handles federated search requests. When only one origin
@@ -648,11 +654,7 @@ func (h *Handler) handleSingleResource(ctx context.Context,
 
 // notFoundResponse builds a uniform 404 STAC error response.
 func notFoundResponse(description string) *response {
-	return &response{
-		StatusCode: http.StatusNotFound,
-		Headers:    http.Header{"Content-Type": []string{"application/json"}},
-		Body:       []byte(`{"code": "NotFound", "description": "` + description + `"}`),
-	}
+	return errorResponse(http.StatusNotFound, "NotFound", description)
 }
 
 // handleItems handles GET /collections/{collectionId}/items as a
@@ -707,11 +709,8 @@ func (h *Handler) handleQueryables(ctx context.Context, req *request) (*response
 		}
 	}
 	if len(clients) == 0 {
-		return &response{
-			StatusCode: http.StatusServiceUnavailable,
-			Headers:    http.Header{"Content-Type": []string{"application/json"}},
-			Body:       []byte(`{"code":"ServiceUnavailable","description":"no origins available for queryables"}`),
-		}, nil
+		return errorResponse(http.StatusServiceUnavailable, "ServiceUnavailable",
+			"no origins available for queryables"), nil
 	}
 
 	// Single-origin shortcut: pass through transparently.
@@ -776,11 +775,8 @@ func (h *Handler) handleQueryables(ctx context.Context, req *request) (*response
 		}
 	}
 	if len(schemas) == 0 {
-		return &response{
-			StatusCode: http.StatusServiceUnavailable,
-			Headers:    http.Header{"Content-Type": []string{"application/json"}},
-			Body:       []byte(`{"code":"ServiceUnavailable","description":"queryables unavailable from all origins"}`),
-		}, nil
+		return errorResponse(http.StatusServiceUnavailable, "ServiceUnavailable",
+			"queryables unavailable from all origins"), nil
 	}
 
 	merged := intersectQueryables(schemas, h.proxyBaseURL, path)
@@ -846,10 +842,7 @@ func (h *Handler) handleGenericProxy(ctx context.Context,
 
 	origin := h.primaryOrigin()
 	if origin == nil {
-		return &response{
-			StatusCode: http.StatusServiceUnavailable,
-			Body:       []byte(`{"code": "NoOrigins", "description": "No origins available"}`),
-		}, nil
+		return errorResponse(http.StatusServiceUnavailable, "NoOrigins", "No origins available"), nil
 	}
 
 	return h.reverseProxyOnce(ctx, origin, req)
@@ -1289,12 +1282,8 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 			slog.String("origin", origin.ID),
 			slog.Int64("max_bytes", maxBytes),
 		)
-		body := []byte(fmt.Sprintf(`{"code":"BadGateway","description":"upstream response exceeded %d bytes"}`, maxBytes))
-		return &response{
-			StatusCode: http.StatusBadGateway,
-			Headers:    http.Header{"Content-Type": []string{"application/json"}},
-			Body:       body,
-		}, nil
+		return errorResponse(http.StatusBadGateway, "BadGateway",
+			fmt.Sprintf("upstream response exceeded %d bytes", maxBytes)), nil
 	}
 
 	headers := cap.Header()

@@ -62,14 +62,14 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 			info := middleware.STACInfoFromContext(ctx)
 
 			if principal == nil && !cfg.AllowAnonymous {
-				writeError(w, http.StatusUnauthorized, "Unauthorized", "authentication required")
+				middleware.WriteJSONError(w, http.StatusUnauthorized, "Unauthorized", "authentication required")
 				return
 			}
 
 			input := BuildAuthzInput(r, info, principal)
 			decision, err := cfg.Enforcer.Authorize(ctx, input)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "InternalError", "authorization check failed")
+				middleware.WriteJSONError(w, http.StatusInternalServerError, "InternalError", "authorization check failed")
 				return
 			}
 			if !decision.Allowed {
@@ -77,7 +77,7 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 				if len(decision.Reasons) > 0 {
 					reason = decision.Reasons[0]
 				}
-				writeError(w, http.StatusForbidden, "Forbidden", reason)
+				middleware.WriteJSONError(w, http.StatusForbidden, "Forbidden", reason)
 				return
 			}
 
@@ -95,7 +95,7 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 			// response-side enforcement runs in that case).
 			if info != nil && info.SearchReq != nil && decision.Constraints != nil {
 				if err := applyConstraints(info.SearchReq, decision.Constraints); err != nil {
-					writeError(w, http.StatusForbidden, "Forbidden", err.Error())
+					middleware.WriteJSONError(w, http.StatusForbidden, "Forbidden", err.Error())
 					return
 				}
 				if cfg.CQL2InjectionEnabled &&
@@ -108,11 +108,11 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 						// it as 400 with a STAC-style error code so callers
 						// can correct their request.
 						if isUserCQL2ParseError(err) {
-							writeError(w, http.StatusBadRequest, "InvalidParameterValue",
+							middleware.WriteJSONError(w, http.StatusBadRequest, "InvalidParameterValue",
 								"invalid filter: "+err.Error())
 							return
 						}
-						writeError(w, http.StatusInternalServerError, "InternalError", "cql2 injection failed")
+						middleware.WriteJSONError(w, http.StatusInternalServerError, "InternalError", "cql2 injection failed")
 						return
 					}
 					// Replace the decision's constraints with the
@@ -145,7 +145,7 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 				case geofenceFiltered:
 					body = filtered
 				case geofenceMalformed:
-					writeError(w, http.StatusBadGateway, "BadGateway",
+					middleware.WriteJSONError(w, http.StatusBadGateway, "BadGateway",
 						"upstream returned malformed FeatureCollection; geofence cannot enforce")
 					return
 				case geofenceNotApplicable:
@@ -172,7 +172,7 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 			if info != nil && info.RequestType == middleware.RequestTypeItem &&
 				status >= 200 && status < 300 && decision.Constraints != nil {
 				if matched, _ := validateSingleRecord(body, decision.Constraints); !matched {
-					writeError(w, http.StatusNotFound, "NotFound", "item not found")
+					middleware.WriteJSONError(w, http.StatusNotFound, "NotFound", "item not found")
 					return
 				}
 			}
@@ -195,16 +195,6 @@ func DecisionFromContext(ctx context.Context) *AuthzDecision {
 		return decision
 	}
 	return nil
-}
-
-// writeError emits a structured STAC-style JSON error response.
-func writeError(w http.ResponseWriter, status int, code, description string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"code":        code,
-		"description": description,
-	})
 }
 
 // applyConstraints enforces collection-scope and result-limit decisions

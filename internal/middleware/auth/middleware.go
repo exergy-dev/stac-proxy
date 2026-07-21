@@ -7,7 +7,6 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
@@ -65,7 +64,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 						// provider's credential type and it was
 						// rejected. Do NOT try later providers and
 						// do NOT downgrade to anonymous.
-						writeAuthError(w, "authentication required")
+						middleware.WriteJSONError(w, http.StatusUnauthorized, "Unauthorized", "authentication required")
 						return
 					}
 					continue
@@ -77,7 +76,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			}
 			if authed == nil {
 				if !cfg.AllowAnonymous {
-					writeAuthError(w, "authentication required")
+					middleware.WriteJSONError(w, http.StatusUnauthorized, "Unauthorized", "authentication required")
 					return
 				}
 				authed = anonPrincipal
@@ -86,13 +85,4 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-}
-
-func writeAuthError(w http.ResponseWriter, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"code":        "Unauthorized",
-		"description": msg,
-	})
 }

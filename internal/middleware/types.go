@@ -3,10 +3,24 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/yourorg/stac-proxy/internal/stac"
 )
+
+// WriteJSONError emits the proxy's standard STAC-style JSON error
+// envelope, {"code": ..., "description": ...}, with the given status.
+// Every middleware tier and the federation handler share this shape;
+// change it here and it changes everywhere.
+func WriteJSONError(w http.ResponseWriter, status int, code, description string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"code":        code,
+		"description": description,
+	})
+}
 
 // RequestType identifies the type of STAC API request.
 type RequestType int

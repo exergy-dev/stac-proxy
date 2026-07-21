@@ -1,7 +1,6 @@
 package federation
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"sort"
@@ -67,7 +66,7 @@ func (h *Handler) respondIfAllFailed(op string, failed []string, total int) (*re
 	}
 	h.logger.Warn(op+" failed on every routed origin",
 		"origins", strings.Join(failed, ","))
-	return federationFailureResponse(failed)
+	return federationFailureResponse(failed), nil
 }
 
 // stampPartialHeaders writes the partial-result contract onto h:
@@ -102,19 +101,9 @@ func (h *Handler) markPartial(resp *response, failed []string) {
 // origin failed and there is nothing to serve. Before this existed,
 // an all-origins-down search returned an empty 200 FeatureCollection
 // indistinguishable from a genuine zero-match query.
-func federationFailureResponse(failed []string) (*response, error) {
-	body, err := json.Marshal(map[string]string{
-		"code":        "UpstreamFederationFailure",
-		"description": "all routed origins failed: " + strings.Join(failed, ","),
-	})
-	if err != nil {
-		return nil, err
-	}
-	resp := &response{
-		StatusCode: http.StatusBadGateway,
-		Headers:    http.Header{"Content-Type": []string{"application/json"}},
-		Body:       body,
-	}
+func federationFailureResponse(failed []string) *response {
+	resp := errorResponse(http.StatusBadGateway, "UpstreamFederationFailure",
+		"all routed origins failed: "+strings.Join(failed, ","))
 	stampPartialHeaders(resp.Headers, failed)
-	return resp, nil
+	return resp
 }
