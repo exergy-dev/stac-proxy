@@ -766,11 +766,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 			continue
 		}
 
-		timeout := originCfg.Timeout
-		if timeout == 0 {
-			timeout = 30 * time.Second
-		}
-
+		// originCfg.Timeout is non-zero here: config.setDefaults fills it.
 		supportsFilter := originCfg.SupportsFilterExtension
 		if !supportsFilter {
 			supportsFilter = probeFilterExtension(logger, originCfg.ID, originCfg.BaseURL)
@@ -782,7 +778,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 			Description:             originCfg.Description,
 			BaseURL:                 originCfg.BaseURL,
 			Enabled:                 originCfg.Enabled,
-			Timeout:                 timeout,
+			Timeout:                 originCfg.Timeout,
 			Retry:                   originRetryPolicy(originCfg.Retry),
 			CircuitBreaker:          originBreakerPolicy(originCfg.CircuitBreaker),
 			MaxIdleConnsPerHost:     originCfg.MaxIdleConnsPerHost,
@@ -1037,11 +1033,7 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 		return nil, fmt.Errorf("single mode requires upstream config")
 	}
 
-	timeout := cfg.Upstream.Timeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-
+	// cfg.Upstream.Timeout is non-zero here: config.setDefaults fills it.
 	supportsFilter := cfg.Upstream.SupportsFilterExtension
 	if !supportsFilter {
 		supportsFilter = probeFilterExtension(logger, "upstream", cfg.Upstream.URL)
@@ -1051,7 +1043,7 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 		ID:                      "primary",
 		BaseURL:                 cfg.Upstream.URL,
 		Enabled:                 true,
-		Timeout:                 timeout,
+		Timeout:                 cfg.Upstream.Timeout,
 		Priority:                100,
 		Searchable:              true,
 		SupportsFilterExtension: supportsFilter,

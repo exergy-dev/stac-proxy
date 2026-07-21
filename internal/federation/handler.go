@@ -116,6 +116,8 @@ func NewHandler(cfg HandlerConfig) (*Handler, error) {
 		partialWarn:      logx.NewLogThrottle(30 * time.Second),
 	}
 
+	// Constructor invariant for direct construction (tests, embedders);
+	// values mirror config.setDefaults, which fills them on the YAML path.
 	if handler.maxConcurrent <= 0 {
 		handler.maxConcurrent = 10
 	}

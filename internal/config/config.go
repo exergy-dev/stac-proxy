@@ -668,6 +668,9 @@ func (c *Config) setDefaults() {
 			}
 		}
 	}
+	if c.Upstream != nil && c.Upstream.Timeout == 0 {
+		c.Upstream.Timeout = 30 * time.Second
+	}
 }
 
 // Validate checks the configuration for errors.
