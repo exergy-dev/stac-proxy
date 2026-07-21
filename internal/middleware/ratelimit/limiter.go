@@ -130,9 +130,6 @@ func resetAt(now time.Time, tokens, burst float64, quota Quota) time.Time {
 	return now.Add(time.Duration((burst - tokens) / rate * float64(time.Second)))
 }
 
-// KeyFunc generates a rate limit key from a request.
-type KeyFunc func(ctx context.Context, principalID, clientIP string) string
-
 // DefaultKeyFunc returns the principal ID if available, otherwise the client IP.
 func DefaultKeyFunc(_ context.Context, principalID, clientIP string) string {
 	if principalID != "" && principalID != "anonymous" {
@@ -140,9 +137,3 @@ func DefaultKeyFunc(_ context.Context, principalID, clientIP string) string {
 	}
 	return "ip:" + clientIP
 }
-
-// QuotaFunc returns the quota for a request based on principal roles.
-type QuotaFunc func(roles []string, defaultQuota Quota) Quota
-
-// DefaultQuotaFunc returns the default quota.
-func DefaultQuotaFunc(_ []string, defaultQuota Quota) Quota { return defaultQuota }

@@ -108,7 +108,7 @@ func TestHTTPMiddleware_LimiterError_FailOpen(t *testing.T) {
 // principalID and the request's RemoteAddr.
 func TestHTTPMiddleware_KeysOnPrincipalThenIP(t *testing.T) {
 	limiter := &MockLimiter{}
-	h := wrap(Config{Limiter: limiter, KeyFunc: DefaultKeyFunc})
+	h := wrap(Config{Limiter: limiter})
 
 	// Anonymous request — keyFunc should see empty principalID + RemoteAddr.
 	req := httptest.NewRequest("GET", "/x", nil)
@@ -129,31 +129,8 @@ func TestHTTPMiddleware_KeysOnPrincipalThenIP(t *testing.T) {
 	assert.Contains(t, calls[1].Key, "alice", "second call (authed) should include principal ID")
 }
 
-// TestHTTPMiddleware_QuotaFunc_RoleBased: a QuotaFunc receives the
-// principal's roles and selects accordingly.
-func TestHTTPMiddleware_QuotaFunc_RoleBased(t *testing.T) {
-	limiter := &MockLimiter{}
-	roleQuotas := map[string]Quota{
-		"admin": {Requests: 10000, Window: time.Hour},
-		"user":  {Requests: 100, Window: time.Hour},
-	}
-	h := wrap(Config{
-		Limiter:      limiter,
-		QuotaFunc:    RoleBasedQuotaFunc(roleQuotas, Quota{Requests: 10, Window: time.Hour}),
-		DefaultQuota: Quota{Requests: 10, Window: time.Hour},
-	})
-
-	req := httptest.NewRequest("GET", "/x", nil)
-	req = req.WithContext(context.WithValue(req.Context(), middleware.PrincipalKey,
-		&auth.Principal{ID: "alice", Roles: []string{"admin"}}))
-	h.ServeHTTP(httptest.NewRecorder(), req)
-
-	calls := limiter.Calls()
-	assert.Equal(t, 10000, calls[0].Quota.Requests, "admin quota requests")
-}
-
-// TestHTTPMiddleware_DefaultsWired: nil Limiter/KeyFunc/QuotaFunc fall
-// back to in-package defaults and don't panic.
+// TestHTTPMiddleware_DefaultsWired: a nil Limiter falls back to the
+// in-package default and doesn't panic.
 func TestHTTPMiddleware_DefaultsWired(t *testing.T) {
 	h := NewHTTPMiddleware(Config{
 		DefaultQuota: Quota{Requests: 100, Window: time.Minute},

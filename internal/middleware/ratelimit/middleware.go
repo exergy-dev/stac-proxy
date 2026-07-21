@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"sort"
 	"strconv"
 
 	"github.com/yourorg/stac-proxy/internal/middleware/auth"
@@ -18,8 +17,6 @@ import (
 // Config contains configuration for the rate limit middleware.
 type Config struct {
 	Limiter      Limiter
-	KeyFunc      KeyFunc
-	QuotaFunc    QuotaFunc
 	DefaultQuota Quota
 
 	// FailClosed selects the failure mode when the limiter errors —
@@ -35,10 +32,10 @@ type Config struct {
 
 // NewHTTPMiddleware returns chi-compatible rate-limit middleware.
 //
-//   - Builds the rate-limit key via cfg.KeyFunc (principalID falls back
-//     to client IP). Principal comes from the auth middleware's context
-//     value, so auth MUST be wired before ratelimit at the chi level.
-//   - Looks up the quota via cfg.QuotaFunc (default falls through).
+//   - Builds the rate-limit key via DefaultKeyFunc (principalID falls
+//     back to client IP). Principal comes from the auth middleware's
+//     context value, so auth MUST be wired before ratelimit at the chi
+//     level.
 //   - Sets X-RateLimit-Limit/Remaining/Reset on every response.
 //   - On deny: writes Retry-After and a 429 JSON error; the inner handler
 //     does not run.
@@ -47,36 +44,13 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	if limiter == nil {
 		limiter = NewTokenBucketLimiter(0)
 	}
-	keyFunc := cfg.KeyFunc
-	if keyFunc == nil {
-		keyFunc = DefaultKeyFunc
-	}
-	quotaFunc := cfg.QuotaFunc
-	if quotaFunc == nil {
-		quotaFunc = DefaultQuotaFunc
-	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			var principalID string
-			var roles []string
 			if p := auth.PrincipalFromContext(ctx); p != nil {
 				principalID = p.ID
-				// M-ratelimit-1: principal.Roles iteration order is
-				// not guaranteed (the upstream slice may be backed by
-				// a map iteration). A non-deterministic QuotaFunc
-				// (e.g. RoleBasedQuotaFunc, which picks the first
-				// matching role) would then hand the same caller a
-				// different Quota across requests, churning the
-				// bucket and effectively disabling rate limiting.
-				// Sort a copy here so the lookup is stable per
-				// principal.
-				if len(p.Roles) > 0 {
-					roles = make([]string, len(p.Roles))
-					copy(roles, p.Roles)
-					sort.Strings(roles)
-				}
 			}
 			// r.RemoteAddr is already the best client IP — chi's
 			// RealIP middleware overwrites it from X-Real-IP /
@@ -87,10 +61,9 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			if host, _, err := net.SplitHostPort(clientIP); err == nil {
 				clientIP = host
 			}
-			key := keyFunc(ctx, principalID, clientIP)
-			quota := quotaFunc(roles, cfg.DefaultQuota)
+			key := DefaultKeyFunc(ctx, principalID, clientIP)
 
-			allowed, info, err := limiter.Allow(ctx, key, quota)
+			allowed, info, err := limiter.Allow(ctx, key, cfg.DefaultQuota)
 			if err != nil {
 				// The limiter itself logs the (throttled) warning.
 				if cfg.FailClosed {
@@ -140,17 +113,4 @@ func writeJSONError(w http.ResponseWriter, status int, code, description string)
 		"code":        code,
 		"description": description,
 	})
-}
-
-// RoleBasedQuotaFunc returns a QuotaFunc that picks the first matching
-// per-role quota from quotasByRole, falling back to defaultQuota.
-func RoleBasedQuotaFunc(quotasByRole map[string]Quota, defaultQuota Quota) QuotaFunc {
-	return func(roles []string, _ Quota) Quota {
-		for _, role := range roles {
-			if quota, ok := quotasByRole[role]; ok {
-				return quota
-			}
-		}
-		return defaultQuota
-	}
 }
