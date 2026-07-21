@@ -137,7 +137,7 @@ func filterCacheableHeaders(h http.Header) http.Header {
 // 2xx and 3xx entries continue to use the Strategy's TTL.
 type Config struct {
 	Store             Store
-	Strategy          Strategy
+	Strategy          *BasicStrategy
 	CacheableStatuses []int
 	NegativeCacheTTL  time.Duration
 }
@@ -254,7 +254,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			next.ServeHTTP(cap, r)
 
 			// Forward captured headers + body to outer writer.
-			for k, vs := range cap.HeadersOut() {
+			for k, vs := range cap.Header() {
 				for _, v := range vs {
 					w.Header().Add(k, v)
 				}
@@ -275,7 +275,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			// whole TTL would extend a transient outage's blast
 			// radius), and it works for any other producer or
 			// upstream that declares a response uncacheable.
-			if strings.Contains(strings.ToLower(cap.HeadersOut().Get("Cache-Control")), "no-store") {
+			if strings.Contains(strings.ToLower(cap.Header().Get("Cache-Control")), "no-store") {
 				return
 			}
 			// Negative-cache lifetime applies to every 4xx in the
@@ -291,7 +291,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			}
 			envelope, err := json.Marshal(CacheEntry{
 				Status:  cap.Status(),
-				Headers: filterCacheableHeaders(cap.HeadersOut()),
+				Headers: filterCacheableHeaders(cap.Header()),
 				Body:    append([]byte(nil), body...),
 			})
 			if err == nil {

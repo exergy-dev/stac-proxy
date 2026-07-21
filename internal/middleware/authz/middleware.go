@@ -178,7 +178,7 @@ func NewHTTPMiddleware(cfg HTTPConfig) func(http.Handler) http.Handler {
 			}
 
 			// Forward to outer writer.
-			for k, vs := range cap.HeadersOut() {
+			for k, vs := range cap.Header() {
 				for _, v := range vs {
 					w.Header().Add(k, v)
 				}

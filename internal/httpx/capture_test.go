@@ -26,9 +26,9 @@ func TestResponseCapture_WriteHeaderUpdatesStatus(t *testing.T) {
 	require.Equal(t, http.StatusTeapot, rc.Status(), "Status() after Write")
 	require.Equal(t, "body", string(rc.BodyBytes()))
 
-	// HeadersOut() returns the same live map as Header().
+	// Header() returns the live, mutable map.
 	rc.Header().Set("X-A", "1")
-	require.Equal(t, "1", rc.HeadersOut().Get("X-A"))
+	require.Equal(t, "1", rc.Header().Get("X-A"))
 }
 
 func TestResponseCapture_WriteAccumulatesBody(t *testing.T) {
@@ -53,7 +53,7 @@ func TestResponseCapture_HeaderMutable(t *testing.T) {
 	require.Equal(t, []string{"a", "b"}, rc.Header().Values("X-Multi"))
 }
 
-var _ http.ResponseWriter = (ResponseCapture)(nil)
+var _ http.ResponseWriter = (*ResponseCapture)(nil)
 
 func TestResponseCapture_RejectsOversize(t *testing.T) {
 	// Single write that overshoots: body fills exactly to the cap.

@@ -18,36 +18,7 @@ var ErrResponseTooLarge = errors.New("httpx: response body exceeded capture limi
 // passing to httputil.ReverseProxy.ServeHTTP. The captured status,
 // headers, and body are exposed for the caller to inspect or mutate
 // before re-emitting to the real downstream writer.
-type ResponseCapture interface {
-	http.ResponseWriter
-	// Status returns the captured status code. If WriteHeader was
-	// never called, it returns http.StatusOK (200) to match net/http
-	// behavior.
-	Status() int
-	// BodyBytes returns the bytes accumulated by Write(). The returned
-	// slice aliases the internal buffer; callers must not mutate it.
-	BodyBytes() []byte
-	// HeadersOut returns the same http.Header that Header() returns
-	// (the live, mutable map). Callers may modify it in place before
-	// re-emitting the response.
-	HeadersOut() http.Header
-}
-
-// NewResponseCapture returns an unbounded ResponseCapture (no byte
-// cap). This is a thin wrapper around NewResponseCaptureWithLimit(0).
-func NewResponseCapture() ResponseCapture {
-	return NewResponseCaptureWithLimit(0)
-}
-
-// NewResponseCaptureWithLimit returns a ResponseCapture that errors
-// out (and stops accepting writes) once total bytes would exceed max.
-// max == 0 means unbounded (matching the historical NewResponseCapture
-// behavior).
-func NewResponseCaptureWithLimit(max int64) ResponseCapture {
-	return &responseCapture{max: max}
-}
-
-type responseCapture struct {
+type ResponseCapture struct {
 	header  http.Header
 	status  int
 	body    bytes.Buffer
@@ -56,9 +27,25 @@ type responseCapture struct {
 	closed  bool  // true once we've rejected a write; further writes also reject
 }
 
+// NewResponseCapture returns an unbounded ResponseCapture (no byte
+// cap). This is a thin wrapper around NewResponseCaptureWithLimit(0).
+func NewResponseCapture() *ResponseCapture {
+	return NewResponseCaptureWithLimit(0)
+}
+
+// NewResponseCaptureWithLimit returns a ResponseCapture that errors
+// out (and stops accepting writes) once total bytes would exceed max.
+// max == 0 means unbounded (matching the historical NewResponseCapture
+// behavior).
+func NewResponseCaptureWithLimit(max int64) *ResponseCapture {
+	return &ResponseCapture{max: max}
+}
+
 // Header implements http.ResponseWriter. It lazy-inits the underlying
-// map so callers can use the zero value of responseCapture safely.
-func (rc *responseCapture) Header() http.Header {
+// map so callers can use the zero value of ResponseCapture safely. The
+// returned map is the live, mutable instance: callers may modify it in
+// place before re-emitting the response.
+func (rc *ResponseCapture) Header() http.Header {
 	if rc.header == nil {
 		rc.header = make(http.Header)
 	}
@@ -68,7 +55,7 @@ func (rc *responseCapture) Header() http.Header {
 // WriteHeader records the status code. Subsequent calls are ignored
 // (matching net/http.ResponseWriter contract: only the first
 // WriteHeader takes effect).
-func (rc *responseCapture) WriteHeader(statusCode int) {
+func (rc *ResponseCapture) WriteHeader(statusCode int) {
 	if rc.status != 0 {
 		return
 	}
@@ -82,7 +69,7 @@ func (rc *responseCapture) WriteHeader(statusCode int) {
 // cap (so the captured body is exactly max bytes), returns
 // ErrResponseTooLarge, and rejects all subsequent writes with the
 // same error.
-func (rc *responseCapture) Write(p []byte) (int, error) {
+func (rc *ResponseCapture) Write(p []byte) (int, error) {
 	if rc.status == 0 {
 		rc.status = http.StatusOK
 	}
@@ -104,21 +91,17 @@ func (rc *responseCapture) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Status returns the captured status code, or 200 if none was ever
-// set.
-func (rc *responseCapture) Status() int {
+// Status returns the captured status code. If WriteHeader was never
+// called, it returns http.StatusOK (200) to match net/http behavior.
+func (rc *ResponseCapture) Status() int {
 	if rc.status == 0 {
 		return http.StatusOK
 	}
 	return rc.status
 }
 
-// BodyBytes returns the accumulated body bytes.
-func (rc *responseCapture) BodyBytes() []byte {
+// BodyBytes returns the bytes accumulated by Write(). The returned
+// slice aliases the internal buffer; callers must not mutate it.
+func (rc *ResponseCapture) BodyBytes() []byte {
 	return rc.body.Bytes()
-}
-
-// HeadersOut returns the live header map (same instance as Header()).
-func (rc *responseCapture) HeadersOut() http.Header {
-	return rc.Header()
 }

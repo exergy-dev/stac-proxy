@@ -22,18 +22,6 @@ type Store interface {
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
 }
 
-// Strategy defines the interface for cache strategy decisions.
-type Strategy interface {
-	// ShouldCache returns true if the request should be cached.
-	ShouldCache(req CacheableRequest) bool
-
-	// CacheKey generates a cache key for the request.
-	CacheKey(req CacheableRequest) string
-
-	// TTL returns the TTL for the cached response.
-	TTL(req CacheableRequest, statusCode int) time.Duration
-}
-
 // CacheableRequest contains request information for cache decisions.
 //
 // PrincipalClass is an opaque per-principal namespace that the cache
@@ -41,8 +29,8 @@ type Strategy interface {
 // principalClass in middleware.go). It is folded into the cache key
 // digest so that responses cached for one principal class can never be
 // served to a different one — closing the anonymous-vs-authenticated
-// (and per-principal) cross-pollution path. Strategies MUST include
-// PrincipalClass in their key derivation; the BasicStrategy below does.
+// (and per-principal) cross-pollution path. BasicStrategy includes
+// PrincipalClass in its key derivation.
 type CacheableRequest struct {
 	Method         string
 	Path           string

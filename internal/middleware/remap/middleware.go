@@ -89,12 +89,12 @@ func NewHTTPMiddleware(cfg Config) (func(http.Handler) http.Handler, error) {
 			// through the cache/route layer would otherwise be
 			// buffered AND parsed, wasting memory and adding
 			// latency for no benefit (no href to rewrite).
-			if isJSONContentType(cap.HeadersOut().Get("Content-Type")) {
+			if isJSONContentType(cap.Header().Get("Content-Type")) {
 				if mutated, ok := tryRemap(r.Context(), rules, body); ok {
 					body = mutated
 				}
 			}
-			for k, vs := range cap.HeadersOut() {
+			for k, vs := range cap.Header() {
 				for _, v := range vs {
 					w.Header().Add(k, v)
 				}

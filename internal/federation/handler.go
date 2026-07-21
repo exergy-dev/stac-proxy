@@ -1297,7 +1297,7 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 		}, nil
 	}
 
-	headers := cap.HeadersOut()
+	headers := cap.Header()
 	httpx.StripHopByHopHeaders(headers)
 
 	resp := &response{
@@ -1318,7 +1318,7 @@ func (h *Handler) reverseProxyOnce(ctx context.Context, origin *Origin,
 // log), so this side channel is needed to detect overflow at the call
 // site.
 type boundedCapture struct {
-	httpx.ResponseCapture
+	*httpx.ResponseCapture
 	over bool
 }
 
