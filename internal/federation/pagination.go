@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/federation/pageadapter"
@@ -528,21 +527,14 @@ type originFetchResult struct {
 // state across the Searcher boundary without changing the on-wire
 // SearchRequest shape.
 func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.SearchRequest, cursor *FederatedCursor, originIDs []string, limit int) []originFetchResult {
-	var wg sync.WaitGroup
-	results := make([]originFetchResult, len(originIDs))
-
-	for i, originID := range originIDs {
-		wg.Add(1)
-		go func(idx int, id string) {
-			defer wg.Done()
-
+	return fanOut(originIDs, 0,
+		func(id string) originFetchResult {
 			origin, ok := s.origins[id]
 			if !ok {
-				results[idx] = originFetchResult{
+				return originFetchResult{
 					OriginID: id,
 					Error:    errors.New("origin not found"),
 				}
-				return
 			}
 
 			// Build origin-specific request. Upstream limit equals the
@@ -573,7 +565,7 @@ func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.Sear
 			// choice — propagated back into the cursor by mergeResults.
 			items, nextToken, nextURL, nextBody, adapterName, err := origin.Search(ctx, originReq)
 
-			results[idx] = originFetchResult{
+			return originFetchResult{
 				OriginID:    id,
 				Items:       items,
 				NextToken:   nextToken,
@@ -582,11 +574,11 @@ func (s *PaginatedSearcher) fetchFromOrigins(ctx context.Context, req *stac.Sear
 				AdapterName: adapterName,
 				Error:       err,
 			}
-		}(i, originID)
-	}
-
-	wg.Wait()
-	return results
+		},
+		// This path historically had no panic recovery (a Searcher is
+		// an in-process implementation, not a network edge); keep that
+		// contract by re-panicking.
+		func(_ string, r any) originFetchResult { panic(r) })
 }
 
 // mergeResults updates per-origin cursor state from the fetch results

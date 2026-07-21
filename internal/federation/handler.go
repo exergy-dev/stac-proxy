@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
@@ -371,49 +370,23 @@ func (h *Handler) handleSearch(ctx context.Context, req *request) (*response, er
 func (h *Handler) fanOutSearch(ctx context.Context, origins []*Origin,
 	searchReq *stac.SearchRequest) []*OriginSearchResult {
 
-	resultsChan := make(chan *OriginSearchResult, len(origins))
-	sem := make(chan struct{}, h.maxConcurrent)
-
-	var wg sync.WaitGroup
-	for _, origin := range origins {
-		wg.Add(1)
-		go func(origin *Origin) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("federation origin search panicked",
-						"origin", origin.ID,
-						"panic", r,
-						"stack", string(debug.Stack()),
-					)
-					resultsChan <- &OriginSearchResult{
-						OriginID:  origin.ID,
-						OriginURL: origin.BaseURL,
-						Priority:  origin.Priority,
-						Error:     fmt.Errorf("origin %s panicked: %v", origin.ID, r),
-					}
-				}
-			}()
-
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			result := h.searchOrigin(ctx, origin, searchReq)
-			resultsChan <- result
-		}(origin)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultsChan)
-	}()
-
-	var results []*OriginSearchResult
-	for result := range resultsChan {
-		results = append(results, result)
-	}
-
-	return results
+	return fanOut(origins, h.maxConcurrent,
+		func(origin *Origin) *OriginSearchResult {
+			return h.searchOrigin(ctx, origin, searchReq)
+		},
+		func(origin *Origin, r any) *OriginSearchResult {
+			slog.Error("federation origin search panicked",
+				"origin", origin.ID,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			return &OriginSearchResult{
+				OriginID:  origin.ID,
+				OriginURL: origin.BaseURL,
+				Priority:  origin.Priority,
+				Error:     fmt.Errorf("origin %s panicked: %v", origin.ID, r),
+			}
+		})
 }
 
 // searchOrigin executes a search against a single origin.
@@ -496,50 +469,25 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 	ctx, cancel := context.WithTimeout(ctx, h.aggregateTimeout)
 	defer cancel()
 
-	var results []*OriginCollectionsResult
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	for originID, client := range h.origins {
-		originID, client := originID, client
-		origin := client.Origin()
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("federation origin GetCollections panicked",
-						"origin", originID,
-						"panic", r,
-						"stack", string(debug.Stack()),
-					)
-					mu.Lock()
-					results = append(results, &OriginCollectionsResult{
-						OriginID:  originID,
-						OriginURL: client.BaseURL(),
-						Error:     fmt.Errorf("origin %s panicked: %v", originID, r),
-					})
-					mu.Unlock()
-				}
-			}()
-
+	clients := make([]*OriginClient, 0, len(h.origins))
+	for _, client := range h.origins {
+		clients = append(clients, client)
+	}
+	results := fanOut(clients, 0,
+		func(client *OriginClient) *OriginCollectionsResult {
+			origin := client.Origin()
 			collections, err := client.GetCollections(ctx)
 
-			mu.Lock()
-			defer mu.Unlock()
-
 			result := &OriginCollectionsResult{
-				OriginID:  originID,
+				OriginID:  origin.ID,
 				OriginURL: client.BaseURL(),
 				Error:     err,
 			}
-
 			if err == nil {
 				// Apply collection prefix. The stac_proxy:origin marker
 				// is attached centrally by merger.MergeCollections so
-				// that mutation happens in a single goroutine after
-				// wg.Wait — writing it here too would double-write the
+				// that mutation happens in a single goroutine after the
+				// fan-out — writing it here too would double-write the
 				// map under the race detector even though it's
 				// logically safe.
 				for _, coll := range collections {
@@ -552,12 +500,21 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 				}
 				result.Collections = collections
 			}
-
-			results = append(results, result)
-		}()
-	}
-
-	wg.Wait()
+			return result
+		},
+		func(client *OriginClient, r any) *OriginCollectionsResult {
+			originID := client.Origin().ID
+			slog.Error("federation origin GetCollections panicked",
+				"origin", originID,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			return &OriginCollectionsResult{
+				OriginID:  originID,
+				OriginURL: client.BaseURL(),
+				Error:     fmt.Errorf("origin %s panicked: %v", originID, r),
+			}
+		})
 
 	// All origins down → 502; a subset down → 200 with the partial
 	// headers, so a caller can tell a shrunken catalog from the real
@@ -721,59 +678,47 @@ func (h *Handler) handleQueryables(ctx context.Context, req *request) (*response
 		return h.reverseProxyOnce(ctx, origin, req)
 	}
 
-	type fetchResult struct {
-		schema map[string]any
-		ok     bool
-	}
-	results := make(chan fetchResult, len(clients))
 	perOrigin := 5 * time.Second
 	if h.aggregateTimeout > 0 && h.aggregateTimeout < perOrigin {
 		perOrigin = h.aggregateTimeout
 	}
 
-	var wg sync.WaitGroup
-	for _, c := range clients {
-		c := c
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("queryables fetch panicked",
-						"origin", c.Origin().ID, "panic", r,
-					)
-					results <- fetchResult{}
-				}
-			}()
+	results := fanOut(clients, 0,
+		func(c *OriginClient) map[string]any {
 			fctx, cancel := context.WithTimeout(ctx, perOrigin)
 			defer cancel()
 			resp, err := c.DoRequest(fctx, http.MethodGet, path, nil)
 			if err != nil {
 				slog.Warn("queryables fetch failed", "origin", c.Origin().ID, "error", err)
-				results <- fetchResult{}
-				return
+				return nil
 			}
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
-				results <- fetchResult{}
-				return
+				return nil
 			}
 			var schema map[string]any
 			if err := json.NewDecoder(resp.Body).Decode(&schema); err != nil {
 				slog.Warn("queryables decode failed", "origin", c.Origin().ID, "error", err)
-				results <- fetchResult{}
-				return
+				return nil
 			}
-			results <- fetchResult{schema: schema, ok: true}
-		}()
-	}
-	wg.Wait()
-	close(results)
+			if schema == nil {
+				// A literal `null` body decodes without error; count it
+				// as a (vacuous) success — nil is the failure sentinel.
+				schema = map[string]any{}
+			}
+			return schema
+		},
+		func(c *OriginClient, r any) map[string]any {
+			slog.Error("queryables fetch panicked",
+				"origin", c.Origin().ID, "panic", r,
+			)
+			return nil
+		})
 
 	var schemas []map[string]any
-	for r := range results {
-		if r.ok {
-			schemas = append(schemas, r.schema)
+	for _, schema := range results {
+		if schema != nil {
+			schemas = append(schemas, schema)
 		}
 	}
 	if len(schemas) == 0 {
@@ -939,29 +884,12 @@ func (h *Handler) advertisedConformance(ctx context.Context) []string {
 		perOrigin = h.aggregateTimeout
 	}
 
-	type result struct {
-		classes []string
-		ok      bool
-	}
-	results := make(chan result, len(h.origins))
-	var wg sync.WaitGroup
+	clients := make([]*OriginClient, 0, len(h.origins))
 	for _, client := range h.origins {
-		client := client
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() {
-				// A panic in conformance probing must not take the
-				// process down — log and treat the origin as if it
-				// failed to advertise.
-				if r := recover(); r != nil {
-					slog.Error("conformance probe panicked",
-						"origin", client.Origin().ID,
-						"panic", r,
-					)
-					results <- result{}
-				}
-			}()
+		clients = append(clients, client)
+	}
+	results := fanOut(clients, 0,
+		func(client *OriginClient) []string {
 			fetchCtx, cancel := context.WithTimeout(ctx, perOrigin)
 			defer cancel()
 			classes, err := stac.FetchConformance(fetchCtx, client.httpClient, client.BaseURL())
@@ -970,19 +898,29 @@ func (h *Handler) advertisedConformance(ctx context.Context) []string {
 					"origin", client.Origin().ID,
 					"error", err,
 				)
-				results <- result{}
-				return
+				return nil
 			}
-			results <- result{classes: classes, ok: true}
-		}()
-	}
-	wg.Wait()
-	close(results)
+			if classes == nil {
+				// Success with an empty conformsTo still participates
+				// in the intersection; nil is the failure sentinel.
+				classes = []string{}
+			}
+			return classes
+		},
+		// A panic in conformance probing must not take the process
+		// down — log and treat the origin as if it failed to advertise.
+		func(client *OriginClient, r any) []string {
+			slog.Error("conformance probe panicked",
+				"origin", client.Origin().ID,
+				"panic", r,
+			)
+			return nil
+		})
 
 	var originSets [][]string
-	for r := range results {
-		if r.ok {
-			originSets = append(originSets, r.classes)
+	for _, classes := range results {
+		if classes != nil {
+			originSets = append(originSets, classes)
 		}
 	}
 	// If no origin responded, advertise just the proxy's caps to keep
