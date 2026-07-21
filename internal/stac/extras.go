@@ -6,10 +6,11 @@ import (
 
 // SearchContextOf returns the embedded SearchContext from a
 // FeatureCollection. The library types ItemsList.Context as `any` to
-// stay neutral toward the STAC context extension shape: when we build
-// a response we store `*SearchContext` directly, but after a JSON
+// stay neutral toward the STAC context extension shape: tests that
+// build a response store `*SearchContext` directly, but after a JSON
 // round-trip the field decodes as `map[string]any`. This helper covers
-// both cases. Returns nil when no context is present.
+// both cases. Returns nil when no context is present. (Test fixture
+// helper — production response-building does not use it.)
 func SearchContextOf(fc *FeatureCollection) *SearchContext {
 	if fc == nil || fc.Context == nil {
 		return nil

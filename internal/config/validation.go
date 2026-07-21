@@ -2,7 +2,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -621,30 +620,4 @@ func isValidID(id string) bool {
 func ValidateConfig(cfg *Config) error {
 	v := NewValidator()
 	return v.Validate(cfg)
-}
-
-// Quick validation helpers
-
-// IsValidURL checks if a string is a valid URL.
-func IsValidURL(s string) bool {
-	u, err := url.Parse(s)
-	return err == nil && u.Scheme != "" && u.Host != ""
-}
-
-// IsValidDuration checks if a duration is valid (non-negative).
-func IsValidDuration(d time.Duration) bool {
-	return d >= 0
-}
-
-// IsValidPort checks if a port number is valid.
-func IsValidPort(port int) bool {
-	return port >= 1 && port <= 65535
-}
-
-// ValidateRequiredString checks if a required string is present.
-func ValidateRequiredString(name, value string) error {
-	if value == "" {
-		return errors.New(name + " is required")
-	}
-	return nil
 }

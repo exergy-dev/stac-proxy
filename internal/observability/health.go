@@ -139,11 +139,3 @@ func NewOriginCheck(name, url string, client *http.Client) Check {
 		},
 	}
 }
-
-// NewOriginCheckWithClient is an alias retained for callers that
-// already used the explicit-client constructor name.
-//
-// Deprecated: use NewOriginCheck.
-func NewOriginCheckWithClient(name, url string, client *http.Client) Check {
-	return NewOriginCheck(name, url, client)
-}

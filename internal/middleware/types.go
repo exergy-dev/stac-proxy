@@ -59,26 +59,6 @@ func (rt RequestType) String() string {
 	}
 }
 
-// MiddlewarePriorities defines standard priority levels for middleware.
-//
-// Ordering rationale: Auth runs first so we have a Principal. Cache runs
-// before Authz and RateLimit so that a cache hit does not consume a
-// rate-limit token AND is gated by Auth (an unauthenticated caller
-// cannot fish for cached content), but does not bother Authz which can
-// be expensive (OPA). Authorization still runs on hits via the
-// `cacheHit` context value; per-principal cache keys are required when
-// authorization decisions vary by principal.
-const (
-	PriorityFirst     = 0
-	PriorityLogging   = 100
-	PriorityAuth      = 200
-	PriorityCache     = 250
-	PriorityAuthz     = 300
-	PriorityRateLimit = 400
-	PriorityTransform = 600
-	PriorityLast      = 1000
-)
-
 // Context keys for storing values in context.
 type contextKey string
 

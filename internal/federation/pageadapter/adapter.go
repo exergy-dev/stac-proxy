@@ -161,7 +161,7 @@ func New(cfg Config) (Adapter, error) {
 	case "link_header":
 		return newLinkHeader(cfg), nil
 	default:
-		return nil, fmt.Errorf("pageadapter: unknown adapter %q (want token, next_url, offset, link_header, or auto)", name)
+		return nil, fmt.Errorf("pageadapter: unknown adapter %q (want token, next_url, post_body, offset, link_header, or auto)", name)
 	}
 }
 

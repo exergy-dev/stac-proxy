@@ -377,35 +377,6 @@ func TestTLSConfigValidation(t *testing.T) {
 	}
 }
 
-// TestValidationHelpers tests validation helper functions
-func TestValidationHelpers(t *testing.T) {
-	t.Run("IsValidURL", func(t *testing.T) {
-		t.Parallel()
-		assert.True(t, IsValidURL("https://example.com"))
-		assert.False(t, IsValidURL("example.com"))
-	})
-
-	t.Run("IsValidDuration", func(t *testing.T) {
-		t.Parallel()
-		assert.True(t, IsValidDuration(30*time.Second))
-		assert.False(t, IsValidDuration(-5*time.Second))
-	})
-
-	t.Run("IsValidPort", func(t *testing.T) {
-		t.Parallel()
-		assert.True(t, IsValidPort(8080))
-		assert.False(t, IsValidPort(0))
-	})
-
-	t.Run("ValidateRequiredString", func(t *testing.T) {
-		t.Parallel()
-		assert.NoError(t, ValidateRequiredString("field_name", "value"))
-		err := ValidateRequiredString("field_name", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "field_name is required")
-	})
-}
-
 // TestLoggingValidation tests logging configuration validation
 func TestLoggingValidation(t *testing.T) {
 	t.Run("invalid log level", func(t *testing.T) {

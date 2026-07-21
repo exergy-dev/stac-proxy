@@ -61,7 +61,7 @@ func main() {
 		// needing the flag to be repeated. Failure to load the
 		// config is non-fatal here: fall back to the default URL.
 		addr := *healthAddr
-		if isFlagDefault(addr, "http://127.0.0.1:8080/health") && *configPath != "" {
+		if addr == "http://127.0.0.1:8080/health" && *configPath != "" {
 			if cfg, err := config.Load(*configPath); err == nil && cfg.Server.Port != 0 {
 				addr = fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Server.Port)
 			}
@@ -1156,13 +1156,6 @@ func probeFilterExtension(logger *slog.Logger, id, baseURL string) bool {
 			"origin", id)
 		return false
 	}
-}
-
-// isFlagDefault reports whether got matches the documented default.
-// Used by --healthcheck so we can detect "operator did not override
-// the addr flag" and substitute the configured port.
-func isFlagDefault(got, def string) bool {
-	return got == def
 }
 
 // runHealthcheck makes a single GET against the supplied URL and
