@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1427,11 +1428,13 @@ func TestOriginClient_InvalidJSON(t *testing.T) {
 func TestOriginClient_Retry_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	attempt := 0
+	// Atomic: the handler may still be mid-flight (sleeping) when the
+	// cancelled DoRequest returns and the test reads the counter.
+	var attempt atomic.Int32
 
 	// Server that always returns 503
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempt++
+		attempt.Add(1)
 		time.Sleep(50 * time.Millisecond)
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -1461,8 +1464,8 @@ func TestOriginClient_Retry_ContextCancellation(t *testing.T) {
 	assert.Error(t, err, "expected context cancellation error but got nil")
 
 	// Should have attempted at least once but not all retries
-	assert.NotZero(t, attempt, "expected at least one attempt")
-	assert.Lessf(t, attempt, 5, "expected fewer than 5 attempts due to context cancellation")
+	assert.NotZero(t, attempt.Load(), "expected at least one attempt")
+	assert.Lessf(t, int(attempt.Load()), 5, "expected fewer than 5 attempts due to context cancellation")
 }
 
 func TestOriginClient_DiscoverCollections_UpdateCache(t *testing.T) {
