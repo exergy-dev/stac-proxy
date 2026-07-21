@@ -26,9 +26,9 @@ func TestPageCache_SkipsDegradedPages(t *testing.T) {
 	healthy := newMockSearchable("healthy", 1, func(_ context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
 		// Two pages: token "" -> item-1 + next token; token "p2" -> item-2, done.
 		if req.Token == "p2" {
-			return []*stac.Item{paginationTestItem("item-2", now.Add(-2 * time.Hour))}, "", "", nil
+			return []*stac.Item{paginationTestItem("item-2", now.Add(-2*time.Hour))}, "", "", nil
 		}
-		return []*stac.Item{paginationTestItem("item-1", now.Add(-1 * time.Hour))}, "p2", "", nil
+		return []*stac.Item{paginationTestItem("item-1", now.Add(-1*time.Hour))}, "p2", "", nil
 	})
 	flaky := newMockSearchable("flaky", 2, func(_ context.Context, _ *stac.SearchRequest) ([]*stac.Item, string, string, error) {
 		return nil, "", "", errors.New("origin down")
@@ -73,11 +73,11 @@ func TestPageCache_StoresHealthyPages(t *testing.T) {
 	healthy := newMockSearchable("healthy", 1, func(_ context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error) {
 		switch req.Token {
 		case "p2":
-			return []*stac.Item{paginationTestItem("item-2", now.Add(-2 * time.Hour))}, "p3", "", nil
+			return []*stac.Item{paginationTestItem("item-2", now.Add(-2*time.Hour))}, "p3", "", nil
 		case "p3":
-			return []*stac.Item{paginationTestItem("item-3", now.Add(-3 * time.Hour))}, "", "", nil
+			return []*stac.Item{paginationTestItem("item-3", now.Add(-3*time.Hour))}, "", "", nil
 		default:
-			return []*stac.Item{paginationTestItem("item-1", now.Add(-1 * time.Hour))}, "p2", "", nil
+			return []*stac.Item{paginationTestItem("item-1", now.Add(-1*time.Hour))}, "p2", "", nil
 		}
 	})
 

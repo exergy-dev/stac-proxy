@@ -61,9 +61,9 @@ func parseNextFromLinkHeader(values []string) string {
 // produces two entries.
 func splitLinkValues(s string) []string {
 	var (
-		out      []string
-		depth    int
-		buf      strings.Builder
+		out   []string
+		depth int
+		buf   strings.Builder
 	)
 	for _, r := range s {
 		switch r {

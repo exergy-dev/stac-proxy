@@ -94,4 +94,3 @@ func TestResponseCapture_ZeroIsUnbounded(t *testing.T) {
 	}
 	require.Len(t, rc.BodyBytes(), 10*(1<<20), "body len")
 }
-

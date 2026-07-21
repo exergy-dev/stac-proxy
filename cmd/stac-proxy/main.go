@@ -1176,4 +1176,3 @@ func runHealthcheck(url string) int {
 	}
 	return 0
 }
-

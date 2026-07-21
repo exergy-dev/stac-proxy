@@ -88,13 +88,17 @@ func (m *mockSearchableOrigin) Search(ctx context.Context, req *stac.SearchReque
 	return nil, "", "", nil, "", nil
 }
 
-func (m *mockSearchableOrigin) BaseURL() string                                                  { return "https://" + m.originID + ".example.com" }
-func (m *mockSearchableOrigin) ID() string                                                       { return m.originID }
-func (m *mockSearchableOrigin) Priority() int                                                    { return m.originPri }
-func (m *mockSearchableOrigin) IsEnabled() bool                                                  { return true }
-func (m *mockSearchableOrigin) HasCollection(id string) bool                                     { return true }
-func (m *mockSearchableOrigin) GetCollections(ctx context.Context) ([]*stac.Collection, error)  { return nil, nil }
-func (m *mockSearchableOrigin) Origin() *Origin                                                  { return &Origin{ID: m.originID, Priority: m.originPri} }
+func (m *mockSearchableOrigin) BaseURL() string              { return "https://" + m.originID + ".example.com" }
+func (m *mockSearchableOrigin) ID() string                   { return m.originID }
+func (m *mockSearchableOrigin) Priority() int                { return m.originPri }
+func (m *mockSearchableOrigin) IsEnabled() bool              { return true }
+func (m *mockSearchableOrigin) HasCollection(id string) bool { return true }
+func (m *mockSearchableOrigin) GetCollections(ctx context.Context) ([]*stac.Collection, error) {
+	return nil, nil
+}
+func (m *mockSearchableOrigin) Origin() *Origin {
+	return &Origin{ID: m.originID, Priority: m.originPri}
+}
 
 // newMockSearchable creates a mock searchable origin for testing
 func newMockSearchable(id string, priority int, searchFunc func(ctx context.Context, req *stac.SearchRequest) ([]*stac.Item, string, string, error)) *mockSearchableOrigin {

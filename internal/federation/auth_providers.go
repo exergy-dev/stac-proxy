@@ -275,4 +275,3 @@ func (p *AWSSigV4Provider) ApplyAuth(ctx context.Context, req *http.Request) err
 func (p *AWSSigV4Provider) Refresh(ctx context.Context) error {
 	return nil
 }
-

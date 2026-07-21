@@ -128,4 +128,3 @@ func TestIntegration_PolicyCQL2FlowsToUpstreamSingleOrigin(t *testing.T) {
 	lang, _ := body["filter-lang"].(string)
 	assert.Equal(t, "cql2-text", lang, "upstream filter-lang")
 }
-

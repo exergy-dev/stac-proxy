@@ -251,13 +251,13 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 	// that the builder forgets to populate from config — exactly the
 	// class of bug this test exists to prevent.
 	expectedOrigin := &federation.Origin{
-		ID:                      in.ID,
-		Name:                    in.Name,
-		Description:             in.Description,
-		BaseURL:                 in.BaseURL,
-		Enabled:                 in.Enabled,
-		Timeout:                 in.Timeout,
-		MaxIdleConnsPerHost:     in.MaxIdleConnsPerHost,
+		ID:                  in.ID,
+		Name:                in.Name,
+		Description:         in.Description,
+		BaseURL:             in.BaseURL,
+		Enabled:             in.Enabled,
+		Timeout:             in.Timeout,
+		MaxIdleConnsPerHost: in.MaxIdleConnsPerHost,
 		Retry: &federation.RetryPolicy{
 			MaxRetries:     in.Retry.MaxRetries,
 			InitialBackoff: in.Retry.InitialBackoff,

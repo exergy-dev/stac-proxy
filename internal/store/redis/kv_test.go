@@ -125,4 +125,3 @@ func TestNew_DefaultsApplied(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 	require.NoError(t, client.Ping(context.Background()).Err())
 }
-

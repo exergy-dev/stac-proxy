@@ -118,4 +118,3 @@ func TestIntersect(t *testing.T) {
 		assert.Equal(t, []string{"a"}, got)
 	})
 }
-

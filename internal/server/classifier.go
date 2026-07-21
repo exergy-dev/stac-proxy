@@ -21,16 +21,16 @@ var routeCtxPool = sync.Pool{
 // to their STAC request types. Health endpoints are intentionally
 // absent — they carry no STACInfo.
 var routePatternTypes = map[string]middleware.RequestType{
-	"/":                                          middleware.RequestTypeLanding,
-	"/conformance":                               middleware.RequestTypeConformance,
-	"/collections":                               middleware.RequestTypeCollections,
-	"/collections/{collectionId}":                middleware.RequestTypeCollection,
-	"/collections/{collectionId}/items":          middleware.RequestTypeItems,
+	"/":                                 middleware.RequestTypeLanding,
+	"/conformance":                      middleware.RequestTypeConformance,
+	"/collections":                      middleware.RequestTypeCollections,
+	"/collections/{collectionId}":       middleware.RequestTypeCollection,
+	"/collections/{collectionId}/items": middleware.RequestTypeItems,
 	"/collections/{collectionId}/items/{itemId}": middleware.RequestTypeItem,
-	"/search":                                    middleware.RequestTypeSearch,
-	"/queryables":                                middleware.RequestTypeQueryables,
-	"/collections/{collectionId}/queryables":     middleware.RequestTypeCollectionQueryables,
-	"/assets/{originId}/{ref}":                   middleware.RequestTypeAsset,
+	"/search":                                middleware.RequestTypeSearch,
+	"/queryables":                            middleware.RequestTypeQueryables,
+	"/collections/{collectionId}/queryables": middleware.RequestTypeCollectionQueryables,
+	"/assets/{originId}/{ref}":               middleware.RequestTypeAsset,
 }
 
 // stacInfoClassifier attaches STACInfo to the request context BEFORE

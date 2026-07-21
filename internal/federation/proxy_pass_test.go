@@ -291,7 +291,7 @@ func (panicRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 // captured body would exceed the cap.
 func TestReverseProxy_OversizedUpstreamReturns502(t *testing.T) {
 	const maxCap = 256 * 1024 // 256 KiB cap
-	const body = 1024 * 1024 // 1 MiB upstream body
+	const body = 1024 * 1024  // 1 MiB upstream body
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

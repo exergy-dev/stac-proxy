@@ -346,7 +346,6 @@ func TestBufferAndSetGetBody(t *testing.T) {
 	}
 }
 
-
 func TestJitteredBackoff_RangeAndGrowth(t *testing.T) {
 	t.Parallel()
 	minWait, maxWait := 100*time.Millisecond, 10*time.Second

@@ -400,7 +400,7 @@ func TestEmbeddedOPAEnforcer_Authorize(t *testing.T) {
 			},
 		},
 		{
-			name:   "deny with reasons",
+			name: "deny with reasons",
 			policy: `
 package stac.authz
 

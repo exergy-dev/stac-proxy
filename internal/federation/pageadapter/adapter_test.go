@@ -203,4 +203,3 @@ func TestAuto_FallsBackToNextURL(t *testing.T) {
 	assert.Equal(t, "next_url", st.AdapterName, "AdapterName; auto should fall back to next_url for Earth Search shape")
 	assert.NotEmpty(t, st.URL, "URL not captured by next_url")
 }
-

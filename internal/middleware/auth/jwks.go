@@ -178,11 +178,11 @@ type JWKSClient struct {
 	lifetimeCtx    context.Context
 	refreshTimeout time.Duration
 
-	mu          sync.RWMutex
-	keys        map[string]cachedKey
-	softExpiry  time.Time // re-fetch in background after this
-	hardExpiry  time.Time // discard entirely after this
-	bgRefresh   bool      // a background refresh is in flight
+	mu         sync.RWMutex
+	keys       map[string]cachedKey
+	softExpiry time.Time // re-fetch in background after this
+	hardExpiry time.Time // discard entirely after this
+	bgRefresh  bool      // a background refresh is in flight
 	// lastRefreshAttempt tracks when refresh() last ran (success OR
 	// failure), so unknown-kid lookups can short-circuit until the
 	// floor elapses.

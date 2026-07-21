@@ -78,10 +78,10 @@ func TestIsJSONContentType(t *testing.T) {
 		"application/json; charset=utf-8": true,
 		"application/geo+json":            true,
 		"application/vnd.oai.openapi+json; version=3.0": true,
-		"image/png":                                     false,
-		"text/plain":                                    false,
-		"application/octet-stream":                      false,
-		"application/jsonp":                             false, // not actually JSON
+		"image/png":                false,
+		"text/plain":               false,
+		"application/octet-stream": false,
+		"application/jsonp":        false, // not actually JSON
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, isJSONContentType(in), "isJSONContentType(%q)", in)

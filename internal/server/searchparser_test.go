@@ -85,4 +85,3 @@ func TestSearchParser_AlreadyParsed_DoesNotOverwrite(t *testing.T) {
 	require.NotNil(t, sr, "pre-set SearchReq must not be overwritten")
 	require.Equal(t, []string{"pre-set"}, sr.Collections, "pre-set SearchReq must not be overwritten")
 }
-

@@ -49,4 +49,3 @@ func TestRealIP_Smoke(t *testing.T) {
 
 	assert.Equal(t, "1.2.3.4", captured)
 }
-

@@ -63,4 +63,3 @@ func TestLimiter_QuotaChangeRebuildsBucket(t *testing.T) {
 	ok, _, _ = lim.Allow(ctx, "k", q2)
 	require.True(t, ok, "expected allow under q2 (fresh bucket)")
 }
-

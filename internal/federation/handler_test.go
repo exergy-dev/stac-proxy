@@ -95,7 +95,7 @@ func TestNewHandler(t *testing.T) {
 		{
 			name: "empty origins list",
 			config: HandlerConfig{
-				Origins:          []*Origin{},
+				Origins: []*Origin{},
 			},
 			wantOrigins: 0,
 			wantErr:     false,
@@ -513,7 +513,7 @@ func TestHandleGetCollections(t *testing.T) {
 			}
 
 			handler, err := NewHandler(HandlerConfig{
-				Origins:          origins,
+				Origins: origins,
 			})
 			require.NoError(t, err, "failed to create handler")
 
@@ -761,7 +761,7 @@ func TestHandleGenericProxyNoOrigins(t *testing.T) {
 	t.Parallel()
 
 	handler, err := NewHandler(HandlerConfig{
-		Origins:          []*Origin{},
+		Origins: []*Origin{},
 	})
 	require.NoError(t, err, "failed to create handler")
 

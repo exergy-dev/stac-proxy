@@ -608,7 +608,6 @@ func (v *Validator) validateStoreSelector(component string, idx int, mwCfg map[s
 	return store
 }
 
-
 // isValidID checks if an ID is valid (alphanumeric with hyphens).
 var validIDRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9-]*$`)
 
