@@ -199,10 +199,7 @@ allow if {
 
 ### 5. Combining conditions (time-window + IP allowlist)
 
-`stac-proxy` also supports policy-engine-agnostic "conditions" — a
-secondary file-policy enforcer not driven by OPA. See
-`internal/middleware/authz/policy.go` `Condition` types (`time_range`,
-`ip_range`, `attribute`). OPA users typically express the same logic
+Time-window, IP-allowlist, and attribute conditions are expressed
 directly in Rego:
 
 ```rego

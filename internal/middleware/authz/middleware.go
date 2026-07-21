@@ -254,6 +254,37 @@ func applyConstraints(sr *stac.SearchRequest, constraints *AuthzConstraints) err
 
 var errCollectionsDenied = errors.New("no collections in request are permitted by policy")
 
+// intersectStrings returns the intersection of two string slices.
+func intersectStrings(a, b []string) []string {
+	set := make(map[string]bool)
+	for _, s := range a {
+		set[s] = true
+	}
+
+	var result []string
+	for _, s := range b {
+		if set[s] {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// removeStrings returns the elements of a that are not in b.
+func removeStrings(a, b []string) []string {
+	deny := make(map[string]bool, len(b))
+	for _, s := range b {
+		deny[s] = true
+	}
+	out := make([]string, 0, len(a))
+	for _, s := range a {
+		if !deny[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // userCQL2ParseError wraps a parse failure on the *client-supplied*
 // filter so the chi-style middleware can return 400 BadRequest
 // (InvalidParameterValue) instead of an opaque 500. Policy-side parse

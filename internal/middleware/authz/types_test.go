@@ -9,7 +9,7 @@ import (
 
 // TestBuildAuthzInput_StripsPortFromRemoteAddr ensures BuildAuthzInput
 // always produces a clean host (no `:port`) for the ClientIP field so
-// policy ip_range conditions parse it. After the chi RealIP swap,
+// Rego policies matching on client IP parse it. After the chi RealIP swap,
 // r.RemoteAddr is the only source — RealIP overwrites it from
 // X-Real-IP / X-Forwarded-For / True-Client-IP when present.
 func TestBuildAuthzInput_StripsPortFromRemoteAddr(t *testing.T) {

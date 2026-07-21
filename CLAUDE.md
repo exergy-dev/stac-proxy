@@ -46,7 +46,7 @@ Client → Middleware Chain → Router/Handler → Origins
 - `internal/server/` - HTTP server, chi router, search-body parser middleware, asset endpoint
 - `internal/middleware/` - Chi-style `func(http.Handler) http.Handler` middleware components plus shared types (`types.go`: `RequestType`, priorities, context keys, `STACInfo`, error types):
   - `auth/` - Authentication providers (JWT bearer, JWKS, OIDC discovery, API key, basic, mTLS)
-  - `authz/` - Authorization with embedded OPA, CQL2 injection, geofencing, and file-policy conditions (`time_range`, `ip_range`, `attribute`)
+  - `authz/` - Authorization with embedded OPA, CQL2 injection, and geofencing
   - `cache/` - Response caching (`store: memory` LRU, default, or `store: redis` shared across replicas; honors `Cache-Control: no-store`)
   - `cors/` - CORS preflight + per-response headers
   - `ratelimit/` - Token-bucket rate limiting (per-IP / per-principal); `store: redis` makes buckets global across replicas via an atomic Lua script, with a `failure_mode: open|closed` knob
