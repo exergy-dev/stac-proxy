@@ -17,7 +17,6 @@ import (
 func TestMemoryStore_GetSet_RoundTrip(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
-	defer store.Close()
 
 	ctx := context.Background()
 	require.NoError(t, store.Set(ctx, "k", []byte("v"), time.Minute))
@@ -75,23 +74,5 @@ func TestMemoryStore_TTLExpiry(t *testing.T) {
 func TestMemoryStore_DefaultMaxSize(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryStore(MemoryConfig{MaxSize: 0})
-	defer store.Close()
 	require.NoError(t, store.Set(context.Background(), "k", []byte("v"), time.Minute))
-}
-
-func TestMemoryStore_DeleteAndClear(t *testing.T) {
-	t.Parallel()
-	store := NewMemoryStore(MemoryConfig{MaxSize: 8})
-	ctx := context.Background()
-
-	_ = store.Set(ctx, "a", []byte("1"), time.Minute)
-	_ = store.Set(ctx, "b", []byte("2"), time.Minute)
-	_ = store.Delete(ctx, "a")
-	_, ok := store.Get(ctx, "a")
-	require.False(t, ok, "deleted key still present")
-	_, ok = store.Get(ctx, "b")
-	require.True(t, ok, "non-deleted key missing")
-	_ = store.Clear(ctx)
-	_, ok = store.Get(ctx, "b")
-	require.False(t, ok, "clear left entries behind")
 }

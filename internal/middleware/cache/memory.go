@@ -64,7 +64,3 @@ func (s *MemoryStore) Set(_ context.Context, key string, value []byte, ttl time.
 	})
 	return nil
 }
-
-func (s *MemoryStore) Delete(_ context.Context, key string) error { s.lru.Remove(key); return nil }
-func (s *MemoryStore) Clear(_ context.Context) error              { s.lru.Purge(); return nil }
-func (s *MemoryStore) Close() error                               { s.lru.Purge(); return nil }

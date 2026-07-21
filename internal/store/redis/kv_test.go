@@ -74,12 +74,9 @@ func TestKV_PrefixIsolation(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []byte("from-a"), got, "prefixes must not collide")
 
-	// Clear only b's namespace; a survives.
-	require.NoError(t, b.Clear(ctx))
-	_, ok = b.Get(ctx, "shared")
-	assert.False(t, ok)
-	_, ok = a.Get(ctx, "shared")
-	assert.True(t, ok, "Clear on one prefix must not touch another")
+	got, ok = b.Get(ctx, "shared")
+	require.True(t, ok)
+	assert.Equal(t, []byte("from-b"), got, "prefixes must not collide")
 }
 
 func TestKV_RedisDownFailsOpen(t *testing.T) {
@@ -98,17 +95,6 @@ func TestKV_RedisDownFailsOpen(t *testing.T) {
 	assert.Nil(t, got)
 	assert.Error(t, kv.Set(ctx, "k2", []byte("v"), time.Minute),
 		"Set surfaces the error (callers already ignore it)")
-}
-
-func TestKV_Delete(t *testing.T) {
-	t.Parallel()
-	kv, _ := newTestKV(t, "t:rc:")
-	ctx := context.Background()
-
-	require.NoError(t, kv.Set(ctx, "k1", []byte("v"), time.Minute))
-	require.NoError(t, kv.Delete(ctx, "k1"))
-	_, ok := kv.Get(ctx, "k1")
-	assert.False(t, ok)
 }
 
 func TestNew_RequiresAddr(t *testing.T) {

@@ -428,6 +428,3 @@ func (s *NoOpStore) Get(ctx context.Context, key string) ([]byte, bool) { return
 func (s *NoOpStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	return nil
 }
-func (s *NoOpStore) Delete(ctx context.Context, key string) error { return nil }
-func (s *NoOpStore) Clear(ctx context.Context) error              { return nil }
-func (s *NoOpStore) Close() error                                 { return nil }

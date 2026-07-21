@@ -75,35 +75,3 @@ func (s *KV) Set(ctx context.Context, key string, value []byte, ttl time.Duratio
 	}
 	return err
 }
-
-// Delete removes a key.
-func (s *KV) Delete(ctx context.Context, key string) error {
-	ctx, cancel := context.WithTimeout(ctx, kvCallTimeout)
-	defer cancel()
-	return s.rdb.Del(ctx, s.prefix+key).Err()
-}
-
-// Clear removes every key under this KV's prefix using SCAN+DEL in
-// batches (never KEYS — O(N) blocking on a shared Redis).
-func (s *KV) Clear(ctx context.Context) error {
-	var cursor uint64
-	for {
-		keys, next, err := s.rdb.Scan(ctx, cursor, s.prefix+"*", 512).Result()
-		if err != nil {
-			return err
-		}
-		if len(keys) > 0 {
-			if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
-				return err
-			}
-		}
-		if next == 0 {
-			return nil
-		}
-		cursor = next
-	}
-}
-
-// Close is a no-op: the underlying client is shared across stores and
-// owned by main, which closes it on shutdown.
-func (s *KV) Close() error { return nil }

@@ -186,7 +186,6 @@ func TestCache_FiltersSensitiveHeadersFromEntry(t *testing.T) {
 // thrash the cache for no benefit.
 func TestCache_QueryParamOrderInvariant(t *testing.T) {
 	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
-	defer store.Close()
 
 	var upstreamHits int
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -289,7 +288,6 @@ func TestCache_DoesNotMixAnonymousAndAuthenticated(t *testing.T) {
 // negative cache the upstream pays for every request.
 func TestCache_404IsCachedWithNegativeTTL(t *testing.T) {
 	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
-	defer store.Close()
 
 	var inner uint32
 	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -320,7 +318,6 @@ func TestCache_404IsCachedWithNegativeTTL(t *testing.T) {
 // cache.
 func TestCache_5xxNotCached(t *testing.T) {
 	store := NewMemoryStore(MemoryConfig{MaxSize: 16})
-	defer store.Close()
 
 	var inner uint32
 	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

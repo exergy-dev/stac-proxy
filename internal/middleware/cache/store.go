@@ -10,6 +10,9 @@ import (
 // Store defines the interface for cache storage backends. The unit of
 // storage is an opaque []byte (currently a JSON-encoded CacheEntry; see
 // middleware.go) so the same backend can hold any encodable payload.
+// Entries only ever leave a store by TTL expiry or LRU eviction — there
+// is deliberately no Delete/Clear/Close surface, and backend lifecycle
+// (the shared Redis client) is owned by main.
 type Store interface {
 	// Get retrieves a value from the cache.
 	// Returns the value and true if found, nil and false otherwise.
@@ -17,15 +20,6 @@ type Store interface {
 
 	// Set stores a value in the cache with the given TTL.
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
-
-	// Delete removes a value from the cache.
-	Delete(ctx context.Context, key string) error
-
-	// Clear removes all values from the cache.
-	Clear(ctx context.Context) error
-
-	// Close releases any resources held by the store.
-	Close() error
 }
 
 // Strategy defines the interface for cache strategy decisions.
