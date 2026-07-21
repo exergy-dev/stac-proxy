@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"sync"
 	"time"
@@ -213,8 +212,7 @@ func (b *BreakerTransport) open(reasonKey string, reasonVal int) {
 	if period > b.cfg.OpenMax || period <= 0 { // <=0 guards shift overflow
 		period = b.cfg.OpenMax
 	}
-	half := period / 2
-	period = half + rand.N(half+1)
+	period = fullJitter(period)
 	b.state = stateOpen
 	b.openUntil = time.Now().Add(period)
 	b.consecFails = 0

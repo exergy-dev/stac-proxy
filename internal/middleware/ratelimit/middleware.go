@@ -95,12 +95,9 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 				// The limiter itself logs the (throttled) warning.
 				if cfg.FailClosed {
 					w.Header().Set("Retry-After", "1")
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusServiceUnavailable)
-					_ = json.NewEncoder(w).Encode(map[string]string{
-						"code":        "RateLimiterUnavailable",
-						"description": "Rate limiting backend unavailable; refusing request (failure_mode: closed)",
-					})
+					writeJSONError(w, http.StatusServiceUnavailable,
+						"RateLimiterUnavailable",
+						"Rate limiting backend unavailable; refusing request (failure_mode: closed)")
 					return
 				}
 				// Fail open: allow through, no headers added.
@@ -125,18 +122,24 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 
 			if !allowed {
 				w.Header().Set("Retry-After", strconv.Itoa(info.RetryAfter))
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusTooManyRequests)
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"code":        "RateLimitExceeded",
-					"description": "Rate limit exceeded",
-				})
+				writeJSONError(w, http.StatusTooManyRequests,
+					"RateLimitExceeded", "Rate limit exceeded")
 				return
 			}
 
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// writeJSONError emits the proxy's standard JSON error envelope.
+func writeJSONError(w http.ResponseWriter, status int, code, description string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"code":        code,
+		"description": description,
+	})
 }
 
 // RoleBasedQuotaFunc returns a QuotaFunc that picks the first matching

@@ -20,7 +20,12 @@ func newTestRedisLimiter(t *testing.T) (*RedisLimiter, *miniredis.Miniredis) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = client.Close() })
-	return NewRedisLimiter(client, "t:rl:", nil), mr
+	l := NewRedisLimiter(client, "t:rl:", nil)
+	// miniredis interprets Lua in-process (gopher-lua); under -race
+	// with parallel tests a single call can blow the tight production
+	// budget, so tests widen it. Production keeps redisCallTimeout.
+	l.callTimeout = 5 * time.Second
+	return l, mr
 }
 
 func TestRedisLimiter_BurstThenDeny(t *testing.T) {

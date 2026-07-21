@@ -5,10 +5,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/middleware/cache"
+	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 // infoRecorder captures what STACInfo (and SearchReq) an operator
@@ -97,6 +99,49 @@ func TestRouter_STACInfoVisibleToMiddlewares(t *testing.T) {
 		router.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/unknown-route", nil))
 		assert.Nil(t, seen.info, "unmatched routes must not carry STACInfo")
 	})
+}
+
+// TestClassifier_CoversEveryRegisteredRoute walks the real chi route
+// table and requires a routePatternTypes entry for every non-health
+// pattern. This is the drift guard: a route added to NewRouter
+// without a classifier entry would silently hand its requests to the
+// middlewares with nil STACInfo — the exact authz/cache bypass the
+// classifier exists to prevent — and hand-enumerated path tests would
+// never notice.
+func TestClassifier_CoversEveryRegisteredRoute(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(RouterConfig{
+		Handler:       http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+		HealthChecker: observability.NewHealthChecker(),
+		AssetHandler: assetHandlerFunc(func(http.ResponseWriter, *http.Request, string, string) {
+		}),
+	})
+
+	// Health endpoints are deliberately outside the STAC surface.
+	exempt := map[string]bool{
+		"/health":       true,
+		"/health/live":  true,
+		"/health/ready": true,
+	}
+
+	err := chi.Walk(router.Mux, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if exempt[route] {
+			return nil
+		}
+		if _, ok := routePatternTypes[route]; !ok {
+			t.Errorf("route %s %s has no routePatternTypes entry — its requests would reach authz/cache with nil STACInfo", method, route)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+// assetHandlerFunc adapts a func to AssetHandler for tests.
+type assetHandlerFunc func(http.ResponseWriter, *http.Request, string, string)
+
+func (f assetHandlerFunc) ServeAssetHTTP(w http.ResponseWriter, r *http.Request, originID, ref string) {
+	f(w, r, originID, ref)
 }
 
 // TestRouter_ResponseCacheEngages proves the cache middleware works

@@ -154,6 +154,7 @@ type BreakerPolicy struct {
 	FailureThreshold int
 	OpenDuration     time.Duration
 	MaxOpenDuration  time.Duration
+	HalfOpenProbes   int
 }
 
 // AuthConfig defines authentication for an upstream origin.

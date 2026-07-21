@@ -532,12 +532,12 @@ func buildCacheHTTPMiddleware(cfg *config.Config, rdb redis.UniversalClient, log
 	if rawCfg == nil {
 		return nil, nil
 	}
+	// When store is redis and rdb is somehow nil (wiring regression —
+	// validation guarantees the block), NewFromConfigWithStore reports
+	// the error; no second check here.
 	var store cache.Store
-	if s, _ := rawCfg["store"].(string); s == "redis" {
-		if rdb == nil {
-			return nil, fmt.Errorf("cache store is redis but no redis client was built")
-		}
-		store = redisstore.NewKV(rdb, redisKeyPrefix(cfg)+"rc:", logger)
+	if config.StoreSelection(rawCfg) == "redis" && rdb != nil {
+		store = redisstore.NewKV(rdb, redisKeyPrefix(cfg)+redisstore.NSResponseCache, logger)
 	}
 	return cache.NewFromConfigWithStore(rawCfg, store)
 }
@@ -547,7 +547,7 @@ func redisKeyPrefix(cfg *config.Config) string {
 	if cfg.Redis != nil && cfg.Redis.KeyPrefix != "" {
 		return cfg.Redis.KeyPrefix
 	}
-	return "stacproxy:"
+	return redisstore.DefaultKeyPrefix
 }
 
 // buildRedisClient constructs the shared Redis client when any
@@ -564,7 +564,7 @@ func redisKeyPrefix(cfg *config.Config) string {
 // into a hard one. Redis state is surfaced via throttled warn logs
 // from the stores instead.
 func buildRedisClient(ctx context.Context, cfg *config.Config, logger *slog.Logger) (redis.UniversalClient, error) {
-	if cfg.Redis == nil || !configSelectsRedis(cfg) {
+	if cfg.Redis == nil || !cfg.SelectsRedis() {
 		return nil, nil
 	}
 	client, err := redisstore.New(redisstore.Config{
@@ -598,21 +598,6 @@ func buildRedisClient(ctx context.Context, cfg *config.Config, logger *slog.Logg
 		logger.Info("Redis connected", "addr", cfg.Redis.Addr)
 	}
 	return client, nil
-}
-
-// configSelectsRedis reports whether any component opted into the
-// shared Redis backend.
-func configSelectsRedis(cfg *config.Config) bool {
-	for _, mw := range cfg.Middleware {
-		if mw.Name != "cache" && mw.Name != "rate_limit" {
-			continue
-		}
-		if s, _ := mw.Config["store"].(string); s == "redis" {
-			return true
-		}
-	}
-	return cfg.Federation != nil && cfg.Federation.PageCache != nil &&
-		cfg.Federation.PageCache.Store == "redis"
 }
 
 // buildCorsHTTPMiddleware builds the chi-style CORS middleware from the
@@ -729,13 +714,13 @@ func buildRateLimitHTTPMiddleware(cfg *config.Config, rdb redis.UniversalClient,
 			Burst:    burst,
 		},
 	}
-	if s, _ := rawCfg["store"].(string); s == "redis" {
+	if config.StoreSelection(rawCfg) == "redis" {
 		if rdb == nil {
 			// Validation guarantees the redis block; degrade loudly to
 			// the in-memory limiter rather than boot without limiting.
 			logger.Warn("rate_limit store is redis but no redis client was built; using in-memory limiter")
 		} else {
-			mwCfg.Limiter = ratelimit.NewRedisLimiter(rdb, redisKeyPrefix(cfg)+"rl:", logger)
+			mwCfg.Limiter = ratelimit.NewRedisLimiter(rdb, redisKeyPrefix(cfg)+redisstore.NSRateLimit, logger)
 			mwCfg.FailClosed = rawCfg["failure_mode"] == "closed"
 		}
 	}
@@ -920,6 +905,7 @@ func originBreakerPolicy(c *config.CircuitBreakerConfig) *federation.BreakerPoli
 		FailureThreshold: c.FailureThreshold,
 		OpenDuration:     c.OpenDuration,
 		MaxOpenDuration:  c.MaxOpenDuration,
+		HalfOpenProbes:   c.HalfOpenProbes,
 	}
 }
 
@@ -972,7 +958,7 @@ func buildPageCache(cfg *config.Config, rdb redis.UniversalClient, logger *slog.
 			// panic — the page cache is an optimization.
 			logger.Warn("federation page cache: store is redis but no redis client was built; falling back to memory")
 		} else {
-			store = redisstore.NewKV(rdb, redisKeyPrefix(cfg)+"pg:", logger)
+			store = redisstore.NewKV(rdb, redisKeyPrefix(cfg)+redisstore.NSPageCache, logger)
 			storeKind = "redis"
 		}
 	}

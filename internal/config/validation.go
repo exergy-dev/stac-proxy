@@ -253,6 +253,9 @@ func (v *Validator) validateOrigin(index int, origin OriginConfig, seenIDs map[s
 		if cb.FailureThreshold < 0 {
 			v.addError("%s.circuit_breaker.failure_threshold cannot be negative", prefix)
 		}
+		if cb.HalfOpenProbes < 0 {
+			v.addError("%s.circuit_breaker.half_open_probes cannot be negative", prefix)
+		}
 		if cb.OpenDuration < 0 || cb.MaxOpenDuration < 0 {
 			v.addError("%s.circuit_breaker durations cannot be negative", prefix)
 		}
@@ -418,7 +421,7 @@ func (v *Validator) validateMiddleware(cfg *Config) {
 		case "cors":
 			v.validateCorsMiddleware(i, mw.Config)
 		case "cache":
-			v.validateCacheMiddleware(i, mw.Config, cfg)
+			v.validateStoreSelector("cache", i, mw.Config, cfg)
 		case "rate_limit":
 			v.validateRateLimitMiddleware(i, mw.Config, cfg)
 		}
@@ -446,9 +449,12 @@ func (v *Validator) validateRateLimitMiddleware(idx int, mwCfg map[string]interf
 	}
 }
 
-// storeSelection reads the `store` key of a middleware config block.
+// StoreSelection reads the `store` key of a middleware config block.
 // Returns "" when absent (meaning the component default, memory).
-func storeSelection(cfg map[string]interface{}) string {
+// Exported because main.go's builders make the same read when wiring
+// the shared Redis client — one accessor owns the key name and the
+// empty-means-memory defaulting.
+func StoreSelection(cfg map[string]interface{}) string {
 	if cfg == nil {
 		return ""
 	}
@@ -464,7 +470,7 @@ func storeSelection(cfg map[string]interface{}) string {
 func (v *Validator) validateRedis(cfg *Config) {
 	if cfg.Redis == nil {
 		// The cache middleware's equivalent cross-check lives in
-		// validateCacheMiddleware (it has the middleware index for the
+		// validateStoreSelector (it has the middleware index for the
 		// message); the page cache's lives here because
 		// validateFederation only sees the federation subtree.
 		if cfg.Federation != nil && cfg.Federation.PageCache != nil &&
@@ -489,7 +495,7 @@ func (v *Validator) validateRedis(cfg *Config) {
 	if r.TLS.Enabled && (r.TLS.CertFile == "") != (r.TLS.KeyFile == "") {
 		v.addError("redis.tls cert_file and key_file must be set together")
 	}
-	if !anyRedisConsumer(cfg) {
+	if !cfg.SelectsRedis() {
 		v.addWarning("redis block is configured but no component selects store: redis — the connection will not be used")
 	}
 }
@@ -522,21 +528,22 @@ func (v *Validator) validateAssetSigning(cfg *Config) {
 	v.addError("origins %s set rewrite_assets: sign, but no url_remap middleware with a non-empty `secret` is configured — asset URLs would silently be emitted unsigned. Add the url_remap secret or switch the origins to rewrite_assets: proxy/none.", strings.Join(signers, ", "))
 }
 
-// anyRedisConsumer reports whether any component's store selector is
-// set to "redis".
-func anyRedisConsumer(cfg *Config) bool {
-	for _, mw := range cfg.Middleware {
+// SelectsRedis reports whether any component opted into the shared
+// Redis backend (cache / rate_limit middleware `store: redis`, or
+// federation.page_cache.store). Single source of truth for the
+// consumer list — used by validation (unused-block warning) and by
+// main.go to decide whether to build the shared client; a new Redis
+// consumer must only be added here.
+func (c *Config) SelectsRedis() bool {
+	for _, mw := range c.Middleware {
 		if mw.Name == "cache" || mw.Name == "rate_limit" {
-			if storeSelection(mw.Config) == "redis" {
+			if StoreSelection(mw.Config) == "redis" {
 				return true
 			}
 		}
 	}
-	if cfg.Federation != nil && cfg.Federation.PageCache != nil &&
-		cfg.Federation.PageCache.Store == "redis" {
-		return true
-	}
-	return false
+	return c.Federation != nil && c.Federation.PageCache != nil &&
+		c.Federation.PageCache.Store == "redis"
 }
 
 // validateCorsMiddleware enforces CORS-specific rules that would
@@ -589,7 +596,7 @@ func (v *Validator) validateCorsMiddleware(idx int, cfg map[string]interface{}) 
 // additionally requires the top-level `redis:` block. Returns the
 // selected store so callers can layer component-specific checks.
 func (v *Validator) validateStoreSelector(component string, idx int, mwCfg map[string]interface{}, cfg *Config) string {
-	store := storeSelection(mwCfg)
+	store := StoreSelection(mwCfg)
 	switch store {
 	case "", "memory":
 	case "redis":
@@ -602,10 +609,6 @@ func (v *Validator) validateStoreSelector(component string, idx int, mwCfg map[s
 	return store
 }
 
-// validateCacheMiddleware — see validateStoreSelector.
-func (v *Validator) validateCacheMiddleware(idx int, mwCfg map[string]interface{}, cfg *Config) {
-	v.validateStoreSelector("cache", idx, mwCfg, cfg)
-}
 
 // isValidID checks if an ID is valid (alphanumeric with hyphens).
 var validIDRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9-]*$`)

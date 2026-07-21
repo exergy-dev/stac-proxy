@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -27,9 +28,9 @@ import (
 // tests (FastForward has no effect on TIME) faithful. Millisecond
 // clock skew across replicas is noise at these window sizes.
 //
-// Returns {allowed, tostring(pre_tokens), tostring(post_tokens),
-// retry_ms}. Token counts travel as strings because Redis truncates
-// Lua numbers to integers in protocol replies.
+// Returns {allowed, tostring(pre_tokens), retry_ms}. The token count
+// travels as a string because Redis truncates Lua numbers to integers
+// in protocol replies.
 var tokenBucketScript = redis.NewScript(`
 local rate  = tonumber(ARGV[1])  -- tokens per second
 local burst = tonumber(ARGV[2])
@@ -62,7 +63,7 @@ redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', ts)
 -- GC idle buckets once they would have fully refilled (x2 margin).
 redis.call('PEXPIRE', KEYS[1], math.ceil(burst / rate * 1000.0) * 2)
 
-return {allowed, tostring(pre), tostring(tokens), retry_ms}
+return {allowed, tostring(pre), retry_ms}
 `)
 
 // redisCallTimeout bounds a single Allow round trip so a degraded
@@ -78,16 +79,21 @@ type RedisLimiter struct {
 	prefix  string
 	logger  *slog.Logger
 	logGate *logx.LogThrottle
+	// callTimeout defaults to redisCallTimeout; tests widen it because
+	// miniredis's in-process Lua interpreter under -race can exceed
+	// the tight production budget.
+	callTimeout time.Duration
 }
 
 // NewRedisLimiter returns a RedisLimiter writing bucket hashes under
 // prefix (e.g. "stacproxy:rl:"). logger may be nil.
 func NewRedisLimiter(rdb redis.UniversalClient, prefix string, logger *slog.Logger) *RedisLimiter {
 	return &RedisLimiter{
-		rdb:     rdb,
-		prefix:  prefix,
-		logger:  logger,
-		logGate: logx.NewLogThrottle(30 * time.Second),
+		rdb:         rdb,
+		prefix:      prefix,
+		logger:      logger,
+		logGate:     logx.NewLogThrottle(30 * time.Second),
+		callTimeout: redisCallTimeout,
 	}
 }
 
@@ -110,7 +116,7 @@ func (l *RedisLimiter) Allow(ctx context.Context, key string, quota Quota) (bool
 	}
 	ratePerSec := float64(quota.Requests) / quota.Window.Seconds()
 
-	ctx, cancel := context.WithTimeout(ctx, redisCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, l.callTimeout)
 	defer cancel()
 
 	now := time.Now()
@@ -123,17 +129,15 @@ func (l *RedisLimiter) Allow(ctx context.Context, key string, quota Quota) (bool
 			"error", err)
 		return false, Info{}, err
 	}
-	if len(res) != 4 {
-		err := fmt.Errorf("rate limit script returned %d values, want 4", len(res))
+	if len(res) != 3 {
+		err := fmt.Errorf("rate limit script returned %d values, want 3", len(res))
 		l.logGate.Warn(l.logger, "redis rate limiter script mismatch", "error", err)
 		return false, Info{}, err
 	}
 
 	allowed := toInt64(res[0]) == 1
 	preTokens := toFloat(res[1])
-	// res[2] (post-consumption tokens) is returned by the script for
-	// debuggability but unused: Info derives everything from pre.
-	retryMs := toInt64(res[3])
+	retryMs := toInt64(res[2])
 
 	preRem := int(math.Floor(preTokens))
 	if preRem < 0 {
@@ -180,7 +184,6 @@ func toFloat(v interface{}) float64 {
 	if !ok {
 		return 0
 	}
-	var f float64
-	_, _ = fmt.Sscanf(s, "%g", &f)
+	f, _ := strconv.ParseFloat(s, 64)
 	return f
 }

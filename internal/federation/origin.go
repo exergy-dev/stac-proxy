@@ -123,6 +123,7 @@ func NewOriginClientWithContext(parentCtx context.Context, logger *slog.Logger, 
 				FailureThreshold: cb.FailureThreshold,
 				OpenBase:         cb.OpenDuration,
 				OpenMax:          cb.MaxOpenDuration,
+				HalfOpenProbes:   cb.HalfOpenProbes,
 			}
 		}
 		rt = httpx.NewBreakerTransport(rt, origin.ID, bcfg, logger)
@@ -575,10 +576,7 @@ func (c *OriginClient) HTTPClient() *http.Client {
 // trial would close circuits on behalf of traffic it doesn't
 // represent.
 func (c *OriginClient) HealthClient() *http.Client {
-	if c.healthClient != nil {
-		return c.healthClient
-	}
-	return c.httpClient
+	return c.healthClient
 }
 
 // MaxResponseBytes returns the resolved per-call upstream response

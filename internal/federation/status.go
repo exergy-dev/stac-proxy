@@ -48,41 +48,43 @@ func originFailures[T any](results []T, status func(T) (string, bool)) []string 
 	return failed
 }
 
-// respondIfAllFailed returns the 502 UpstreamFederationFailure
-// response (and done=true) when every one of total routed origins
-// failed. Shared by the fan-out search and collections paths; the
-// paginated path has its own variant keyed off cursor statuses.
-func (h *Handler) respondIfAllFailed(op string, failed []string, total int) (*response, error, bool) {
-	if total == 0 || len(failed) != total {
-		return nil, nil, false
-	}
-	h.logger.Warn(op+" failed on every routed origin",
-		"origins", strings.Join(failed, ","))
-	resp, err := federationFailureResponse(failed)
-	return resp, err, true
-}
-
 // failedFromStatuses extracts the IDs of origins whose status carries
 // an error, sorted.
 func failedFromStatuses(statuses []OriginStatus) []string {
-	var failed []string
-	for _, s := range statuses {
-		if s.Error != "" {
-			failed = append(failed, s.ID)
-		}
+	return originFailures(statuses, func(s OriginStatus) (string, bool) {
+		return s.ID, s.Error != ""
+	})
+}
+
+// respondIfAllFailed returns the 502 UpstreamFederationFailure
+// response when every one of total routed origins failed, and
+// (nil, nil) when the caller should proceed with a normal (possibly
+// partial) response. Shared by the fan-out search, collections, and
+// paginated paths.
+func (h *Handler) respondIfAllFailed(op string, failed []string, total int) (*response, error) {
+	if total == 0 || len(failed) != total {
+		return nil, nil
 	}
-	sort.Strings(failed)
-	return failed
+	h.logger.Warn(op+" failed on every routed origin",
+		"origins", strings.Join(failed, ","))
+	return federationFailureResponse(failed)
+}
+
+// stampPartialHeaders writes the partial-result contract onto h:
+// the X-Federation-* markers plus Cache-Control: no-store.
+//
+// no-store protects every cache — the proxy's own response cache
+// (which honors it generically) AND any CDN or edge cache the
+// operator put in front. A cached partial page would keep serving the
+// shrunken result set for its full TTL after the origins recovered.
+func stampPartialHeaders(h http.Header, failed []string) {
+	h.Set(HeaderFederationPartial, "true")
+	h.Set(HeaderFederationFailedOrigins, strings.Join(failed, ","))
+	h.Set("Cache-Control", "no-store")
 }
 
 // markPartial stamps the partial-result headers onto resp and logs a
 // throttled warning. No-op when failed is empty.
-//
-// Cache-Control: no-store protects every cache — the proxy's own
-// response cache (which honors no-store generically) AND any CDN or
-// edge cache the operator put in front. A cached partial page would
-// keep serving the shrunken result set for its full TTL after the
-// origins recovered.
 func (h *Handler) markPartial(resp *response, failed []string) {
 	if len(failed) == 0 {
 		return
@@ -90,9 +92,7 @@ func (h *Handler) markPartial(resp *response, failed []string) {
 	if resp.Headers == nil {
 		resp.Headers = http.Header{}
 	}
-	resp.Headers.Set(HeaderFederationPartial, "true")
-	resp.Headers.Set(HeaderFederationFailedOrigins, strings.Join(failed, ","))
-	resp.Headers.Set("Cache-Control", "no-store")
+	stampPartialHeaders(resp.Headers, failed)
 	h.partialWarn.Warn(h.logger, "federation returned partial results",
 		"failed_origins", strings.Join(failed, ","),
 	)
@@ -110,14 +110,11 @@ func federationFailureResponse(failed []string) (*response, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &response{
+	resp := &response{
 		StatusCode: http.StatusBadGateway,
-		Headers: http.Header{
-			"Content-Type":                []string{"application/json"},
-			"Cache-Control":               []string{"no-store"},
-			HeaderFederationPartial:       []string{"true"},
-			HeaderFederationFailedOrigins: []string{strings.Join(failed, ",")},
-		},
-		Body: body,
-	}, nil
+		Headers:    http.Header{"Content-Type": []string{"application/json"}},
+		Body:       body,
+	}
+	stampPartialHeaders(resp.Headers, failed)
+	return resp, nil
 }

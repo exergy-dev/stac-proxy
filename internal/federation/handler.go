@@ -340,7 +340,7 @@ func (h *Handler) handleSearch(ctx context.Context, req *request) (*response, er
 	failed := originFailures(results, func(r *OriginSearchResult) (string, bool) {
 		return r.OriginID, r.Error != nil
 	})
-	if resp, err, done := h.respondIfAllFailed("federated search", failed, len(results)); done {
+	if resp, err := h.respondIfAllFailed("federated search", failed, len(results)); resp != nil || err != nil {
 		return resp, err
 	}
 
@@ -557,7 +557,7 @@ func (h *Handler) handleGetCollections(ctx context.Context,
 	failed := originFailures(results, func(r *OriginCollectionsResult) (string, bool) {
 		return r.OriginID, r.Error != nil
 	})
-	if resp, err, done := h.respondIfAllFailed("GET /collections", failed, len(results)); done {
+	if resp, err := h.respondIfAllFailed("GET /collections", failed, len(results)); resp != nil || err != nil {
 		return resp, err
 	}
 
@@ -1086,12 +1086,12 @@ func (h *Handler) buildPaginatedSearchResponse(result *SearchResult,
 
 	// Every routed origin failed and nothing was served (no stash
 	// carry-over): 502, not an empty 200. Mid-session pages that
-	// still emit stashed items stay 200-partial.
-	if len(items) == 0 && result.Context != nil &&
-		len(result.Context.Origins) > 0 && len(failed) == len(result.Context.Origins) {
-		h.logger.Warn("paginated federated search failed on every routed origin",
-			"origins", strings.Join(failed, ","))
-		return federationFailureResponse(failed)
+	// still emit stashed items stay 200-partial — hence the extra
+	// len(items) guard the other two call sites don't need.
+	if len(items) == 0 && result.Context != nil {
+		if resp, err := h.respondIfAllFailed("paginated federated search", failed, len(result.Context.Origins)); resp != nil || err != nil {
+			return resp, err
+		}
 	}
 
 	fc := &stac.FeatureCollection{

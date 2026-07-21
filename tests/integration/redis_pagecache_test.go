@@ -27,7 +27,7 @@ func TestIntegration_RedisBackedPageCache(t *testing.T) {
 
 	secret := []byte("test-cursor-secret")
 	newReplica := func() *pagecache.Cache {
-		store := redisstore.NewKV(client, "stacproxy:pg:", nil)
+		store := redisstore.NewKV(client, redisstore.DefaultKeyPrefix+redisstore.NSPageCache, nil)
 		c, err := pagecache.New(store, time.Hour, secret)
 		require.NoError(t, err)
 		require.NotNil(t, c)

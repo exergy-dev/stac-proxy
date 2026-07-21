@@ -2,11 +2,20 @@ package server
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/yourorg/stac-proxy/internal/middleware"
 )
+
+// routeCtxPool recycles the throwaway RouteContexts the classifier
+// matches against — chi pools its own contexts the same way; without
+// this the classifier would be the only per-request allocation on the
+// routing path.
+var routeCtxPool = sync.Pool{
+	New: func() any { return chi.NewRouteContext() },
+}
 
 // routePatternTypes maps the chi route patterns registered in NewRouter
 // to their STAC request types. Health endpoints are intentionally
@@ -45,8 +54,19 @@ var routePatternTypes = map[string]middleware.RequestType{
 func stacInfoClassifier(mux *chi.Mux) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tctx := chi.NewRouteContext()
-			if mux.Match(tctx, r.Method, r.URL.Path) {
+			// Mirror chi's own path selection (RawPath when the URL
+			// contains encoded characters) so the pre-match can never
+			// diverge from the real routing decision.
+			routePath := r.URL.RawPath
+			if routePath == "" {
+				routePath = r.URL.Path
+			}
+			tctx := routeCtxPool.Get().(*chi.Context)
+			defer func() {
+				tctx.Reset()
+				routeCtxPool.Put(tctx)
+			}()
+			if mux.Match(tctx, r.Method, routePath) {
 				if rt, ok := routePatternTypes[tctx.RoutePattern()]; ok {
 					info := &middleware.STACInfo{
 						RequestType: rt,

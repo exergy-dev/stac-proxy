@@ -319,6 +319,10 @@ type CircuitBreakerConfig struct {
 	// doubles it up to MaxOpenDuration. Defaults 10s / 2m.
 	OpenDuration    time.Duration `yaml:"open_duration"`
 	MaxOpenDuration time.Duration `yaml:"max_open_duration"`
+	// HalfOpenProbes is how many concurrent trial requests may pass
+	// while half-open. Default 1; raise only for very high-traffic
+	// origins where a single probe under-samples recovery.
+	HalfOpenProbes int `yaml:"half_open_probes"`
 }
 
 // OriginAuthConfig contains authentication config for an upstream origin.

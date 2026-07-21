@@ -50,13 +50,25 @@ type SearchContext struct {
 	Matched  int  `json:"matched,omitempty"`
 	Next     bool `json:"-"` // Internal flag for pagination
 
-	// Origins carries per-origin fan-out status (federation's
-	// []OriginStatus; typed as any to avoid an import cycle). The
-	// vendor-prefixed key follows STAC extension conventions. Clients
-	// use it to tell "no results" from "an origin was down for this
-	// page" — `matched` is only a lower bound when any entry carries
-	// a non-empty error.
-	Origins any `json:"stac_proxy:origins,omitempty"`
+	// Origins carries per-origin fan-out status. The vendor-prefixed
+	// key follows STAC extension conventions. Clients use it to tell
+	// "no results" from "an origin was down for this page" —
+	// `matched` is only a lower bound when any entry carries a
+	// non-empty error.
+	Origins []OriginStatus `json:"stac_proxy:origins,omitempty"`
+}
+
+// OriginStatus is one origin's contribution to a federated response
+// page. Error is machine-readable: "circuit_open" (the origin's
+// breaker is cooling down and will be reprobed) or "fetch_failed"
+// (live failure). Defined here — not in the federation package —
+// because it is part of the public response body's shape.
+type OriginStatus struct {
+	ID        string `json:"id"`
+	Matched   int    `json:"matched,omitempty"`
+	Returned  int    `json:"returned"`
+	Exhausted bool   `json:"exhausted"`
+	Error     string `json:"error,omitempty"`
 }
 
 // SearchRequest represents a STAC API search request.

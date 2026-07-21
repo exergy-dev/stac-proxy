@@ -53,6 +53,21 @@ const (
 	defaultWriteTimeout = 250 * time.Millisecond
 )
 
+// Keyspace layout. Every key is <operator key_prefix><component ns><digest>;
+// the constants live here so wiring (main.go) and tests reference one
+// definition and two components can never silently collide.
+const (
+	// DefaultKeyPrefix namespaces all of a proxy fleet's keys; override
+	// via redis.key_prefix when multiple fleets share one Redis.
+	DefaultKeyPrefix = "stacproxy:"
+	// NSResponseCache prefixes response-cache entries.
+	NSResponseCache = "rc:"
+	// NSPageCache prefixes federation page-cache entries.
+	NSPageCache = "pg:"
+	// NSRateLimit prefixes rate-limit bucket hashes.
+	NSRateLimit = "rl:"
+)
+
 // New builds a redis.UniversalClient from cfg. Single-node today;
 // UniversalClient keeps the door open for Sentinel/Cluster without
 // changing any consumer. Reachability is NOT verified here — callers

@@ -251,14 +251,11 @@ type SearchContext struct {
 	Origins  []OriginStatus `json:"origins"`
 }
 
-// OriginStatus reports status for each origin.
-type OriginStatus struct {
-	ID        string `json:"id"`
-	Matched   int    `json:"matched,omitempty"`
-	Returned  int    `json:"returned"`
-	Exhausted bool   `json:"exhausted"`
-	Error     string `json:"error,omitempty"`
-}
+// OriginStatus aliases the stac package's type: the status block is
+// part of the public response body (SearchContext's
+// "stac_proxy:origins"), so the definition lives with the other
+// response types; federation code keeps its natural name.
+type OriginStatus = stac.OriginStatus
 
 // principalHashFromContext extracts the principal hash from ctx for
 // cursor binding. Returns "" when ctx carries no principal (anonymous).
@@ -450,14 +447,7 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 	// defeating the ErrorCount retry budget entirely. Skipping the
 	// put costs a re-fan-out on the next prev/first follow, which is
 	// the cache's documented miss behavior.
-	pageDegraded := false
-	for _, st := range result.Context.Origins {
-		if st.Error != "" {
-			pageDegraded = true
-			break
-		}
-	}
-	if cursorStr != "" && !pageDegraded {
+	if cursorStr != "" && len(failedFromStatuses(result.Context.Origins)) == 0 {
 		s.putToPageCache(ctx, cursorStr, principalHash, cursor, result)
 	}
 

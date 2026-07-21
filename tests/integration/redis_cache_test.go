@@ -34,7 +34,7 @@ func TestIntegration_RedisBackedResponseCache(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	newReplica := func() http.Handler {
-		store := redisstore.NewKV(client, "stacproxy:rc:", nil)
+		store := redisstore.NewKV(client, redisstore.DefaultKeyPrefix+redisstore.NSResponseCache, nil)
 		mw, err := cache.NewFromConfigWithStore(map[string]interface{}{"store": "redis"}, store)
 		require.NoError(t, err, "NewFromConfigWithStore")
 		var upstreamCalls atomic.Uint32

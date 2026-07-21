@@ -7,7 +7,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
 	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
@@ -111,16 +110,20 @@ func NewRouter(cfg RouterConfig) *Router {
 	}
 
 	// STAC API routes
-	r.Get("/", r.handleLanding)
-	r.Get("/conformance", r.handleConformance)
-	r.Get("/collections", r.handleCollections)
-	r.Get("/collections/{collectionId}", r.handleCollection)
-	r.Get("/collections/{collectionId}/items", r.handleItems)
-	r.Get("/collections/{collectionId}/items/{itemId}", r.handleItem)
-	r.Get("/search", r.handleSearch)
-	r.Post("/search", r.handleSearch)
-	r.Get("/queryables", r.handleQueryables)
-	r.Get("/collections/{collectionId}/queryables", r.handleCollectionQueryables)
+	// Every catalog route delegates to the same inner handler; the
+	// request's STAC shape was already attached by stacInfoClassifier
+	// (route patterns and types live in classifier.go's
+	// routePatternTypes — one map, guarded by a chi.Walk test).
+	r.Get("/", r.serve)
+	r.Get("/conformance", r.serve)
+	r.Get("/collections", r.serve)
+	r.Get("/collections/{collectionId}", r.serve)
+	r.Get("/collections/{collectionId}/items", r.serve)
+	r.Get("/collections/{collectionId}/items/{itemId}", r.serve)
+	r.Get("/search", r.serve)
+	r.Post("/search", r.serve)
+	r.Get("/queryables", r.serve)
+	r.Get("/collections/{collectionId}/queryables", r.serve)
 
 	// Asset streaming endpoint — only mounted when the deployment
 	// actually has an asset handler. Kept off the chi tree otherwise
@@ -134,51 +137,6 @@ func NewRouter(cfg RouterConfig) *Router {
 	return r
 }
 
-// handleLanding handles GET /
-func (r *Router) handleLanding(w http.ResponseWriter, req *http.Request) {
-	r.dispatch(w, req, middleware.RequestTypeLanding, "", "")
-}
-
-// handleConformance handles GET /conformance
-func (r *Router) handleConformance(w http.ResponseWriter, req *http.Request) {
-	r.dispatch(w, req, middleware.RequestTypeConformance, "", "")
-}
-
-// handleCollections handles GET /collections
-func (r *Router) handleCollections(w http.ResponseWriter, req *http.Request) {
-	r.dispatch(w, req, middleware.RequestTypeCollections, "", "")
-}
-
-// handleCollection handles GET /collections/{collectionId}
-func (r *Router) handleCollection(w http.ResponseWriter, req *http.Request) {
-	r.dispatch(w, req, middleware.RequestTypeCollection, chi.URLParam(req, "collectionId"), "")
-}
-
-// handleItems handles GET /collections/{collectionId}/items
-func (r *Router) handleItems(w http.ResponseWriter, req *http.Request) {
-	r.dispatch(w, req, middleware.RequestTypeItems, chi.URLParam(req, "collectionId"), "")
-}
-
-// handleItem handles GET /collections/{collectionId}/items/{itemId}
-func (r *Router) handleItem(w http.ResponseWriter, req *http.Request) {
-	r.dispatch(w, req, middleware.RequestTypeItem, chi.URLParam(req, "collectionId"), chi.URLParam(req, "itemId"))
-}
-
-// handleSearch handles GET/POST /search
-func (r *Router) handleSearch(w http.ResponseWriter, req *http.Request) {
-	r.dispatch(w, req, middleware.RequestTypeSearch, "", "")
-}
-
-// handleQueryables handles GET /queryables
-func (r *Router) handleQueryables(w http.ResponseWriter, req *http.Request) {
-	r.dispatch(w, req, middleware.RequestTypeQueryables, "", "")
-}
-
-// handleCollectionQueryables handles GET /collections/{collectionId}/queryables
-func (r *Router) handleCollectionQueryables(w http.ResponseWriter, req *http.Request) {
-	r.dispatch(w, req, middleware.RequestTypeCollectionQueryables, chi.URLParam(req, "collectionId"), "")
-}
-
 // handleAsset proxies an asset request through to the configured
 // AssetHandler. STACInfo carries RequestType=Asset and the origin ID
 // in Collection so authz/ratelimit middleware can gate access using
@@ -187,36 +145,23 @@ func (r *Router) handleAsset(w http.ResponseWriter, req *http.Request) {
 	originID := chi.URLParam(req, "originId")
 	ref := chi.URLParam(req, "ref")
 
-	// STACInfo (RequestType=Asset, Collection=originID) is attached by
-	// stacInfoClassifier so the middleware chain saw it; keep a
-	// fallback for direct-handler callers.
-	if middleware.STACInfoFromContext(req.Context()) == nil {
-		info := &middleware.STACInfo{
-			RequestType: middleware.RequestTypeAsset,
-			Collection:  originID, // reuse the Collection slot for the origin/route key
-		}
-		req = req.WithContext(middleware.WithSTACInfo(req.Context(), info))
-	}
+	// STACInfo (RequestType=Asset, Collection=originID) was attached
+	// by stacInfoClassifier before the middleware chain ran.
 
 	// Delegate to the asset handler so it can stream bytes; we do NOT
-	// route through dispatch() because that path buffers the
-	// response into memory.
+	// buffer the response (asset bytes can be GB-scale and must
+	// stream).
 	r.assetHandler.ServeAssetHTTP(w, req, originID, ref)
 }
 
-// dispatch delegates to the inner handler. STACInfo is normally
-// already in the context — attached by stacInfoClassifier before the
-// middleware chain — and MUST be reused when present: the search
-// parser and authz middlewares mutate that instance (SearchReq,
-// injected constraints), and replacing it here would silently discard
-// their work. The fallback attach only serves callers that invoke
-// route handlers directly without the router's middleware stack
-// (tests, embedding).
-func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, rt middleware.RequestType, collection, itemID string) {
-	if middleware.STACInfoFromContext(req.Context()) == nil {
-		info := &middleware.STACInfo{RequestType: rt, Collection: collection, ItemID: itemID}
-		req = req.WithContext(middleware.WithSTACInfo(req.Context(), info))
-	}
+// serve delegates to the inner handler. STACInfo was attached by
+// stacInfoClassifier before the middleware chain ran; the handler
+// must see THAT instance — the search parser and authz middlewares
+// mutate it (SearchReq, injected constraints). If classifier coverage
+// ever drifts from the route table, the inner handler rejects the
+// nil-info request loudly (500) and the chi.Walk guard test fails —
+// a silent per-route authz/cache bypass is not a failure mode here.
+func (r *Router) serve(w http.ResponseWriter, req *http.Request) {
 	r.handler.ServeHTTP(w, req)
 }
 
