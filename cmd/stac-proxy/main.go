@@ -240,9 +240,12 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// Watch for parent-context cancellation (signal received) and
 	// trigger graceful shutdown. srv.Start() will then return
 	// http.ErrServerClosed and main can exit cleanly.
-	go func() {
+	go func() { // #nosec G118 -- shutdown runs after ctx is cancelled; deriving from it would skip the drain
 		<-ctx.Done()
 		logger.Info("Shutdown signal received; draining", "timeout", shutdownTimeout)
+		// Deliberately NOT derived from ctx: it is already cancelled
+		// by the time this runs, and Shutdown needs a live deadline to
+		// drain in-flight requests.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {

@@ -1,5 +1,5 @@
 # Binaries
-stac-proxy
+/stac-proxy
 *.test
 *.out
 
