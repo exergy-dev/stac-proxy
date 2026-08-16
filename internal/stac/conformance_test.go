@@ -118,3 +118,39 @@ func TestIntersect(t *testing.T) {
 		assert.Equal(t, []string{"a"}, got)
 	})
 }
+
+// TestConformancePredicates covers the pure class-membership helpers
+// that gate CQL2 push-down (filter) and geofence push-down (spatial).
+func TestConformancePredicates(t *testing.T) {
+	t.Parallel()
+
+	// Shapes observed on live catalogs (2026-08): stac-server
+	// advertises the CQL2 1.0 final spatial classes; Planetary
+	// Computer advertises basic-cql2 WITHOUT any spatial class.
+	stacServer := []string{
+		"http://www.opengis.net/spec/cql2/1.0/conf/basic-cql2",
+		"http://www.opengis.net/spec/cql2/1.0/conf/cql2-json",
+		"http://www.opengis.net/spec/cql2/1.0/conf/basic-spatial-functions",
+		"http://www.opengis.net/spec/cql2/1.0/conf/basic-spatial-functions-plus",
+	}
+	planetaryComputer := []string{
+		"http://www.opengis.net/spec/cql2/1.0/conf/basic-cql2",
+		"http://www.opengis.net/spec/cql2/1.0/conf/cql2-json",
+		"http://www.opengis.net/spec/cql2/1.0/conf/cql2-text",
+	}
+
+	assert.True(t, HasFilterExtension(stacServer))
+	assert.True(t, HasSpatialFunctions(stacServer))
+
+	assert.True(t, HasFilterExtension(planetaryComputer))
+	assert.False(t, HasSpatialFunctions(planetaryComputer),
+		"filter support without a spatial class must NOT enable geofence push-down")
+
+	assert.False(t, HasFilterExtension(nil))
+	assert.False(t, HasSpatialFunctions([]string{"https://api.stacspec.org/v1.0.0/core"}))
+
+	// Draft-era operator spellings still count.
+	assert.True(t, HasSpatialFunctions([]string{
+		"http://www.opengis.net/spec/cql2/1.0/conf/basic-spatial-operators",
+	}))
+}

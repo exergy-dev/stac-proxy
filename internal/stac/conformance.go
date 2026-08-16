@@ -24,6 +24,46 @@ var FilterExtensionConformance = []string{
 	"https://api.stacspec.org/v1.0.0/collection-search#filter",
 }
 
+// SpatialFilterConformance lists the conformance classes that signal
+// the upstream evaluates CQL2 spatial predicates (S_INTERSECTS et al).
+// This is the gate for geofence push-down: pushing S_INTERSECTS to an
+// upstream that silently ignores it would unrestricted-leak data,
+// because push-down also disables the response-side post-filter. The
+// CQL2 1.0 final classes come first (stac-server advertises
+// basic-spatial-functions/-plus); the *-operators forms are the
+// rc-draft spellings some fielded servers still publish. Any match is
+// a positive signal.
+var SpatialFilterConformance = []string{
+	"http://www.opengis.net/spec/cql2/1.0/conf/basic-spatial-functions",
+	"http://www.opengis.net/spec/cql2/1.0/conf/basic-spatial-functions-plus",
+	"http://www.opengis.net/spec/cql2/1.0/conf/spatial-functions",
+	"http://www.opengis.net/spec/cql2/1.0/conf/basic-spatial-operators",
+	"http://www.opengis.net/spec/cql2/1.0/conf/spatial-operators",
+}
+
+// HasFilterExtension reports whether classes advertises any Filter
+// Extension conformance class.
+func HasFilterExtension(classes []string) bool {
+	return hasAny(classes, FilterExtensionConformance)
+}
+
+// HasSpatialFunctions reports whether classes advertises any CQL2
+// spatial-predicate conformance class.
+func HasSpatialFunctions(classes []string) bool {
+	return hasAny(classes, SpatialFilterConformance)
+}
+
+func hasAny(classes, wanted []string) bool {
+	for _, c := range classes {
+		for _, w := range wanted {
+			if c == w {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ProxyConformanceCore lists the conformance classes this proxy
 // implements unconditionally — the OGC API Common / STAC API endpoints
 // that exist as soon as the proxy is running.
@@ -147,14 +187,5 @@ func ProbeFilterExtension(ctx context.Context, httpClient *http.Client, baseURL 
 	if err != nil {
 		return false, err
 	}
-	want := make(map[string]struct{}, len(FilterExtensionConformance))
-	for _, w := range FilterExtensionConformance {
-		want[w] = struct{}{}
-	}
-	for _, c := range classes {
-		if _, ok := want[c]; ok {
-			return true, nil
-		}
-	}
-	return false, nil
+	return HasFilterExtension(classes), nil
 }
