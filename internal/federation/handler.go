@@ -233,6 +233,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, vs := range resp.Headers {
+		// The upstream's Content-Length is stale whenever
+		// transformResponse re-marshaled the body (link/asset
+		// rewriting changes its length); forwarding it makes real
+		// HTTP/1.1 clients fail with a truncated/overlong transfer.
+		// net/http recomputes it from the buffered body we write.
+		if http.CanonicalHeaderKey(k) == "Content-Length" {
+			continue
+		}
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}

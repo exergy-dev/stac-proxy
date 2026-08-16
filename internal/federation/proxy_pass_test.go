@@ -2,8 +2,10 @@ package federation
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -341,4 +343,47 @@ func TestReverseProxy_OversizedUpstreamReturns502(t *testing.T) {
 	// allowing for the small JSON error envelope, the response body
 	// MUST be far below the upstream's 1 MiB.
 	assert.LessOrEqualf(t, len(resp.Body), maxCap, "response body length %d exceeds cap %d — capture was not bounded", len(resp.Body), maxCap)
+}
+
+// TestServeHTTP_ContentLengthMatchesRewrittenBody drives the handler
+// through a real httptest.Server so HTTP framing is enforced — a
+// ResponseRecorder never checks Content-Length against the body. When
+// transformResponse rewrites upstream links, the re-marshaled body's
+// length differs from the upstream's Content-Length; forwarding that
+// stale header makes a real client fail mid-transfer (curl exit 18,
+// Go client unexpected EOF).
+func TestServeHTTP_ContentLengthMatchesRewrittenBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// The self link's host is the upstream's ephemeral address;
+		// rewriting it to the (different-length) proxy base changes
+		// the body length, so the upstream Content-Length goes stale.
+		body := `{"collections":[{"id":"c1","links":[{"rel":"self","href":"http://` +
+			r.Host + `/collections/c1"}]}],"links":[]}`
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+
+	h, err := NewHandler(HandlerConfig{
+		ProxyBaseURL: "http://p.ex",
+		Origins: []*Origin{{
+			ID: "primary", BaseURL: upstream.URL,
+			Enabled: true, Priority: 100, Searchable: true,
+		}},
+	})
+	require.NoError(t, err, "NewHandler")
+
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info := &middleware.STACInfo{RequestType: middleware.RequestTypeCollections}
+		h.ServeHTTP(w, r.WithContext(middleware.WithSTACInfo(r.Context(), info)))
+	}))
+	defer front.Close()
+
+	resp, err := http.Get(front.URL + "/collections")
+	require.NoError(t, err, "GET through real server")
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err, "reading the full body must not hit a Content-Length mismatch")
+	assert.Contains(t, string(body), `"c1"`, "rewritten body should still be the upstream payload")
 }
