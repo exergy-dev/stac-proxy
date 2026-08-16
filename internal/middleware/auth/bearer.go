@@ -93,7 +93,7 @@ func NewBearerProvider(cfg BearerConfig) (*BearerProvider, error) {
 		p.staticSecret = cfg.Secret
 		p.validMethods = hmacMethods
 	} else {
-		jwks, err := NewJWKSClientFromConfig(cfg.JWKSURL, JWKSClientConfig{
+		jwks, err := NewJWKSClient(cfg.JWKSURL, JWKSClientConfig{
 			TTL:               time.Hour,
 			AllowInsecureHTTP: cfg.AllowInsecureHTTPJWKS,
 			LifetimeCtx:       cfg.LifetimeCtx,

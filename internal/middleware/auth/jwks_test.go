@@ -79,7 +79,7 @@ func TestJWKS_UnknownKidDoesNotFloodIdP(t *testing.T) {
 		return []byte(`{"keys":[]}`)
 	})
 
-	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
+	c, err := NewJWKSClient(srv.URL, JWKSClientConfig{
 		TTL:               time.Hour,
 		AllowInsecureHTTP: true,
 		// Defaults: 30s floor, 60s negative cache.
@@ -129,7 +129,7 @@ func TestJWKS_NegativeCacheClearedOnSuccessfulRefresh(t *testing.T) {
 	})
 
 	// Tight clock so the test doesn't have to wait real seconds.
-	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
+	c, err := NewJWKSClient(srv.URL, JWKSClientConfig{
 		TTL:                time.Hour,
 		AllowInsecureHTTP:  true,
 		MinRefreshInterval: time.Nanosecond,
@@ -188,7 +188,7 @@ func TestJWKS_RejectsEncKeysAndLogsParseErrors(t *testing.T) {
 	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	logger := slog.New(handler)
 
-	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
+	c, err := NewJWKSClient(srv.URL, JWKSClientConfig{
 		AllowInsecureHTTP: true,
 		Logger:            logger,
 	})
@@ -293,7 +293,7 @@ func TestJWKS_StaleWhileRevalidate_KeepsServingDuringOutage(t *testing.T) {
 		mu.Unlock()
 	}
 
-	c, err := NewJWKSClientFromConfig(srv.URL, JWKSClientConfig{
+	c, err := NewJWKSClient(srv.URL, JWKSClientConfig{
 		TTL:                time.Minute,      // soft
 		HardTTL:            10 * time.Minute, // hard
 		AllowInsecureHTTP:  true,

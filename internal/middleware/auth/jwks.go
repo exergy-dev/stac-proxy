@@ -96,9 +96,10 @@ func parseECKey(jwk JWK) (interface{}, error) {
 	return &ecdsa.PublicKey{Curve: curve, X: new(big.Int).SetBytes(xBytes), Y: new(big.Int).SetBytes(yBytes)}, nil
 }
 
-// JWKSClientConfig is the optional configuration for NewJWKSClientFromConfig.
-// Prefer NewJWKSClient unless you specifically need to override the safe
-// defaults (e.g. tests that need to talk to a plain-HTTP httptest server).
+// JWKSClientConfig is the optional configuration for NewJWKSClient.
+// The zero value gives safe defaults; individual fields exist to
+// override them (e.g. tests that need to talk to a plain-HTTP
+// httptest server set AllowInsecureHTTP).
 type JWKSClientConfig struct {
 	HTTPClient *http.Client
 	TTL        time.Duration
@@ -193,17 +194,12 @@ type JWKSClient struct {
 	negKids map[string]time.Time
 }
 
-// NewJWKSClient constructs a client for the given JWKS URL. httpClient
-// may be nil (a 10s-timeout default is used); ttl may be zero (1h
-// default). The URL MUST use the https scheme — plaintext JWKS fetches
-// are a credential-substitution risk. For tests that need plain HTTP,
-// use NewJWKSClientFromConfig with AllowInsecureHTTP=true.
-func NewJWKSClient(url string, httpClient *http.Client, ttl time.Duration) (*JWKSClient, error) {
-	return NewJWKSClientFromConfig(url, JWKSClientConfig{HTTPClient: httpClient, TTL: ttl})
-}
-
-// NewJWKSClientFromConfig is the all-knobs constructor.
-func NewJWKSClientFromConfig(url string, cfg JWKSClientConfig) (*JWKSClient, error) {
+// NewJWKSClient constructs a client for the given JWKS URL. The zero
+// JWKSClientConfig is valid: a 10s-timeout HTTP client, 1h TTL, and
+// 24h HardTTL are used. The URL MUST use the https scheme — plaintext
+// JWKS fetches are a credential-substitution risk; tests that need
+// plain HTTP set AllowInsecureHTTP.
+func NewJWKSClient(url string, cfg JWKSClientConfig) (*JWKSClient, error) {
 	if !cfg.AllowInsecureHTTP {
 		if !strings.HasPrefix(strings.ToLower(url), "https://") {
 			return nil, fmt.Errorf("jwks: URL must use https scheme, got %q", url)
