@@ -4,15 +4,40 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] — 2026-07-06
+## [0.3.0] — 2026-08-16
 
-Production release. Two architectural changes close the gaps that kept
+Two architectural changes close the gaps that kept
 0.x deployments pinned to sticky single-replica topologies: a shared
 Redis backend makes replicas stateless behind any load balancer, and
 origin failures are now circuit-broken and explicitly signaled instead
 of silently absorbed. The YAML config schema is now covered by the
 semver compatibility promise: breaking config changes require a major
 version from here on.
+
+### Fixed — live-client correctness (found by driving the built binary)
+
+- **Proxied responses no longer forward the upstream's stale
+  `Content-Length`.** Link/asset rewriting re-marshals the body; the
+  header made every real HTTP/1.1 client fail the transfer (curl
+  exit 18) on single-origin-routed responses. In-process tests never
+  saw it — `ResponseRecorder` doesn't enforce framing.
+- **POST pagination `next` links now carry `merge: true`.** Without
+  it, spec-compliant clients replace their request body with the bare
+  token, the cursor's bound query hash no longer matches, and the
+  proxy's own next links were unfollowable for any non-empty query
+  (reproduced against Earth Search, Planetary Computer, and USGS
+  LandsatLook). Cursor validation failures now return
+  `400 InvalidParameterValue` instead of 500.
+
+### Changed — internal simplification (no API change)
+
+- ~1,300 production / ~1,700 test lines removed: unreachable
+  file-policy authz engine, dead helpers, single-implementation
+  interfaces made concrete, one shared JSON error envelope, one
+  generic origin fan-out, `cache.Store` narrowed to Get/Set.
+- `federation/handler.go` (1,800 lines) split by responsibility into
+  `handler/search/catalog/proxy/assets.go` — pure code motion.
+- Module path adopted: `github.com/exergy-dev/stac-proxy`.
 
 ### Added — stateless replicas (opt-in `store: redis`)
 
