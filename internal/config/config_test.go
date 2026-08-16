@@ -1570,3 +1570,42 @@ func TestClientIPValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthzValidation covers the authz-block validation added when
+// policy_path was wired (previously a policy_path-only config silently
+// installed the fail-closed default policy).
+func TestAuthzValidation(t *testing.T) {
+	regoFile := createTempFile(t, "package stac.authz\ndefault allow := false\n")
+	defer os.Remove(regoFile)
+
+	base := func(opa *OPAConfig) *Config {
+		c := &Config{
+			Mode:     "single",
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+			Authz:    &AuthzConfig{OPA: opa},
+		}
+		c.setDefaults()
+		return c
+	}
+	t.Run("policy_path alone is valid", func(t *testing.T) {
+		assert.NoError(t, ValidateConfig(base(&OPAConfig{Embedded: true, PolicyPath: regoFile})))
+	})
+	t.Run("rego_files alone is valid", func(t *testing.T) {
+		assert.NoError(t, ValidateConfig(base(&OPAConfig{Embedded: true, RegoFiles: []string{regoFile}})))
+	})
+	t.Run("no files is an error (silent deny-all)", func(t *testing.T) {
+		err := ValidateConfig(base(&OPAConfig{Embedded: true}))
+		require.Error(t, err)
+		assert.True(t, containsValidationError(err, "policy_path or rego_files"), "got: %v", err)
+	})
+	t.Run("embedded false is an error", func(t *testing.T) {
+		err := ValidateConfig(base(&OPAConfig{Embedded: false, PolicyPath: regoFile}))
+		require.Error(t, err)
+		assert.True(t, containsValidationError(err, "embedded must be true"), "got: %v", err)
+	})
+	t.Run("missing file is an error", func(t *testing.T) {
+		err := ValidateConfig(base(&OPAConfig{Embedded: true, PolicyPath: "/nonexistent/p.rego"}))
+		require.Error(t, err)
+		assert.True(t, containsValidationError(err, "policy_path"), "got: %v", err)
+	})
+}

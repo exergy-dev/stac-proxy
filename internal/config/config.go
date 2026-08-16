@@ -406,29 +406,6 @@ type AWSSigV4Config struct {
 	SecretKey string `yaml:"secret_key"`
 }
 
-// AuthConfig contains client-facing authentication settings.
-type AuthConfig struct {
-	AllowAnonymous bool                 `yaml:"allow_anonymous"`
-	Providers      []AuthProviderConfig `yaml:"providers"`
-}
-
-// AuthProviderConfig contains settings for an auth provider.
-type AuthProviderConfig struct {
-	Type string `yaml:"type"` // bearer, api_key, oauth2, oidc, basic, mtls
-
-	// Bearer/JWT
-	JWKSUrl  string `yaml:"jwks_url"`
-	Issuer   string `yaml:"issuer"`
-	Audience string `yaml:"audience"`
-
-	// API Key
-	Header   string `yaml:"header"`
-	KeysFile string `yaml:"keys_file"`
-
-	// OIDC
-	DiscoveryURL string `yaml:"discovery_url"`
-}
-
 // AuthzConfig contains authorization settings.
 type AuthzConfig struct {
 	OPA           *OPAConfig           `yaml:"opa"`

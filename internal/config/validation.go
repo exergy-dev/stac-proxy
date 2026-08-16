@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -53,6 +54,10 @@ func (v *Validator) Validate(cfg *Config) error {
 
 	// Validate middleware
 	v.validateMiddleware(cfg)
+
+	// Validate the top-level authz block (silent misconfigs here mean
+	// deny-all or unimplemented knobs).
+	v.validateAuthz(cfg)
 
 	// Validate the shared Redis block (and its cross-references from
 	// components that select `store: redis`).
@@ -460,7 +465,47 @@ func (v *Validator) validateMiddleware(cfg *Config) {
 			v.validateStoreSelector("cache", i, mw.Config, cfg)
 		case "rate_limit":
 			v.validateRateLimitMiddleware(i, mw.Config, cfg)
+		case "authz":
+			// Historically allowlisted but never consumed: authorization
+			// is configured solely via the top-level `authz:` block.
+			v.addWarning("middleware[%d] 'authz' entries are ignored; configure authorization via the top-level `authz:` block", i)
 		}
+	}
+}
+
+// validateAuthz checks the top-level authz block. The dangerous
+// misconfigurations here are silent: an opa block with no policy files
+// installs the fail-closed default policy (denies every request), and
+// several parsed keys are not implemented at all.
+func (v *Validator) validateAuthz(cfg *Config) {
+	if cfg.Authz == nil || cfg.Authz.OPA == nil {
+		return
+	}
+	opa := cfg.Authz.OPA
+	if !opa.Embedded {
+		v.addError("authz.opa.embedded must be true; only embedded OPA is supported")
+	}
+	if opa.PolicyPath == "" && len(opa.RegoFiles) == 0 {
+		v.addError("authz.opa requires policy_path or rego_files; with neither, a fail-closed default policy denies every request")
+	}
+	if opa.PolicyPath != "" {
+		if _, err := os.Stat(opa.PolicyPath); err != nil {
+			v.addError("authz.opa.policy_path %q: %v", opa.PolicyPath, err)
+		}
+	}
+	for i, f := range opa.RegoFiles {
+		if _, err := os.Stat(f); err != nil {
+			v.addError("authz.opa.rego_files[%d] %q: %v", i, f, err)
+		}
+	}
+	if opa.BundleURL != "" || opa.BundlePollInterval != 0 {
+		v.addWarning("authz.opa.bundle_url/bundle_poll_interval are parsed but not implemented; the settings have no effect")
+	}
+	if len(opa.DataFiles) > 0 {
+		v.addWarning("authz.opa.data_files is parsed but not implemented; the setting has no effect")
+	}
+	if opa.Timeout != 0 || opa.CacheDecisions || opa.CacheTTL != 0 {
+		v.addWarning("authz.opa.timeout/cache_decisions/cache_ttl are parsed but not implemented; the settings have no effect")
 	}
 }
 

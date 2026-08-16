@@ -271,6 +271,7 @@ func buildAuthzHTTPMiddleware(ctx context.Context, cfg *config.Config, logger *s
 	}
 	enf, err := authz.NewEmbeddedOPAEnforcer(ctx, authz.EmbeddedOPAConfig{
 		Name:        "embedded-opa",
+		PolicyPath:  az.OPA.PolicyPath,
 		PolicyPaths: az.OPA.RegoFiles,
 	})
 	if err != nil {
