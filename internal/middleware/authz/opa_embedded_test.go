@@ -827,3 +827,60 @@ result = {"reasons": ["missing allow"]}
 	})
 	require.Error(t, err, "want error from Authorize when policy result lacks allow key")
 }
+
+// TestAnonymousPrincipalIsUndefinedInRego locks in the null-principal
+// contract: an anonymous request (nil Principal) must reach Rego with
+// input.principal UNDEFINED — not "principal": null. Before the
+// omitempty fix, null was a defined (truthy) term, so the natural
+// guard `not input.principal` never fired and policies written in
+// that idiom silently failed open for anonymous callers.
+func TestAnonymousPrincipalIsUndefinedInRego(t *testing.T) {
+	t.Parallel()
+
+	policy := `package stac.authz
+
+import future.keywords.contains
+import future.keywords.if
+
+default allow := false
+
+allow if {
+	input.principal
+}
+
+reasons contains "authentication required" if {
+	not input.principal
+}
+
+reasons contains "access granted" if {
+	allow
+}
+
+result := {"allow": allow, "reasons": reasons, "constraints": {}}
+`
+	enforcer, err := NewEmbeddedOPAEnforcer(context.Background(), EmbeddedOPAConfig{
+		Name:    "anon-contract",
+		Modules: map[string]string{"anon.rego": policy},
+	})
+	require.NoError(t, err, "compile policy")
+
+	// Anonymous: Principal nil -> key omitted -> `not input.principal`
+	// fires -> deny with the auth-required reason.
+	dec, err := enforcer.Authorize(context.Background(), &AuthzInput{
+		Request:  &RequestInfo{Method: "GET", Path: "/search"},
+		Resource: &ResourceInfo{},
+	})
+	require.NoError(t, err)
+	require.False(t, dec.Allowed, "anonymous must be denied by `input.principal` guard")
+	assert.Contains(t, dec.Reasons, "authentication required",
+		"`not input.principal` must fire for anonymous input")
+
+	// Authenticated: defined principal allows.
+	dec, err = enforcer.Authorize(context.Background(), &AuthzInput{
+		Principal: &PrincipalInfo{ID: "alice", Roles: []string{"user"}},
+		Request:   &RequestInfo{Method: "GET", Path: "/search"},
+		Resource:  &ResourceInfo{},
+	})
+	require.NoError(t, err)
+	assert.True(t, dec.Allowed, "authenticated principal must be allowed")
+}

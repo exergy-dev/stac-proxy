@@ -11,8 +11,14 @@ import (
 
 // AuthzInput contains all information for authorization decisions.
 type AuthzInput struct {
-	// Principal information
-	Principal *PrincipalInfo `json:"principal"`
+	// Principal information. omitempty is load-bearing for policy
+	// correctness: an anonymous request must reach Rego with
+	// input.principal UNDEFINED so the natural guard
+	// `not input.principal` fires. Marshaling nil as
+	// "principal": null instead makes the term defined (null is
+	// truthy as a bare Rego expression), silently failing open every
+	// policy written in that idiom.
+	Principal *PrincipalInfo `json:"principal,omitempty"`
 
 	// Request information
 	Request *RequestInfo `json:"request"`
