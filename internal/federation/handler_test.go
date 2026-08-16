@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // TestNewHandler tests handler initialization

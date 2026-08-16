@@ -3,8 +3,8 @@ package server
 import (
 	"net/http"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // searchParserMiddleware populates STACInfo.SearchReq from the request

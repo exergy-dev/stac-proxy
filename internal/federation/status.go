@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yourorg/stac-proxy/internal/httpx"
+	"github.com/exergy-dev/stac-proxy/internal/httpx"
 )
 
 // Partial-result signaling headers. Set on 200 responses whenever at

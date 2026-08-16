@@ -9,7 +9,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
 )
 
 // Config contains configuration for the auth middleware.

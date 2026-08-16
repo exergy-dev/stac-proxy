@@ -8,7 +8,7 @@ import (
 
 	cql2 "github.com/exergy-dev/go-cql2"
 	cql2geojson "github.com/exergy-dev/go-cql2/geojson"
-	"github.com/yourorg/stac-proxy/internal/geo"
+	"github.com/exergy-dev/stac-proxy/internal/geo"
 )
 
 // EvalCQL2 reports whether the given CQL2 expression evaluates to

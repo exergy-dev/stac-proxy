@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/httpx"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/httpx"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // reverseProxyOnce forwards req to a single origin via

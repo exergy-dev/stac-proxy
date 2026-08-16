@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // runWithInfo wires the searchParser around an inner handler that

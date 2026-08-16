@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // handleGetCollections handles GET /collections.

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/config"
+	"github.com/exergy-dev/stac-proxy/internal/config"
 )
 
 // Server represents the HTTP server.

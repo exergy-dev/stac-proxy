@@ -14,7 +14,7 @@ LDFLAGS := -s -w \
 GO       ?= go
 PKG       := ./...
 BIN       := stac-proxy
-IMAGE     ?= ghcr.io/yourorg/stac-proxy
+IMAGE     ?= ghcr.io/exergy-dev/stac-proxy
 IMAGE_TAG ?= $(VERSION)
 
 ##@ Build

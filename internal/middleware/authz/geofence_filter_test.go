@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/auth"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/middleware/auth"
 )
 
 func TestFilterByGeofence_DropsOutsideItems(t *testing.T) {

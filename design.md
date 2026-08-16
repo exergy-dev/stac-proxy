@@ -3130,7 +3130,7 @@ stac-proxy/
 
 ```go
 // go.mod
-module github.com/yourorg/stac-proxy
+module github.com/exergy-dev/stac-proxy
 
 go 1.22
 

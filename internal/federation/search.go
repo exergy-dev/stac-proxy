@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // handleSearch handles federated search requests. When only one origin

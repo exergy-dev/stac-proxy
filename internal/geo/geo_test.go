@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/exergy-dev/stac-proxy/internal/geo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/geo"
 )
 
 // --- Fixtures ----------------------------------------------------------------

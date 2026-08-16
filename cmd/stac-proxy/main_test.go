@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/exergy-dev/stac-proxy/internal/config"
+	"github.com/exergy-dev/stac-proxy/internal/federation"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/auth"
+	"github.com/exergy-dev/stac-proxy/internal/observability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/config"
-	"github.com/yourorg/stac-proxy/internal/federation"
-	"github.com/yourorg/stac-proxy/internal/middleware/auth"
-	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 // TestAuthProviderWiring_AllConfiguredTypesAreActive verifies that

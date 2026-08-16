@@ -6,8 +6,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/middleware/auth"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/auth"
 )
 
 // AuthzInput contains all information for authorization decisions.

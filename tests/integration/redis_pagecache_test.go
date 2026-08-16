@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/exergy-dev/stac-proxy/internal/federation/pagecache"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
+	redisstore "github.com/exergy-dev/stac-proxy/internal/store/redis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
-	"github.com/yourorg/stac-proxy/internal/stac"
-	redisstore "github.com/yourorg/stac-proxy/internal/store/redis"
 )
 
 // TestIntegration_RedisBackedPageCache verifies the federation page

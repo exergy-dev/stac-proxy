@@ -31,7 +31,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // Adapter abstracts an upstream pagination convention.

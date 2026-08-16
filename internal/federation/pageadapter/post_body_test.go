@@ -3,9 +3,9 @@ package pageadapter
 import (
 	"testing"
 
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // fcWithPOSTLink builds an upstream FeatureCollection carrying a single

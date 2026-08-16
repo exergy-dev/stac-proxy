@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/auth"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/authz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/middleware/auth"
-	"github.com/yourorg/stac-proxy/internal/middleware/authz"
 )
 
 // withSTACInfo returns r wrapped in a context carrying the given info,

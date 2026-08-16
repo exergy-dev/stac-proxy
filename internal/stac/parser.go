@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yourorg/stac-proxy/internal/geo"
+	"github.com/exergy-dev/stac-proxy/internal/geo"
 )
 
 // ParseError is returned by the parser when a query parameter is

@@ -10,10 +10,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
-	"github.com/yourorg/stac-proxy/internal/logx"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/federation/pagecache"
+	"github.com/exergy-dev/stac-proxy/internal/logx"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // Handler orchestrates queries across all configured origins.

@@ -18,7 +18,7 @@ import (
 	"github.com/felixge/httpsnoop"
 	"github.com/google/uuid"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
 )
 
 // defaultRedactedQueryParams lists the case-insensitive names of query

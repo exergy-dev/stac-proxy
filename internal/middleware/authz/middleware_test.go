@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/auth"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/middleware/auth"
-	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // stubEnforcer returns a fixed decision regardless of input.

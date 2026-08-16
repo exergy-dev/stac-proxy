@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 func TestNewOriginClient(t *testing.T) {

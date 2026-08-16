@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
 )
 
 // routeCtxPool recycles the throwaway RouteContexts the classifier

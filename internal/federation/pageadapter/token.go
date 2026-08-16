@@ -3,7 +3,7 @@ package pageadapter
 import (
 	"net/url"
 
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // token implements the STAC API spec pagination convention: the

@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // auto's token-over-next_url preference, the Earth Search fallback to

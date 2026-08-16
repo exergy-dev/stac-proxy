@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // ResultMerger merges search results from multiple origins.

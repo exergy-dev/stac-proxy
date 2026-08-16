@@ -7,7 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
-	"github.com/yourorg/stac-proxy/internal/observability"
+	"github.com/exergy-dev/stac-proxy/internal/observability"
 )
 
 // DefaultMaxBodyBytes is the body-size limit used when RouterConfig

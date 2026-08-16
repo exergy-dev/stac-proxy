@@ -5,7 +5,7 @@ Thanks for considering a contribution.
 ## Dev setup
 
 ```bash
-git clone https://github.com/yourorg/stac-proxy.git
+git clone https://github.com/exergy-dev/stac-proxy.git
 cd stac-proxy
 make build           # ./stac-proxy
 make test            # all packages

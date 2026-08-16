@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/middleware/auth"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/auth"
 )
 
 // Config contains configuration for the rate limit middleware.

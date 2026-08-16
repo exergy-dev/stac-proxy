@@ -20,10 +20,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/httpx"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/middleware/auth"
-	"github.com/yourorg/stac-proxy/internal/middleware/authz"
+	"github.com/exergy-dev/stac-proxy/internal/httpx"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/auth"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/authz"
 )
 
 // normalizeQuery returns a canonical form of raw with parameters sorted

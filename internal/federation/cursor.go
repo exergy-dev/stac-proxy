@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // Sentinel errors for cursor decoding. Callers can use errors.Is to

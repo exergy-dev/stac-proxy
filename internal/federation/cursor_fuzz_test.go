@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // flipLastByte returns s with its final byte XOR-flipped. Used to build

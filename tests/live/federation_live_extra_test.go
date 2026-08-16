@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/exergy-dev/stac-proxy/internal/federation"
+	"github.com/exergy-dev/stac-proxy/internal/federation/pagecache"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/cache"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/federation"
-	"github.com/yourorg/stac-proxy/internal/federation/pagecache"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/middleware/cache"
-	"github.com/yourorg/stac-proxy/internal/stac"
 )
 
 // This file extends federation_live_test.go with coverage for the

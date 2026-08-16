@@ -8,7 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/yourorg/stac-proxy/internal/logx"
+	"github.com/exergy-dev/stac-proxy/internal/logx"
 )
 
 // KV is a Redis-backed byte KV store implementing the method set of

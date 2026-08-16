@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/httpx"
+	"github.com/exergy-dev/stac-proxy/internal/httpx"
 )
 
 // Rule defines a URL remapping rule.

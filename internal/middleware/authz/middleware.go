@@ -21,11 +21,11 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/yourorg/stac-proxy/internal/geo"
-	"github.com/yourorg/stac-proxy/internal/httpx"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/middleware/auth"
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/geo"
+	"github.com/exergy-dev/stac-proxy/internal/httpx"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/auth"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // HTTPConfig configures the chi-style authz middleware.

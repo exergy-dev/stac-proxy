@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/httpx"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/httpx"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // defaultMaxResponseBytes is the per-call upstream response body cap

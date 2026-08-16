@@ -16,7 +16,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/yourorg/stac-proxy/internal/logx"
+	"github.com/exergy-dev/stac-proxy/internal/logx"
 )
 
 // tokenBucketScript implements the same semantics as

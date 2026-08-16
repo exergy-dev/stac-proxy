@@ -14,8 +14,8 @@ import (
 	"net/http/httptest"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // --- Item fixtures ---------------------------------------------------------

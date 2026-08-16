@@ -5,12 +5,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/middleware/cache"
+	"github.com/exergy-dev/stac-proxy/internal/observability"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/middleware/cache"
-	"github.com/yourorg/stac-proxy/internal/observability"
 )
 
 // infoRecorder captures what STACInfo (and SearchReq) an operator

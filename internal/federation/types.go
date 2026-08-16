@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yourorg/stac-proxy/internal/federation/pageadapter"
-	"github.com/yourorg/stac-proxy/internal/middleware"
-	"github.com/yourorg/stac-proxy/internal/stac"
+	"github.com/exergy-dev/stac-proxy/internal/federation/pageadapter"
+	"github.com/exergy-dev/stac-proxy/internal/middleware"
+	"github.com/exergy-dev/stac-proxy/internal/stac"
 )
 
 // request is federation's internal carrier for the parsed STAC shape
