@@ -464,13 +464,22 @@ func filterByGeofence(body []byte, geofence *GeofenceConstraint) ([]byte, geofen
 		return nil, geofenceMalformed
 	}
 
+	// Honor the constraint's GeometryProperty so the post-filter
+	// judges the same field a pushed-down S_INTERSECTS would have —
+	// federation targets may expose geometry as "the_geom",
+	// "footprint", etc. Empty means the canonical "geometry".
+	geomProp := geofence.GeometryProperty
+	if geomProp == "" {
+		geomProp = "geometry"
+	}
+
 	kept := make([]interface{}, 0, len(features))
 	for _, f := range features {
 		item, ok := f.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		geomVal := item["geometry"]
+		geomVal := item[geomProp]
 		if geomVal == nil {
 			continue
 		}

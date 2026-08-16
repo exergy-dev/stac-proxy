@@ -144,3 +144,45 @@ func TestAuthz_GeofencePostFilter(t *testing.T) {
 	feats := fc["features"].([]interface{})
 	require.Len(t, feats, 1, "want 1 kept after post-filter")
 }
+
+// TestFilterByGeofence_HonorsGeometryProperty: when the constraint
+// names a non-canonical geometry field (as push-down's S_INTERSECTS
+// would target), the post-filter must judge the same field — and
+// fail closed (drop) for features missing it, matching the existing
+// nil-geometry handling.
+func TestFilterByGeofence_HonorsGeometryProperty(t *testing.T) {
+	g := &GeofenceConstraint{
+		AllowedArea: map[string]interface{}{
+			"type": "Polygon",
+			"coordinates": []interface{}{
+				[]interface{}{
+					[]interface{}{-10.0, -10.0},
+					[]interface{}{10.0, -10.0},
+					[]interface{}{10.0, 10.0},
+					[]interface{}{-10.0, 10.0},
+					[]interface{}{-10.0, -10.0},
+				},
+			},
+		},
+		FilterMode:       true,
+		GeometryProperty: "the_geom",
+	}
+	body, _ := json.Marshal(map[string]interface{}{
+		"type": "FeatureCollection",
+		"features": []map[string]interface{}{
+			{"id": "inside", "the_geom": map[string]interface{}{"type": "Point", "coordinates": []interface{}{1.0, 1.0}}},
+			{"id": "outside", "the_geom": map[string]interface{}{"type": "Point", "coordinates": []interface{}{50.0, 50.0}}},
+			// Canonical geometry only — missing the configured
+			// property, must be dropped (fail-closed).
+			{"id": "wrong-key", "geometry": map[string]interface{}{"type": "Point", "coordinates": []interface{}{0.0, 0.0}}},
+		},
+	})
+
+	out, status := filterByGeofence(body, g)
+	require.Equal(t, geofenceFiltered, status)
+	var fc map[string]interface{}
+	require.NoError(t, json.Unmarshal(out, &fc))
+	feats := fc["features"].([]interface{})
+	require.Len(t, feats, 1, "only the in-area the_geom feature survives")
+	require.Equal(t, "inside", feats[0].(map[string]interface{})["id"])
+}
