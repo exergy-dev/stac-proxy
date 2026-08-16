@@ -3,6 +3,7 @@ package federation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -69,6 +70,14 @@ func (h *Handler) handleSearch(ctx context.Context, req *request) (*response, er
 		hashReq.Token = ""
 		result, err := h.searcher.Search(ctx, &hashReq, cursorStr)
 		if err != nil {
+			// A bad token is the client's to fix (malformed, expired,
+			// tampered, bound to another principal/query) — 400, not a
+			// 500 that reads as a proxy fault.
+			if errors.Is(err, ErrCursorInvalid) || errors.Is(err, ErrCursorTampered) ||
+				errors.Is(err, ErrCursorExpired) || errors.Is(err, ErrCursorPrincipalMismatch) ||
+				errors.Is(err, ErrCursorOriginURLNotAllowed) {
+				return errorResponse(http.StatusBadRequest, "InvalidParameterValue", err.Error()), nil
+			}
 			return nil, fmt.Errorf("federated search: %w", err)
 		}
 		return h.buildPaginatedSearchResponse(result, &hashReq, req)
@@ -339,6 +348,13 @@ func (h *Handler) cursorSearchLink(orig *http.Request, rel, cursor string) *stac
 			AdditionalFields: map[string]any{
 				"method": "POST",
 				"body":   map[string]any{"token": cursor},
+				// Per STAC API Item Search pagination, merge tells the
+				// client to combine this body with its original request
+				// body. Without it a compliant client POSTs the token
+				// alone, the re-hashed (empty) query no longer matches
+				// the cursor's bound QueryHash, and every follow-up of
+				// our own next link fails for non-empty queries.
+				"merge": true,
 			},
 		}
 	}

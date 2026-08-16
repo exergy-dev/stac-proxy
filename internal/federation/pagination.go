@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -293,7 +294,7 @@ func (s *PaginatedSearcher) Search(ctx context.Context, req *stac.SearchRequest,
 		}
 		// Validate cursor matches query
 		if cursor.QueryHash != hashSearchRequest(req) {
-			return nil, errors.New("cursor does not match search parameters")
+			return nil, fmt.Errorf("%w: cursor does not match search parameters", ErrCursorInvalid)
 		}
 
 		// Backwards-navigation fast path: when the page cache holds

@@ -178,3 +178,77 @@ func TestIntegration_FederatedPaginationWalk(t *testing.T) {
 		}
 	})
 }
+
+// TestIntegration_PostNextLinkMergeContract locks in the POST
+// pagination contract for non-empty queries. The proxy's POST-style
+// `next` link must carry `"merge": true` — per STAC API Item Search a
+// body WITHOUT merge REPLACES the client's request, so a compliant
+// client would POST the token alone, the re-hashed empty query would
+// no longer match the cursor's bound QueryHash, and every follow-up of
+// our own next link would fail (this was live-repro'd against three
+// public STAC APIs). A token-only POST must come back 400, not 500.
+func TestIntegration_PostNextLinkMergeContract(t *testing.T) {
+	upA := newPaginatingUpstream(t, []*stac.Item{
+		makeItem("pa-1", 30), makeItem("pa-2", 28), makeItem("pa-3", 26), makeItem("pa-4", 24),
+	})
+	upB := newPaginatingUpstream(t, []*stac.Item{
+		makeItem("pb-1", 29), makeItem("pb-2", 27), makeItem("pb-3", 25), makeItem("pb-4", 23),
+	})
+	handler, err := federation.NewHandler(federation.HandlerConfig{
+		Origins: []*federation.Origin{
+			{ID: "a", BaseURL: upA.srv.URL, Enabled: true, Searchable: true, Collections: []string{"shared"}, Timeout: 5 * time.Second, Priority: 1},
+			{ID: "b", BaseURL: upB.srv.URL, Enabled: true, Searchable: true, Collections: []string{"shared"}, Timeout: 5 * time.Second, Priority: 1},
+		},
+		MaxConcurrent:    4,
+		AggregateTimeout: 10 * time.Second,
+		DefaultPageSize:  3,
+		MaxPageSize:      100,
+		CursorSecret:     []byte("integration-test-secret"),
+		ProxyBaseURL:     "https://proxy.test",
+	})
+	require.NoError(t, err, "NewHandler")
+
+	post := func(sr *stac.SearchRequest) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader("{}"))
+		info := &middleware.STACInfo{RequestType: middleware.RequestTypeSearch, SearchReq: sr}
+		ctx := middleware.WithSTACInfo(req.Context(), info)
+		ctx = context.WithValue(ctx, middleware.PrincipalKey, &auth.Principal{ID: "anon", Type: "anonymous"})
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req.WithContext(ctx))
+		return rr
+	}
+
+	// Page 1: a real (non-empty) query.
+	rr := post(&stac.SearchRequest{Collections: []string{"shared"}, Limit: 3})
+	require.Equal(t, http.StatusOK, rr.Code, "page 1: %s", rr.Body.String())
+	var page1 struct {
+		Features []struct {
+			ID string `json:"id"`
+		} `json:"features"`
+		Links []map[string]any `json:"links"`
+	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &page1))
+
+	var next map[string]any
+	for _, l := range page1.Links {
+		if l["rel"] == "next" {
+			next = l
+		}
+	}
+	require.NotNil(t, next, "page 1 must carry a next link")
+	assert.Equal(t, "POST", next["method"], "next link method")
+	assert.Equal(t, true, next["merge"], "POST next link MUST set merge: true — without it compliant clients drop the original query and the cursor hash check fails")
+	body, _ := next["body"].(map[string]any)
+	require.NotNil(t, body, "next link body")
+	token, _ := body["token"].(string)
+	require.NotEmpty(t, token, "next link token")
+
+	// Page 2 as a merge-compliant client: original body + token.
+	rr2 := post(&stac.SearchRequest{Collections: []string{"shared"}, Limit: 3, Token: token})
+	require.Equal(t, http.StatusOK, rr2.Code, "page 2 (merged body): %s", rr2.Body.String())
+
+	// A non-merging client (token only) must get a 400 envelope, not 500.
+	rr3 := post(&stac.SearchRequest{Token: token})
+	require.Equal(t, http.StatusBadRequest, rr3.Code, "token-only POST: %s", rr3.Body.String())
+	assert.Contains(t, rr3.Body.String(), "InvalidParameterValue")
+}
