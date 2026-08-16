@@ -347,3 +347,45 @@ func TestRewriteLinks_WalksAssets(t *testing.T) {
 // Ensure unused imports compile away.
 var _ = json.Marshal
 var _ = io.EOF
+
+// TestRewriteAssetHref_ProxySkipsOffOriginAssets locks in that proxy
+// mode only rewrites assets ServeAssetHTTP will later agree to serve
+// (rooted under the origin base). Rewriting off-origin assets mints
+// proxy URLs the SSRF guard then 400s — live-repro'd against USGS
+// LandsatLook, whose assets live at /data while the API base is
+// /stac-server.
+func TestRewriteAssetHref_ProxySkipsOffOriginAssets(t *testing.T) {
+	t.Parallel()
+
+	o := &Origin{
+		ID:            "usgs",
+		BaseURL:       "https://landsatlook.usgs.gov/stac-server",
+		Enabled:       true,
+		Timeout:       5 * time.Second,
+		RewriteAssets: "proxy",
+	}
+	c, err := NewOriginClientWithContext(context.Background(), nil, o)
+	require.NoError(t, err, "client")
+	h := &Handler{proxyBaseURL: "https://proxy.example"}
+	ctx := context.Background()
+
+	// Same host, sibling path — NOT under the API base: passthrough.
+	offOrigin := "https://landsatlook.usgs.gov/data/collection02/thumb.jpeg"
+	assert.Equal(t, offOrigin, h.rewriteAssetHref(ctx, c, offOrigin),
+		"off-origin asset must pass through, not become an unservable proxy URL")
+
+	// External CDN: passthrough.
+	cdn := "https://sentinel-cogs.s3.us-west-2.amazonaws.com/x.tif"
+	assert.Equal(t, cdn, h.rewriteAssetHref(ctx, c, cdn))
+
+	// Under the origin base: rewritten, and the minted ref passes the
+	// same guard ServeAssetHTTP applies — rewrite ⊆ servable.
+	under := "https://landsatlook.usgs.gov/stac-server/assets/a.tif"
+	got := h.rewriteAssetHref(ctx, c, under)
+	require.True(t, strings.HasPrefix(got, "https://proxy.example/assets/usgs/"), "got %q", got)
+	ref := strings.TrimPrefix(got, "https://proxy.example/assets/usgs/")
+	decoded, err := base64.RawURLEncoding.DecodeString(ref)
+	require.NoError(t, err)
+	assert.True(t, assetHrefUnderOrigin(string(decoded), o.BaseURL),
+		"every rewritten ref must satisfy the serve-side guard")
+}

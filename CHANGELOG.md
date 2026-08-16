@@ -4,6 +4,18 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-08-16
+
+### Fixed
+
+- **`rewrite_assets: proxy` no longer breaks off-origin asset links.**
+  The rewriter minted `/assets/{origin}/{ref}` URLs for every asset,
+  but the streaming endpoint's SSRF guard only serves assets rooted
+  under the origin's base URL — so assets hosted on CDNs or sibling
+  paths (e.g. USGS LandsatLook's `/data/...` vs its `/stac-server` API
+  base) got proxy links that returned 400. Off-origin assets now pass
+  through unchanged; the rewrite predicate equals the serve predicate.
+
 ## [0.3.0] — 2026-08-16
 
 Two architectural changes close the gaps that kept

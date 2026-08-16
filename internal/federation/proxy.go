@@ -392,6 +392,15 @@ func (h *Handler) rewriteAssetHref(ctx context.Context, client *OriginClient, hr
 		if h.proxyBaseURL == "" {
 			return href
 		}
+		// Rewrite only what ServeAssetHTTP will later agree to serve:
+		// assets rooted under the origin's base URL. Off-origin assets
+		// (CDNs, sibling paths like landsatlook.usgs.gov/data vs the
+		// /stac-server API base) pass through unchanged — rewriting
+		// them mints proxy URLs the SSRF guard then rejects with 400,
+		// breaking every such asset link.
+		if !assetHrefUnderOrigin(href, client.BaseURL()) {
+			return href
+		}
 		ref := base64.RawURLEncoding.EncodeToString([]byte(href))
 		return strings.TrimRight(h.proxyBaseURL, "/") + "/assets/" + origin.ID + "/" + ref
 	default:
