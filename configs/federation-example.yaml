@@ -77,11 +77,15 @@ federation:
       auto_discover: true
       discovery_interval: 1h
       timeout: 30s
-      # When true, the proxy pushes authz CQL2 filters (including
-      # geofence S_INTERSECTS) into the search request rather than
-      # post-filtering responses. Requires this origin to support the
-      # STAC Filter Extension. Defaults to false.
+      # When true, the proxy pushes authz CQL2 filters into the search
+      # request rather than post-filtering responses. Probed from the
+      # origin's /conformance at boot when unset.
       # supports_filter_extension: true
+      # supports_spatial_filter additionally asserts the origin
+      # evaluates CQL2 spatial predicates (S_INTERSECTS) — the gate for
+      # geofence push-down, which disables the response post-filter.
+      # Also probed from /conformance when unset.
+      # supports_spatial_filter: true
 
       # Per-origin circuit breaker — ON by default with these values.
       # After `failure_threshold` consecutive failures (transport
@@ -152,8 +156,6 @@ middleware:
 
 # Authorization configuration (uncomment to enable)
 # authz:
-#   policy_source: opa
-#   default_effect: deny
 #   opa:
 #     embedded: true
 #     rego_files:

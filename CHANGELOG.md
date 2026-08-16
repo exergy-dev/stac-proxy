@@ -4,6 +4,78 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-08-16
+
+Security hardening release: a targeted audit of the OPA/auth
+enforcement found one unwired security gate, two config surfaces that
+silently didn't work, a fail-open example policy, and a health-check
+regression on auth-enabled deployments — all fixed here, with the
+first config-file-to-enforcement test coverage.
+
+### Security
+
+- **Geofence push-down is now gated on CQL2 spatial conformance.**
+  Push-down disables the response-side post-filter, so pushing
+  S_INTERSECTS to an upstream that never implemented it leaked
+  geofenced data. The boot probe now derives per-origin capabilities
+  (Filter Extension AND spatial functions) from one /conformance
+  fetch; geofences stay post-filtered unless the origin advertises a
+  CQL2 spatial class or the new `supports_spatial_filter` override is
+  set. Plain CQL2 pushes down as before. Verified against live
+  catalogs: Planetary Computer (basic-cql2, no spatial class) now
+  correctly stays on the post-filter path.
+- **Anonymous requests reach Rego with `input.principal` undefined.**
+  Previously nil principals marshaled as `"principal": null` — a
+  defined, truthy term — so the natural guard `not input.principal`
+  never fired and `input.principal`-gated allow rules matched
+  anonymous callers (policies written in the standard idiom silently
+  failed open). **Migration:** policies explicitly testing
+  `input.principal == null` must switch to `not input.principal`.
+- **Example policy overhauled** (`policies/stac_authz.rego`) and now
+  compiled in CI: anonymous guards actually fire; the geofence is a
+  real member of `constraints` (it was dead code at package level);
+  the broken `allowed_collections: ["*"]` idiom is gone (full-access
+  roles omit the key — there is no `*` wildcard); constraints compose
+  per-key instead of collapsing to `{}` when any member is undefined;
+  anonymous catalog-surface rules now require GET.
+
+### Fixed
+
+- **Health endpoints no longer require credentials.** With auth
+  configured (`allow_anonymous: false`), `/health*` returned 401 —
+  breaking the container HEALTHCHECK and any K8s probe on every
+  auth-enabled deployment. Health now mounts outside the operator
+  middleware chain; probe requests also drop out of the access log,
+  and unmatched routes 404 without traversing the chain.
+- **`api_key` auth now accepts credentials from YAML.** Only
+  `header_name`/`query_param` were wired; `keys` (inline, mirroring
+  the keys-file entry shape; inline entries default `enabled: true`),
+  `keys_file`, `hmac_secret`, and `allow_query_param` now work — a
+  configured api_key provider previously rejected every key.
+- **`authz.opa.policy_path` is wired** (previously parsed and dropped,
+  silently installing the fail-closed default policy that denies
+  everything). New authz-block validation: `embedded` must be true, a
+  policy source must be set and exist at load; parsed-but-unimplemented
+  knobs (`bundle_url`, `data_files`, `timeout`, `cache_*`) and ignored
+  `middleware: - name: authz` entries now warn.
+- Geofence post-filter honors `GeometryProperty`, judging the same
+  field a pushed-down S_INTERSECTS would target.
+
+### Added
+
+- `supports_spatial_filter` on origins and the single upstream.
+- Config-file-driven security chain test (YAML → real build functions
+  → composed middleware chain → enforcement assertions, including the
+  push-down leak-gate regression in both directions).
+- The capability probe's results now reach the authz push-down gate
+  (previously only config flags did — probe-advertised origins never
+  received pushed-down CQL2).
+
+### Removed
+
+- Dead `config.AuthConfig`/`AuthProviderConfig` structs (never
+  referenced; documented a `header` key production never read).
+
 ## [0.3.1] — 2026-08-16
 
 ### Fixed

@@ -46,11 +46,14 @@ upstream:
   # post-filtering responses. Requires the upstream to support the STAC
   # Filter Extension (cql2-text / cql2-json).
   # supports_filter_extension: true
+  # supports_spatial_filter asserts the upstream evaluates CQL2 spatial
+  # predicates (S_INTERSECTS) — the gate for geofence push-down, which
+  # disables the response-side post-filter. Both flags are probed from
+  # /conformance at boot when unset.
+  # supports_spatial_filter: true
 
 # Authorization configuration (uncomment to enable)
 # authz:
-#   policy_source: opa
-#   default_effect: deny
 #   opa:
 #     embedded: true
 #     rego_files:
@@ -83,6 +86,32 @@ middleware:
   - name: logging
     config:
       include_body: false
+
+  # Client authentication (uncomment to enable). With
+  # allow_anonymous: false, unauthenticated requests get 401; health
+  # endpoints stay probe-able without credentials.
+  # - name: auth
+  #   config:
+  #     allow_anonymous: false
+  #     providers:
+  #       - type: api_key
+  #         header_name: "X-API-Key"
+  #         # Stable digest secret so the key store survives restarts.
+  #         hmac_secret: "${API_KEY_HMAC_SECRET:-}"
+  #         # Inline keys mirror the keys_file entry shape. Unlike the
+  #         # keys file (where `enabled: true` is required, doubling as
+  #         # a revocation switch), inline entries default to enabled.
+  #         keys:
+  #           - key: "${SERVICE_API_KEY:-}"
+  #             name: "svc-example"
+  #             roles: ["user"]
+  #         # keys_file: /etc/stac-proxy/api-keys.yaml
+  #       - type: basic
+  #         realm: "stac"
+  #         users:
+  #           - username: "alice"
+  #             password_hash: "$2a$10$replace-with-real-bcrypt-hash"
+  #             roles: ["user"]
 
   - name: cache
     config:
