@@ -75,7 +75,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			// a long-lived PII identifier (GDPR). Operators who need
 			// the raw IP have it via remote_addr in the access log
 			// from the upstream proxy / load balancer.
-			remoteHash := hashRemoteAddr(r.RemoteAddr)
+			remoteHash := hashRemoteAddr(middleware.ClientIP(r))
 
 			logger.Info("request_started",
 				"request_id", requestID,

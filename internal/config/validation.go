@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -125,6 +126,42 @@ func (v *Validator) validateServer(cfg ServerConfig) {
 
 	if cfg.PublicBaseURL != "" {
 		v.validatePublicBaseURL(cfg.PublicBaseURL)
+	}
+
+	v.validateClientIP(cfg.ClientIP)
+}
+
+// validateClientIP checks the client-IP trust model. Invalid CIDRs are
+// a boot error here rather than a router-construction panic (chi's
+// ClientIPFromXFF panics on bad prefixes).
+func (v *Validator) validateClientIP(cfg ClientIPConfig) {
+	switch cfg.Source {
+	case "", "remote_addr":
+		if cfg.Header != "" {
+			v.addWarning("server.client_ip.header is set but source is remote_addr; it will be ignored")
+		}
+		if len(cfg.TrustedProxies) > 0 {
+			v.addWarning("server.client_ip.trusted_proxies is set but source is remote_addr; it will be ignored")
+		}
+	case "header":
+		if cfg.Header == "" {
+			v.addError("server.client_ip.header is required when source is 'header' (e.g. CF-Connecting-IP behind Cloudflare, X-Real-IP behind nginx realip)")
+		}
+	case "xff":
+		for _, p := range cfg.TrustedProxies {
+			if _, err := netip.ParsePrefix(p); err != nil {
+				v.addError("server.client_ip.trusted_proxies entry %q is not a valid CIDR prefix: %v", p, err)
+			}
+		}
+		if len(cfg.TrustedProxies) == 0 {
+			v.addWarning("server.client_ip source 'xff' with no trusted_proxies uses the rightmost X-Forwarded-For entry; only safe with exactly one trusted hop directly in front")
+		}
+	case "xff_trusted_count":
+		if cfg.TrustedCount < 1 {
+			v.addError("server.client_ip.trusted_count must be >= 1 when source is 'xff_trusted_count'")
+		}
+	default:
+		v.addError("server.client_ip.source must be one of: remote_addr, header, xff, xff_trusted_count; got %q", cfg.Source)
 	}
 }
 

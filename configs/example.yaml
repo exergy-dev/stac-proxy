@@ -16,6 +16,17 @@ server:
   # client and proxy share a host).
   # public_base_url: "https://stac.example.com"
 
+  # client_ip selects how the real client IP is derived (rate-limit
+  # keys, authz policy input, access-log hashing). Default remote_addr
+  # trusts only the TCP peer and ignores forwarded headers. Behind a
+  # proxy/tunnel, opt into the header your edge overwrites on every
+  # request:
+  # client_ip:
+  #   source: header             # remote_addr | header | xff | xff_trusted_count
+  #   header: CF-Connecting-IP   # Cloudflare; X-Real-IP for nginx realip
+  #   # trusted_proxies: ["172.16.0.0/12"]   # for source: xff
+  #   # trusted_count: 1                     # for source: xff_trusted_count
+
 logging:
   level: "info"
   format: "json"

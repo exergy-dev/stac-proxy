@@ -3,7 +3,6 @@ package authz
 
 import (
 	"context"
-	"net"
 	"net/http"
 
 	"github.com/exergy-dev/stac-proxy/internal/middleware"
@@ -205,15 +204,12 @@ func BuildAuthzInput(r *http.Request, info *middleware.STACInfo, principal *auth
 	return input
 }
 
-// deriveClientIP returns the client IP from r.RemoteAddr (which chi's
-// RealIP middleware overwrites in-place when X-Real-IP / X-Forwarded-For
-// / True-Client-IP are present). Port is stripped via net.SplitHostPort.
+// deriveClientIP returns the client IP as derived by the router's
+// configured client-IP middleware (server.client_ip), falling back to
+// the bare host of r.RemoteAddr. Always a clean host (no port) so
+// ip-matching Rego policies can parse it.
 func deriveClientIP(r *http.Request) string {
-	host := r.RemoteAddr
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	return host
+	return middleware.ClientIP(r)
 }
 
 // defaultHeaderAllowlist is the set of HTTP request header names

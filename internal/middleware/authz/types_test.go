@@ -9,9 +9,9 @@ import (
 
 // TestBuildAuthzInput_StripsPortFromRemoteAddr ensures BuildAuthzInput
 // always produces a clean host (no `:port`) for the ClientIP field so
-// Rego policies matching on client IP parse it. After the chi RealIP swap,
-// r.RemoteAddr is the only source — RealIP overwrites it from
-// X-Real-IP / X-Forwarded-For / True-Client-IP when present.
+// Rego policies matching on client IP parse it. With no client-IP
+// middleware in the chain (as here), middleware.ClientIP falls back to
+// the bare host of r.RemoteAddr.
 func TestBuildAuthzInput_StripsPortFromRemoteAddr(t *testing.T) {
 	r := httptest.NewRequest("GET", "/collections", nil)
 	r.RemoteAddr = "10.0.0.1:54321"

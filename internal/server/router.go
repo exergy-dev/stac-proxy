@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
+	"github.com/exergy-dev/stac-proxy/internal/config"
 	"github.com/exergy-dev/stac-proxy/internal/observability"
 )
 
@@ -51,6 +52,25 @@ type RouterConfig struct {
 	// origins configured with `rewrite_assets: proxy`. Typically the
 	// same *federation.Handler that fronts Handler.
 	AssetHandler AssetHandler
+	// ClientIP selects how the client IP is derived (see
+	// config.ClientIPConfig). The zero value means remote_addr.
+	ClientIP config.ClientIPConfig
+}
+
+// clientIPMiddleware maps the validated client_ip config onto chi's
+// ClientIPFrom* middlewares. config validation guarantees the CIDRs
+// parse and the enum is closed, so the default arm is defensive only.
+func clientIPMiddleware(cfg config.ClientIPConfig) func(http.Handler) http.Handler {
+	switch cfg.Source {
+	case "header":
+		return chimiddleware.ClientIPFromHeader(cfg.Header)
+	case "xff":
+		return chimiddleware.ClientIPFromXFF(cfg.TrustedProxies...)
+	case "xff_trusted_count":
+		return chimiddleware.ClientIPFromXFFTrustedProxies(cfg.TrustedCount)
+	default: // "", "remote_addr"
+		return chimiddleware.ClientIPFromRemoteAddr
+	}
 }
 
 // NewRouter creates a new router with STAC API endpoints.
@@ -62,14 +82,15 @@ func NewRouter(cfg RouterConfig) *Router {
 		assetHandler:  cfg.AssetHandler,
 	}
 
-	// Standard middleware. RealIP overwrites r.RemoteAddr from
-	// True-Client-IP / X-Real-IP / X-Forwarded-For when present so
-	// downstream middleware (ratelimit, authz, logging) sees the
-	// claimed client IP. NOTE: this trusts these headers
-	// unconditionally — deploy behind a reverse proxy that strips or
-	// overwrites them; do NOT expose this listener directly.
+	// Standard middleware. The client-IP middleware (selected by
+	// server.client_ip config) stores the derived client IP in the
+	// request context; downstream consumers (ratelimit, authz,
+	// logging) read it via middleware.ClientIP, which falls back to
+	// the TCP peer when the configured source yields nothing.
+	// r.RemoteAddr is never mutated (chi's deprecated RealIP was:
+	// GO-2026-5777 — it trusted forgeable headers unconditionally).
 	r.Use(chimiddleware.RequestID)
-	r.Use(chimiddleware.RealIP)
+	r.Use(clientIPMiddleware(cfg.ClientIP))
 	r.Use(chimiddleware.Recoverer)
 
 	// Cap inbound bodies before any handler reads them. Must run

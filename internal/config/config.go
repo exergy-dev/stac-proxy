@@ -85,6 +85,44 @@ type ServerConfig struct {
 	// behaviour, suitable only for deployments where the client and
 	// proxy share a host.
 	PublicBaseURL string `yaml:"public_base_url"`
+	// ClientIP selects how the real client IP is derived — it feeds
+	// rate-limit keys, authz policy input (ip matching in Rego), and
+	// access-log hashing. See ClientIPConfig.
+	ClientIP ClientIPConfig `yaml:"client_ip"`
+}
+
+// ClientIPConfig selects the trust model for deriving the client IP.
+// The wrong choice is a security bug in both directions: trusting a
+// client-forgeable header lets callers spoof rate-limit keys and
+// ip-based policy; ignoring the proxy's header keys everything on the
+// proxy hop's address.
+type ClientIPConfig struct {
+	// Source is one of:
+	//   remote_addr        — the TCP peer address. Default. Correct when
+	//                        clients connect directly (no proxy/tunnel in
+	//                        front). Behind a proxy every request keys on
+	//                        the proxy's IP.
+	//   header             — a single-IP header the proxy in front
+	//                        OVERWRITES on every request (Header below),
+	//                        e.g. CF-Connecting-IP (Cloudflare),
+	//                        X-Real-IP (nginx realip).
+	//   xff                — walk X-Forwarded-For right-to-left past
+	//                        TrustedProxies CIDRs; first untrusted hop is
+	//                        the client. With no TrustedProxies: the
+	//                        rightmost entry (exactly one trusted hop
+	//                        directly in front).
+	//   xff_trusted_count  — the XFF entry added by the outermost of
+	//                        exactly TrustedCount proxies. Brittle to
+	//                        topology changes; prefer xff with CIDRs.
+	Source string `yaml:"source"`
+	// Header names the trusted single-IP header for source: header.
+	Header string `yaml:"header"`
+	// TrustedProxies are CIDR prefixes of proxies allowed to appear in
+	// the X-Forwarded-For chain for source: xff.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+	// TrustedCount is the exact number of proxies in front for
+	// source: xff_trusted_count. Must be >= 1.
+	TrustedCount int `yaml:"trusted_count"`
 }
 
 // TLSConfig contains TLS settings.
@@ -636,6 +674,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Server.MaxHeaderBytes == 0 {
 		c.Server.MaxHeaderBytes = DefaultMaxHeaderBytes
+	}
+	if c.Server.ClientIP.Source == "" {
+		c.Server.ClientIP.Source = "remote_addr"
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"

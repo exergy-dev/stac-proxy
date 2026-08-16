@@ -29,6 +29,20 @@ version from here on.
   LandsatLook). Cursor validation failures now return
   `400 InvalidParameterValue` instead of 500.
 
+### Security — explicit client-IP trust model (GO-2026-5777)
+
+- chi bumped to v5.3.0; the deprecated `RealIP` middleware (trusts
+  `X-Forwarded-For`/`X-Real-IP`/`True-Client-IP` unconditionally — IP
+  spoofing of rate-limit keys, authz policy input, and logs) is
+  replaced by a configured **`server.client_ip`** block mapping onto
+  chi's `ClientIPFrom*` middlewares. **Behavior change:** the default
+  is now `source: remote_addr` (TCP peer only, forwarded headers
+  ignored). Deployments behind a proxy/tunnel must opt in — e.g.
+  `source: header` + `header: CF-Connecting-IP` behind Cloudflare, or
+  `source: xff` with `trusted_proxies` CIDRs. `r.RemoteAddr` is never
+  mutated; consumers read the derived IP from the request context and
+  fall back to the TCP peer.
+
 ### Changed — internal simplification (no API change)
 
 - ~1,300 production / ~1,700 test lines removed: unreachable

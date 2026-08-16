@@ -88,11 +88,11 @@ that leaves extra replicas unrouted; raise the template count and
 re-deploy the edge to lift the ceiling.
 
 **Never publish replica ports directly.** Only HAProxy is bound off-box.
-Publishing a replica's port bypasses the edge and re-opens
-`X-Forwarded-For` spoofing of the rate limiter and logs (chi RealIP
-trusts XFF unconditionally). HAProxy owning that header — deleting the
-inbound value and setting it from the real source — is the whole point
-of the trust boundary.
+Publishing a replica's port bypasses the edge: with
+`server.client_ip` sourcing XFF, direct clients could spoof the header
+the rate limiter and logs key on. HAProxy owning that header —
+deleting the inbound value and setting it from the real source — is
+the whole point of the trust boundary.
 
 ## Stateless replicas (shared Redis)
 
@@ -347,25 +347,32 @@ Configure your orchestrator's probes:
 | `readinessProbe` | `/health/ready` | Pull from LB rotation on failure |
 | `startupProbe` (K8s 1.18+) | `/health/ready` | Allow slow first boot |
 
-## Trust boundary: deploy behind an L7 proxy
+## Trust boundary: configure `server.client_ip` for your topology
 
-`stac-proxy` uses chi's `RealIP` middleware (wired automatically; no
-configuration surface) to populate `http.Request.RemoteAddr` from
-`X-Forwarded-For` / `X-Real-IP`. That middleware **does not** validate
-the source — any unauthenticated client can spoof its IP simply by
-adding the header.
+The client IP that feeds rate-limit keys, authz policy input, and
+access-log hashing is derived per the `server.client_ip` block. The
+default (`source: remote_addr`) trusts only the TCP peer and ignores
+all forwarded headers — safe everywhere, but behind a proxy it keys
+everything on the proxy's address.
 
-You MUST deploy this service behind a TLS-terminating L7 reverse proxy
-(nginx, Envoy, ALB, Cloud Run, etc.) that:
+Behind a reverse proxy or tunnel, opt into the header your edge
+actually owns:
 
-1. Sets `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`
-   itself based on the real connecting socket.
-2. **Strips or overwrites** any inbound `X-Forwarded-*` headers the
-   client supplies so they cannot leak through.
+```yaml
+server:
+  client_ip:
+    # Cloudflare (incl. cloudflared tunnels):
+    source: header
+    header: CF-Connecting-IP
+    # nginx with realip:  source: header / header: X-Real-IP
+    # Enumerable proxy CIDRs:  source: xff / trusted_proxies: [<cidr>, ...]
+    # Known proxy count, dynamic IPs:  source: xff_trusted_count / trusted_count: 1
+```
 
-If you expose `stac-proxy` directly to untrusted clients, every log
-entry's `remote_addr`, every IP-based rate-limit decision, and every
-audit field that quotes the request's client IP is forgeable.
+Only choose a header your proxy **overwrites on every request**; XFF
+sources walk right-to-left past trusted hops so the client-supplied
+leftmost value is never trusted. If a configured source yields no IP,
+consumers fall back to the TCP peer (never an empty key).
 
 ## Migration / upgrades
 

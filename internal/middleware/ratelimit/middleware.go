@@ -6,7 +6,6 @@
 package ratelimit
 
 import (
-	"net"
 	"net/http"
 	"strconv"
 
@@ -52,16 +51,11 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 			if p := auth.PrincipalFromContext(ctx); p != nil {
 				principalID = p.ID
 			}
-			// r.RemoteAddr is already the best client IP — chi's
-			// RealIP middleware overwrites it from X-Real-IP /
-			// X-Forwarded-For / True-Client-IP when present, and
-			// otherwise it's the TCP peer. Strip the port so all
-			// requests from a given host share one bucket.
-			clientIP := r.RemoteAddr
-			if host, _, err := net.SplitHostPort(clientIP); err == nil {
-				clientIP = host
-			}
-			key := DefaultKeyFunc(ctx, principalID, clientIP)
+			// middleware.ClientIP reads the IP stored by the router's
+			// configured ClientIPFrom* middleware (server.client_ip),
+			// falling back to the TCP peer, so all requests from a
+			// given client share one bucket.
+			key := DefaultKeyFunc(ctx, principalID, middleware.ClientIP(r))
 
 			allowed, info, err := limiter.Allow(ctx, key, cfg.DefaultQuota)
 			if err != nil {

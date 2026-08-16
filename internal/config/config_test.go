@@ -1531,3 +1531,42 @@ func TestValidateOrigin_AcceptsPublicAlways(t *testing.T) {
 
 	assert.NoError(t, NewValidator().Validate(cfg))
 }
+
+// TestClientIPValidation covers the server.client_ip trust-model
+// validation added with the chi v5.3 ClientIPFrom* migration.
+func TestClientIPValidation(t *testing.T) {
+	base := func(ci ClientIPConfig) *Config {
+		c := &Config{
+			Mode:     "single",
+			Upstream: &UpstreamConfig{URL: "https://example.com"},
+		}
+		c.setDefaults()
+		c.Server.ClientIP = ci
+		return c
+	}
+	cases := []struct {
+		name    string
+		ci      ClientIPConfig
+		wantErr string // empty = valid
+	}{
+		{"default empty is valid", ClientIPConfig{}, ""},
+		{"remote_addr is valid", ClientIPConfig{Source: "remote_addr"}, ""},
+		{"header requires header name", ClientIPConfig{Source: "header"}, "client_ip.header is required"},
+		{"header with name is valid", ClientIPConfig{Source: "header", Header: "CF-Connecting-IP"}, ""},
+		{"xff with valid cidrs", ClientIPConfig{Source: "xff", TrustedProxies: []string{"10.0.0.0/8", "2600:9000::/28"}}, ""},
+		{"xff with bad cidr", ClientIPConfig{Source: "xff", TrustedProxies: []string{"not-a-cidr"}}, "not a valid CIDR"},
+		{"trusted_count must be >=1", ClientIPConfig{Source: "xff_trusted_count"}, "trusted_count must be >= 1"},
+		{"unknown source", ClientIPConfig{Source: "bogus"}, "must be one of"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfig(base(tc.ci))
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.True(t, containsValidationError(err, tc.wantErr), "got: %v", err)
+		})
+	}
+}

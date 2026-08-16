@@ -201,6 +201,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		HealthChecker:   healthChecker,
 		MaxBodyBytes:    cfg.Server.MaxBodyBytes,
 		HTTPMiddlewares: httpMiddlewares,
+		ClientIP:        cfg.Server.ClientIP,
 		// The federation handler implements both http.Handler (catalog
 		// routes) and server.AssetHandler (the streaming proxy
 		// endpoint). Mounting the asset endpoint is gated on the
