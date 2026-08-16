@@ -425,11 +425,22 @@ func buildAuthProvider(ctx context.Context, pMap map[string]interface{}, _ *slog
 		}
 		return auth.NewBearerProvider(bearerCfg)
 	case "api_key":
-		return auth.NewAPIKeyProvider(auth.APIKeyConfig{
-			Name:       "api_key",
-			Header:     getStringConfig(pMap, "header_name"),
-			QueryParam: getStringConfig(pMap, "query_param"),
-		})
+		keys, err := parseAPIKeys(pMap["keys"])
+		if err != nil {
+			return nil, fmt.Errorf("api_key keys: %w", err)
+		}
+		akCfg := auth.APIKeyConfig{
+			Name:            "api_key",
+			Header:          getStringConfig(pMap, "header_name"),
+			QueryParam:      getStringConfig(pMap, "query_param"),
+			KeysFile:        getStringConfig(pMap, "keys_file"),
+			Keys:            keys,
+			AllowQueryParam: getBoolConfig(pMap, "allow_query_param"),
+		}
+		if s := getStringConfig(pMap, "hmac_secret"); s != "" {
+			akCfg.HMACSecret = []byte(s)
+		}
+		return auth.NewAPIKeyProvider(akCfg)
 	case "oidc":
 		return auth.NewOIDCProvider(auth.OIDCConfig{
 			Name:              "oidc",
@@ -493,6 +504,49 @@ func parseBasicUsers(raw interface{}) ([]auth.BasicUser, error) {
 			u.Attributes = attrs
 		}
 		out = append(out, u)
+	}
+	return out, nil
+}
+
+// parseAPIKeys decodes the inline `keys` array of an api_key auth
+// config into the provider's key map (keyed by the plaintext key —
+// the provider HMAC-digests it at construction). The entry shape
+// mirrors the keys_file format (key/name/description/roles/groups/
+// collections/enabled) with one deliberate difference: an inline
+// entry omitting `enabled` defaults to true — listing a key in the
+// server config implies intent, unlike a shared keys file where the
+// explicit flag doubles as a revocation switch.
+func parseAPIKeys(raw interface{}) (map[string]*auth.APIKeyEntry, error) {
+	list, ok := raw.([]interface{})
+	if !ok {
+		if raw == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("expected list, got %T", raw)
+	}
+	out := make(map[string]*auth.APIKeyEntry, len(list))
+	for i, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("keys[%d]: expected map, got %T", i, item)
+		}
+		key := getStringConfig(m, "key")
+		if key == "" {
+			return nil, fmt.Errorf("keys[%d]: missing required field 'key'", i)
+		}
+		enabled := true
+		if v, ok := m["enabled"].(bool); ok {
+			enabled = v
+		}
+		out[key] = &auth.APIKeyEntry{
+			Key:         key,
+			Name:        getStringConfig(m, "name"),
+			Description: getStringConfig(m, "description"),
+			Roles:       getStringSliceConfig(m, "roles"),
+			Groups:      getStringSliceConfig(m, "groups"),
+			Collections: getStringSliceConfig(m, "collections"),
+			Enabled:     enabled,
+		}
 	}
 	return out, nil
 }

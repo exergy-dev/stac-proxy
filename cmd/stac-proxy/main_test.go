@@ -427,3 +427,64 @@ func TestServerIsUnauthenticated(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthProviderWiring_APIKeyCredentials proves the api_key provider
+// receives its credentials from YAML — before this wiring, only
+// header_name/query_param were passed, so every configured key 401'd.
+func TestAuthProviderWiring_APIKeyCredentials(t *testing.T) {
+	t.Parallel()
+
+	pMap := map[string]interface{}{
+		"type":        "api_key",
+		"header_name": "X-API-Key",
+		"hmac_secret": "stable-test-secret",
+		"keys": []interface{}{
+			map[string]interface{}{
+				"key":   "good-key-123",
+				"name":  "svc-alpha",
+				"roles": []interface{}{"data_scientist"},
+				// enabled omitted -> defaults true for inline entries
+			},
+			map[string]interface{}{
+				"key":     "revoked-key",
+				"name":    "svc-old",
+				"enabled": false,
+			},
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	p, err := buildAuthProvider(context.Background(), pMap, logger)
+	require.NoError(t, err)
+
+	authed := func(key string) (*auth.Principal, error) {
+		r := httptest.NewRequest(http.MethodGet, "/search", nil)
+		r.Header.Set("X-API-Key", key)
+		return p.Authenticate(context.Background(), r)
+	}
+
+	principal, err := authed("good-key-123")
+	require.NoError(t, err, "configured key must authenticate")
+	require.NotNil(t, principal)
+	assert.Equal(t, []string{"data_scientist"}, principal.Roles, "roles from YAML must land on the principal")
+
+	_, err = authed("revoked-key")
+	assert.Error(t, err, "enabled: false key must be rejected")
+
+	_, err = authed("never-configured")
+	assert.Error(t, err, "unknown key must be rejected")
+
+	// allow_query_param defaults false: a key in the query string
+	// alone is never read — the provider reports "no credential"
+	// (nil, nil), so the request cannot authenticate through it.
+	r := httptest.NewRequest(http.MethodGet, "/search?api_key=good-key-123", nil)
+	qp, err := p.Authenticate(context.Background(), r)
+	assert.NoError(t, err)
+	assert.Nil(t, qp, "query-param key must not authenticate without allow_query_param")
+
+	// Missing 'key' field is a hard config error.
+	_, err = buildAuthProvider(context.Background(), map[string]interface{}{
+		"type": "api_key",
+		"keys": []interface{}{map[string]interface{}{"name": "keyless"}},
+	}, logger)
+	assert.ErrorContains(t, err, "missing required field 'key'")
+}
