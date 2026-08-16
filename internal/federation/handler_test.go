@@ -1243,7 +1243,9 @@ func TestHandleSearch_MultiPageFederation(t *testing.T) {
 	}
 	assert.GreaterOrEqualf(t, len(seen), 4, "expected at least 4 unique items across pages, got %d", len(seen))
 
-	// Tampered cursor: a malformed token must be rejected.
+	// Tampered cursor: a malformed token must be rejected as a client
+	// error — a 400 InvalidParameterValue response, not an internal
+	// error.
 	r := httptest.NewRequest(http.MethodGet, "/search?limit=3", nil)
 	tampered := &stac.SearchRequest{
 		Collections: []string{"test-collection"},
@@ -1256,8 +1258,11 @@ func TestHandleSearch_MultiPageFederation(t *testing.T) {
 		RequestType: middleware.RequestTypeSearch,
 		SearchReq:   tampered,
 	}
-	_, err = handler.Handle(req.Context, req)
-	assert.Error(t, err, "expected error on tampered cursor")
+	resp, err := handler.Handle(req.Context, req)
+	require.NoError(t, err, "tampered cursor is a client error, not a handler error")
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "tampered cursor status; body=%s", resp.Body)
+	assert.Contains(t, string(resp.Body), "InvalidParameterValue", "tampered cursor error code")
 }
 
 // TestHandleItems_FederatedAcrossOrigins drives B3: a federated
