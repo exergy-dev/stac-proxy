@@ -298,3 +298,25 @@ func TestSecurityChain_ConfigFileToEnforcement(t *testing.T) {
 		assert.Contains(t, filter, "eo:cloud_cover")
 	})
 }
+
+// TestSecurityChain_HealthBypassesAuth: liveness/readiness/health must
+// be reachable without credentials even when auth is enabled with
+// allow_anonymous: false — otherwise the container HEALTHCHECK (the
+// binary's own --healthcheck probe) and every K8s probe 401 and the
+// deployment reads permanently unhealthy. Found by running the built
+// image with an auth-enabled config.
+func TestSecurityChain_HealthBypassesAuth(t *testing.T) {
+	t.Parallel()
+	up := newChainUpstream(t, []string{"https://api.stacspec.org/v1.0.0/core"})
+	chain := buildSecurityChain(t, up.srv.URL)
+
+	for _, path := range []string{"/health", "/health/live", "/health/ready"} {
+		rr := doJSON(t, chain, http.MethodGet, path, "", "")
+		assert.NotEqualf(t, http.StatusUnauthorized, rr.Code,
+			"%s must not require credentials (got %d: %s)", path, rr.Code, rr.Body.String())
+	}
+
+	// And the STAC surface still requires them.
+	rr := doJSON(t, chain, http.MethodGet, "/collections", "", "")
+	assert.Equal(t, http.StatusUnauthorized, rr.Code, "STAC routes must still be gated")
+}

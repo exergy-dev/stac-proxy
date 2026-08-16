@@ -87,17 +87,34 @@ func TestRouter_STACInfoVisibleToMiddlewares(t *testing.T) {
 		})
 	}
 
-	t.Run("health routes carry no STACInfo", func(t *testing.T) {
+	t.Run("health and unmatched routes bypass the operator chain", func(t *testing.T) {
 		t.Parallel()
-		var seen infoObservation
-		seen.info = &middleware.STACInfo{} // sentinel; must be overwritten with nil
+		ran := false
+		observer := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ran = true
+				next.ServeHTTP(w, r)
+			})
+		}
 		router := NewRouter(RouterConfig{
 			Handler:         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
-			HTTPMiddlewares: []func(http.Handler) http.Handler{recordingMiddleware(&seen)},
+			HealthChecker:   observability.NewHealthChecker(),
+			HTTPMiddlewares: []func(http.Handler) http.Handler{observer},
 		})
+
+		// Health probes must never traverse the operator chain — auth
+		// with allow_anonymous: false would 401 the container
+		// HEALTHCHECK and every K8s probe.
 		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/health/live", nil))
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.False(t, ran, "operator middleware must not run for health probes")
+
+		// Unmatched routes 404 without consuming the operator chain.
+		rr = httptest.NewRecorder()
 		router.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/unknown-route", nil))
-		assert.Nil(t, seen.info, "unmatched routes must not carry STACInfo")
+		require.Equal(t, http.StatusNotFound, rr.Code)
+		assert.False(t, ran, "operator middleware must not run for unmatched routes")
 	})
 }
 

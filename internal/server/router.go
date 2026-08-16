@@ -93,67 +93,78 @@ func NewRouter(cfg RouterConfig) *Router {
 	r.Use(clientIPMiddleware(cfg.ClientIP))
 	r.Use(chimiddleware.Recoverer)
 
-	// Cap inbound bodies before any handler reads them. Must run
-	// before searchParser (which reads POST /search bodies) and
-	// before any operator-supplied middleware that might consume
-	// the body.
-	limit := cfg.MaxBodyBytes
-	if limit == 0 {
-		limit = DefaultMaxBodyBytes
-	}
-	if limit > 0 {
-		r.Use(bodyLimitMiddleware(limit))
-	}
-
-	// Classify the route and attach STACInfo BEFORE the search parser
-	// and operator middlewares — both read it from the context, and
-	// context values attached later (in the route handler) are
-	// invisible to them. See stacInfoClassifier.
-	r.Use(stacInfoClassifier(r.Mux))
-
-	// Parse search bodies/queries before authz so authz constraint
-	// enforcement (AllowedCollections, DeniedCollections,
-	// RequiredFilters) can mutate the parsed SearchRequest. Must
-	// run before cfg.HTTPMiddlewares so authz lives in.
-	r.Use(searchParserMiddleware())
-
-	// Operator-supplied chi middlewares (logging, authz, ratelimit,
-	// cache, remap).
-	for _, mw := range cfg.HTTPMiddlewares {
-		r.Use(mw)
-	}
-
-	// Mount health endpoints
+	// Health endpoints mount OUTSIDE the STAC group below, so probes
+	// never pass through the operator chain: liveness/readiness must
+	// not require credentials (auth with allow_anonymous: false would
+	// 401 the container HEALTHCHECK and every K8s probe), consume
+	// rate-limit budget, or hit the cache. Probe requests also skip
+	// the access log — by design; they fired every 30s.
 	if cfg.HealthChecker != nil {
 		r.Get("/health", cfg.HealthChecker.HealthHandler())
 		r.Get("/health/live", cfg.HealthChecker.LivenessHandler())
 		r.Get("/health/ready", cfg.HealthChecker.ReadinessHandler())
 	}
 
-	// STAC API routes
-	// Every catalog route delegates to the same inner handler; the
-	// request's STAC shape was already attached by stacInfoClassifier
-	// (route patterns and types live in classifier.go's
-	// routePatternTypes — one map, guarded by a chi.Walk test).
-	r.Get("/", r.serve)
-	r.Get("/conformance", r.serve)
-	r.Get("/collections", r.serve)
-	r.Get("/collections/{collectionId}", r.serve)
-	r.Get("/collections/{collectionId}/items", r.serve)
-	r.Get("/collections/{collectionId}/items/{itemId}", r.serve)
-	r.Get("/search", r.serve)
-	r.Post("/search", r.serve)
-	r.Get("/queryables", r.serve)
-	r.Get("/collections/{collectionId}/queryables", r.serve)
+	// Everything else — the STAC surface — lives in a group carrying
+	// the body cap, classifier, search parser, and the operator chain.
+	r.Group(func(g chi.Router) {
+		// Cap inbound bodies before any handler reads them. Must run
+		// before searchParser (which reads POST /search bodies) and
+		// before any operator-supplied middleware that might consume
+		// the body.
+		limit := cfg.MaxBodyBytes
+		if limit == 0 {
+			limit = DefaultMaxBodyBytes
+		}
+		if limit > 0 {
+			g.Use(bodyLimitMiddleware(limit))
+		}
 
-	// Asset streaming endpoint — only mounted when the deployment
-	// actually has an asset handler. Kept off the chi tree otherwise
-	// so the surface stays minimal in single-origin / pass-through
-	// deployments.
-	if r.assetHandler != nil {
-		r.Get("/assets/{originId}/{ref}", r.handleAsset)
-		r.Head("/assets/{originId}/{ref}", r.handleAsset)
-	}
+		// Classify the route and attach STACInfo BEFORE the search
+		// parser and operator middlewares — both read it from the
+		// context, and context values attached later (in the route
+		// handler) are invisible to them. See stacInfoClassifier.
+		// (Group routes register on the shared r.Mux tree, so the
+		// classifier's matcher sees them.)
+		g.Use(stacInfoClassifier(r.Mux))
+
+		// Parse search bodies/queries before authz so authz constraint
+		// enforcement (AllowedCollections, DeniedCollections,
+		// RequiredFilters) can mutate the parsed SearchRequest. Must
+		// run before cfg.HTTPMiddlewares so authz lives in.
+		g.Use(searchParserMiddleware())
+
+		// Operator-supplied chi middlewares (logging, authz, ratelimit,
+		// cache, remap).
+		for _, mw := range cfg.HTTPMiddlewares {
+			g.Use(mw)
+		}
+
+		// STAC API routes
+		// Every catalog route delegates to the same inner handler; the
+		// request's STAC shape was already attached by stacInfoClassifier
+		// (route patterns and types live in classifier.go's
+		// routePatternTypes — one map, guarded by a chi.Walk test).
+		g.Get("/", r.serve)
+		g.Get("/conformance", r.serve)
+		g.Get("/collections", r.serve)
+		g.Get("/collections/{collectionId}", r.serve)
+		g.Get("/collections/{collectionId}/items", r.serve)
+		g.Get("/collections/{collectionId}/items/{itemId}", r.serve)
+		g.Get("/search", r.serve)
+		g.Post("/search", r.serve)
+		g.Get("/queryables", r.serve)
+		g.Get("/collections/{collectionId}/queryables", r.serve)
+
+		// Asset streaming endpoint — only mounted when the deployment
+		// actually has an asset handler. Kept off the chi tree otherwise
+		// so the surface stays minimal in single-origin / pass-through
+		// deployments.
+		if r.assetHandler != nil {
+			g.Get("/assets/{originId}/{ref}", r.handleAsset)
+			g.Head("/assets/{originId}/{ref}", r.handleAsset)
+		}
+	})
 
 	return r
 }
