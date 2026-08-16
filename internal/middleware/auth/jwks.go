@@ -408,11 +408,15 @@ func (c *JWKSClient) refresh(ctx context.Context) error {
 		c.lastRefreshAttempt = c.now()
 		c.mu.Unlock()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
+		// c.url is the operator-configured JWKS endpoint (or the
+		// jwks_uri published by the operator's trusted OIDC issuer),
+		// https-enforced at construction — fetching it is this
+		// client's entire purpose, not an SSRF vector.
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil) // #nosec G704 -- trusted operator-configured URL
 		if err != nil {
 			return nil, err
 		}
-		resp, err := c.http.Do(req)
+		resp, err := c.http.Do(req) // #nosec G704 -- trusted operator-configured URL
 		if err != nil {
 			return nil, fmt.Errorf("jwks: fetch %s: %w", c.url, err)
 		}
