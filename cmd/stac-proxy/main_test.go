@@ -196,6 +196,7 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 				CollectionMapping:       map[string]string{"a": "b"},
 				StripPathPrefix:         "/v1",
 				SupportsFilterExtension: true,
+				SupportsSpatialFilter:   true,
 				MaxResponseBytes:        64 << 20,
 				ForwardUserIdentity:     true,
 				RewriteAssets:           "proxy",
@@ -275,6 +276,7 @@ func TestBuildFederationHandler_CopiesEveryConfiguredField(t *testing.T) {
 		CollectionMapping:       in.CollectionMapping,
 		StripPathPrefix:         in.StripPathPrefix,
 		SupportsFilterExtension: in.SupportsFilterExtension,
+		SupportsSpatialFilter:   in.SupportsSpatialFilter,
 		MaxResponseBytes:        in.MaxResponseBytes,
 		ForwardUserIdentity:     in.ForwardUserIdentity,
 		RewriteAssets:           in.RewriteAssets,
@@ -335,6 +337,7 @@ func TestBuildFederationHandler_SingleModeWiresPublicBaseURL(t *testing.T) {
 			URL:                     "https://upstream.example.com/stac",
 			Timeout:                 10 * time.Second,
 			SupportsFilterExtension: true,
+			SupportsSpatialFilter:   true,
 		},
 	}
 	require.NoError(t, cfg.Validate(), "Validate")
@@ -487,4 +490,67 @@ func TestAuthProviderWiring_APIKeyCredentials(t *testing.T) {
 		"keys": []interface{}{map[string]interface{}{"name": "keyless"}},
 	}, logger)
 	assert.ErrorContains(t, err, "missing required field 'key'")
+}
+
+// TestResolveOriginCapabilities covers the boot-time capability
+// resolution feeding the CQL2/geofence push-down gates.
+func TestResolveOriginCapabilities(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	conformanceSrv := func(classes ...string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/conformance" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"conformsTo": classes})
+		}))
+	}
+
+	t.Run("filter without spatial class gates spatial off", func(t *testing.T) {
+		t.Parallel()
+		srv := conformanceSrv("http://www.opengis.net/spec/cql2/1.0/conf/cql2-text")
+		defer srv.Close()
+		filter, spatial := resolveOriginCapabilities(logger, "o", srv.URL, false, false)
+		assert.True(t, filter)
+		assert.False(t, spatial, "advertising the base Filter Extension must NOT enable geofence push-down")
+	})
+
+	t.Run("spatial class enables both", func(t *testing.T) {
+		t.Parallel()
+		srv := conformanceSrv(
+			"http://www.opengis.net/spec/cql2/1.0/conf/cql2-text",
+			"http://www.opengis.net/spec/cql2/1.0/conf/basic-spatial-functions",
+		)
+		defer srv.Close()
+		filter, spatial := resolveOriginCapabilities(logger, "o", srv.URL, false, false)
+		assert.True(t, filter)
+		assert.True(t, spatial)
+	})
+
+	t.Run("probe failure passes config values through", func(t *testing.T) {
+		t.Parallel()
+		filter, spatial := resolveOriginCapabilities(logger, "o", "http://127.0.0.1:1", true, false)
+		assert.True(t, filter, "config-asserted filter survives probe failure")
+		assert.False(t, spatial, "probe failure must not grant spatial")
+	})
+
+	t.Run("both config flags skip the probe entirely", func(t *testing.T) {
+		t.Parallel()
+		// An unreachable URL proves no fetch happens.
+		filter, spatial := resolveOriginCapabilities(logger, "o", "http://127.0.0.1:1", true, true)
+		assert.True(t, filter)
+		assert.True(t, spatial)
+	})
+
+	t.Run("spatial class without filter class stays off", func(t *testing.T) {
+		t.Parallel()
+		srv := conformanceSrv("http://www.opengis.net/spec/cql2/1.0/conf/basic-spatial-functions")
+		defer srv.Close()
+		filter, spatial := resolveOriginCapabilities(logger, "o", srv.URL, false, false)
+		assert.False(t, filter)
+		assert.False(t, spatial, "spatial without base filter support is meaningless")
+	})
 }

@@ -77,6 +77,11 @@ type Origin struct {
 	// remains responsible.
 	SupportsFilterExtension bool
 
+	// SupportsSpatialFilter reports (config-asserted or boot-probed)
+	// that the origin evaluates CQL2 spatial predicates — the gate for
+	// geofence push-down, which disables the response post-filter.
+	SupportsSpatialFilter bool
+
 	// RewriteAssets controls how assets[*].href is rewritten in
 	// responses from this origin. One of:
 	//   ""      — same as "never" (default).

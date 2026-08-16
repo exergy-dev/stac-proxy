@@ -181,7 +181,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if rlMW := buildRateLimitHTTPMiddleware(cfg, redisClient, logger); rlMW != nil {
 		httpMiddlewares = append(httpMiddlewares, rlMW)
 	}
-	if azMW, err := buildAuthzHTTPMiddleware(ctx, cfg, logger); err != nil {
+	if azMW, err := buildAuthzHTTPMiddleware(ctx, cfg, logger, handler); err != nil {
 		return fmt.Errorf("failed to build authz middleware: %w", err)
 	} else if azMW != nil {
 		httpMiddlewares = append(httpMiddlewares, azMW)
@@ -260,7 +260,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 // buildAuthzMiddleware wires the authz middleware (including CQL2
 // injection) from the top-level authz config. Returns (nil, nil) when
 // authz is not configured.
-func buildAuthzHTTPMiddleware(ctx context.Context, cfg *config.Config, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
+func buildAuthzHTTPMiddleware(ctx context.Context, cfg *config.Config, logger *slog.Logger, fed *federation.Handler) (func(http.Handler) http.Handler, error) {
 	az := cfg.Authz
 	if az == nil || az.OPA == nil {
 		return nil, nil
@@ -284,32 +284,34 @@ func buildAuthzHTTPMiddleware(ctx context.Context, cfg *config.Config, logger *s
 		cql2Enabled = az.CQL2Injection.Enabled
 	}
 
-	// Single-origin: gate push-down on cfg.Upstream.SupportsFilterExtension.
-	// Federation: conservative AND across configured origins.
-	var filterCheck func(*http.Request, *middleware.STACInfo) bool
-	if cfg.IsFederation() {
-		allSupport := true
-		any := false
-		for _, o := range cfg.Federation.Origins {
-			if !o.Enabled {
-				continue
-			}
-			any = true
-			if !o.SupportsFilterExtension {
-				allSupport = false
-				break
-			}
+	// Gate push-down on the RESOLVED origin capabilities (config flag
+	// OR boot-time /conformance probe), conservatively ANDed across
+	// every enabled origin. filterCheck gates all CQL2 injection;
+	// spatialCheck additionally gates geofence push-down — pushing
+	// S_INTERSECTS to an upstream that never implemented it would
+	// leak geofenced data, because push-down disables the
+	// response-side post-filter. When spatialCheck fails, plain CQL2
+	// still pushes and the geofence stays post-filtered.
+	allFilter, allSpatial := false, false
+	if fed != nil {
+		allFilter, allSpatial = true, true
+		ids := fed.OriginIDs()
+		if len(ids) == 0 {
+			allFilter, allSpatial = false, false
 		}
-		supports := any && allSupport
-		filterCheck = func(_ *http.Request, _ *middleware.STACInfo) bool { return supports }
-	} else if cfg.Upstream != nil {
-		supports := cfg.Upstream.SupportsFilterExtension
-		filterCheck = func(_ *http.Request, _ *middleware.STACInfo) bool { return supports }
+		for _, id := range ids {
+			o := fed.OriginClient(id).Origin()
+			allFilter = allFilter && o.SupportsFilterExtension
+			allSpatial = allSpatial && o.SupportsSpatialFilter
+		}
 	}
+	filterCheck := func(_ *http.Request, _ *middleware.STACInfo) bool { return allFilter }
+	spatialCheck := func(_ *http.Request, _ *middleware.STACInfo) bool { return allSpatial }
 
 	logger.Info("authz middleware configured",
 		"cql2_injection", cql2Enabled,
-		"filter_extension_check", filterCheck != nil,
+		"filter_extension_all_origins", allFilter,
+		"spatial_functions_all_origins", allSpatial,
 	)
 
 	return authz.NewHTTPMiddleware(authz.HTTPConfig{
@@ -317,6 +319,7 @@ func buildAuthzHTTPMiddleware(ctx context.Context, cfg *config.Config, logger *s
 		AllowAnonymous:       true,
 		CQL2InjectionEnabled: cql2Enabled,
 		FilterExtensionCheck: filterCheck,
+		SpatialFilterCheck:   spatialCheck,
 	}), nil
 }
 
@@ -826,10 +829,9 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 		}
 
 		// originCfg.Timeout is non-zero here: config.setDefaults fills it.
-		supportsFilter := originCfg.SupportsFilterExtension
-		if !supportsFilter {
-			supportsFilter = probeFilterExtension(logger, originCfg.ID, originCfg.BaseURL)
-		}
+		supportsFilter, supportsSpatial := resolveOriginCapabilities(
+			logger, originCfg.ID, originCfg.BaseURL,
+			originCfg.SupportsFilterExtension, originCfg.SupportsSpatialFilter)
 
 		origin := &federation.Origin{
 			ID:                      originCfg.ID,
@@ -852,6 +854,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 			CollectionMapping:       originCfg.CollectionMapping,
 			StripPathPrefix:         originCfg.StripPathPrefix,
 			SupportsFilterExtension: supportsFilter,
+			SupportsSpatialFilter:   supportsSpatial,
 			RewriteAssets:           originCfg.RewriteAssets,
 			AssetSignTTL:            originCfg.AssetSignTTL,
 			ForwardUserIdentity:     originCfg.ForwardUserIdentity,
@@ -866,6 +869,7 @@ func buildFederationHandler(ctx context.Context, cfg *config.Config, logger *slo
 			"url", originCfg.BaseURL,
 			"priority", originCfg.Priority,
 			"filter_extension", supportsFilter,
+			"spatial_functions", supportsSpatial,
 		)
 	}
 
@@ -1093,10 +1097,9 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 	}
 
 	// cfg.Upstream.Timeout is non-zero here: config.setDefaults fills it.
-	supportsFilter := cfg.Upstream.SupportsFilterExtension
-	if !supportsFilter {
-		supportsFilter = probeFilterExtension(logger, "upstream", cfg.Upstream.URL)
-	}
+	supportsFilter, supportsSpatial := resolveOriginCapabilities(
+		logger, "upstream", cfg.Upstream.URL,
+		cfg.Upstream.SupportsFilterExtension, cfg.Upstream.SupportsSpatialFilter)
 
 	origin := &federation.Origin{
 		ID:                      "primary",
@@ -1106,6 +1109,7 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 		Priority:                100,
 		Searchable:              true,
 		SupportsFilterExtension: supportsFilter,
+		SupportsSpatialFilter:   supportsSpatial,
 		// No auth, no collection prefix, no collection list — the
 		// router treats this as the catch-all origin for everything.
 	}
@@ -1113,6 +1117,7 @@ func buildSingleOriginAsFederation(ctx context.Context, cfg *config.Config, logg
 	logger.Info("Configured single-origin upstream as federation-of-1",
 		"url", cfg.Upstream.URL,
 		"filter_extension", supportsFilter,
+		"spatial_functions", supportsSpatial,
 	)
 
 	caps := computeConformanceCaps(cfg, []*federation.Origin{origin})
@@ -1189,24 +1194,33 @@ func getStringSliceConfig(m map[string]interface{}, key string) []string {
 // Logs the result against the supplied id (origin ID, or "upstream"
 // for single-origin mode). Network failures yield false so the
 // post-filter path remains responsible for enforcement.
-func probeFilterExtension(logger *slog.Logger, id, baseURL string) bool {
+func resolveOriginCapabilities(logger *slog.Logger, id, baseURL string, cfgFilter, cfgSpatial bool) (filter, spatial bool) {
+	// Both asserted in config: nothing left to learn, skip the fetch.
+	if cfgFilter && cfgSpatial {
+		return true, true
+	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ok, err := stac.ProbeFilterExtension(probeCtx, nil, baseURL)
-	switch {
-	case err != nil:
-		logger.Warn("conformance probe failed; assuming no Filter Extension",
-			"origin", id, "error", err)
-		return false
-	case ok:
-		logger.Info("conformance probe: Filter Extension supported",
-			"origin", id)
-		return true
-	default:
-		logger.Info("conformance probe: Filter Extension not advertised",
-			"origin", id)
-		return false
+	classes, err := stac.FetchConformance(probeCtx, nil, baseURL)
+	if err != nil {
+		// Fail safe: config-asserted values pass through, probed bits
+		// stay false — an unreachable origin cannot enable push-down.
+		logger.Warn("conformance probe failed; using config-asserted capabilities only",
+			"origin", id, "error", err,
+			"filter_extension", cfgFilter, "spatial_functions", cfgSpatial)
+		return cfgFilter, cfgSpatial
 	}
+	filter = cfgFilter || stac.HasFilterExtension(classes)
+	// Spatial push-down without base filter support is meaningless —
+	// require both. This is the gate that keeps geofence push-down
+	// (which disables the response post-filter) away from upstreams
+	// that never implemented S_INTERSECTS.
+	spatial = cfgSpatial || (filter && stac.HasSpatialFunctions(classes))
+	logger.Info("conformance probe",
+		"origin", id,
+		"filter_extension", filter,
+		"spatial_functions", spatial)
+	return filter, spatial
 }
 
 // runHealthcheck makes a single GET against the supplied URL and

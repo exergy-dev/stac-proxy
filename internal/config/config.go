@@ -164,9 +164,18 @@ type UpstreamConfig struct {
 
 	// SupportsFilterExtension indicates whether the upstream STAC API
 	// supports the Filter Extension (cql2-text / cql2-json). When true,
-	// authz CQL2 filters and geofence S_INTERSECTS predicates are pushed
-	// down to the upstream rather than enforced via response post-filter.
+	// authz CQL2 filters are pushed down to the upstream. When false,
+	// the /conformance advertisement is probed at boot.
 	SupportsFilterExtension bool `yaml:"supports_filter_extension"`
+
+	// SupportsSpatialFilter is the trust override for geofence
+	// push-down: the upstream evaluates CQL2 spatial predicates
+	// (S_INTERSECTS). Geofence push-down disables the response-side
+	// post-filter, so it is gated separately from the base Filter
+	// Extension — an upstream that ignores an S_INTERSECTS it never
+	// implemented would leak geofenced data. When false, the boot
+	// probe checks /conformance for a CQL2 spatial class.
+	SupportsSpatialFilter bool `yaml:"supports_spatial_filter"`
 
 	// MaxResponseBytes caps the size in bytes of an upstream response
 	// body consumed by the proxy. <= 0 means the default 32 MiB.
@@ -276,10 +285,15 @@ type OriginConfig struct {
 
 	// SupportsFilterExtension indicates whether this origin's STAC API
 	// supports the Filter Extension. When true, the authz middleware
-	// pushes CQL2 predicates (including geofence S_INTERSECTS) into the
-	// search request; when false, the post-filter path stays responsible
-	// for enforcement.
+	// pushes CQL2 predicates into the search request; when false, the
+	// /conformance advertisement is probed at boot.
 	SupportsFilterExtension bool `yaml:"supports_filter_extension"`
+
+	// SupportsSpatialFilter is the trust override for geofence
+	// push-down (see UpstreamConfig.SupportsSpatialFilter): the origin
+	// evaluates CQL2 spatial predicates. Probed from /conformance when
+	// false.
+	SupportsSpatialFilter bool `yaml:"supports_spatial_filter"`
 
 	// MaxResponseBytes caps the size in bytes of an upstream response
 	// body consumed by the federation origin client. <= 0 means the
