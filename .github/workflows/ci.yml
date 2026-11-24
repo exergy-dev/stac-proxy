@@ -19,7 +19,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.25.x"]
+        # Pushes and pull requests run the first entry only; a manual run
+        # (workflow_dispatch) runs the full matrix.
+        go: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["1.25.x","stable"]' || '["1.25.x"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
